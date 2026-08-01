@@ -716,15 +716,23 @@ link_base_recipe_binaries() {
   # than through the dynamic linker. Point that path at the source install
   # mirror so the built-in modesetting driver is available to SDDM.
   if [ "$recipe" = "xorg-server" ]; then
-    local xorg_modules="$install_usr/lib64/xorg/modules"
-    if [ ! -f "$xorg_modules/drivers/modesetting_drv.so" ]; then
+    local xorg_modules=""
+    local xorg_libdir=""
+    for candidate_libdir in lib lib64; do
+      if [ -f "$install_usr/$candidate_libdir/xorg/modules/drivers/modesetting_drv.so" ]; then
+        xorg_modules="$install_usr/$candidate_libdir/xorg/modules"
+        xorg_libdir="$candidate_libdir"
+        break
+      fi
+    done
+    if [ -z "$xorg_modules" ]; then
       echo "[stage-de-rootfs] required source Xorg modesetting module missing" >&2
       return 1
     fi
     local xorg_modules_target="${xorg_modules#$STAGE_DIR}"
-    mkdir -p "$STAGE_DIR/usr/lib64/xorg"
-    rm -rf "$STAGE_DIR/usr/lib64/xorg/modules"
-    ln -sf "$xorg_modules_target" "$STAGE_DIR/usr/lib64/xorg/modules"
+    mkdir -p "$STAGE_DIR/usr/$xorg_libdir/xorg"
+    rm -rf "$STAGE_DIR/usr/$xorg_libdir/xorg/modules"
+    ln -sf "$xorg_modules_target" "$STAGE_DIR/usr/$xorg_libdir/xorg/modules"
   fi
   if [ "$recipe" = "xz" ]; then
     if [ ! -x "$install_usr/bin/xz" ]; then

@@ -362,13 +362,25 @@ REPRO_MODIFICATION_DATE='2025010100000000'
 #      xorriso call and appends ``-eltorito-alt-boot -e
 #      boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat`` so
 #      the resulting ISO has BOTH boot entries.
-GRUB_MKRESCUE_BIN=$(command -v grub-mkrescue)
+GRUB_SOURCE_PREFIX="${REPRO_FROM_SOURCE_ROOT:-}/grub/.repro/output/install/usr"
+if [ -x "$GRUB_SOURCE_PREFIX/bin/grub-mkrescue" ]; then
+  GRUB_MKRESCUE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkrescue"
+else
+  GRUB_MKRESCUE_BIN=$(command -v grub-mkrescue)
+fi
+if [ -x "$GRUB_SOURCE_PREFIX/bin/grub-mkimage" ]; then
+  GRUB_MKIMAGE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkimage"
+else
+  GRUB_MKIMAGE_BIN=$(command -v grub-mkimage)
+fi
 GRUB_BIOS_DIR=""
 GRUB_EFI_DIR=""
-for d in /nix/store/*-grub-2.*/lib/grub/i386-pc; do
+for d in "$GRUB_SOURCE_PREFIX/lib/grub/i386-pc" \
+    /nix/store/*-grub-2.*/lib/grub/i386-pc; do
   if [ -d "$d" ]; then GRUB_BIOS_DIR="$d"; break; fi
 done
-for d in /nix/store/*-grub-2.*/lib/grub/x86_64-efi; do
+for d in "$GRUB_SOURCE_PREFIX/lib/grub/x86_64-efi" \
+    /nix/store/*-grub-2.*/lib/grub/x86_64-efi; do
   if [ -d "$d" ]; then GRUB_EFI_DIR="$d"; break; fi
 done
 GRUB_HAS_BIOS=0
@@ -381,7 +393,14 @@ echo "[build-iso] GRUB_EFI_DIR=$GRUB_EFI_DIR"
 GRUB_XORRISO_WRAPPER=""
 if [ "$GRUB_HAS_BIOS" = "0" ] || [ "$GRUB_HAS_EFI" = "0" ]; then
   echo "[build-iso] WARNING: only one GRUB arch present; ISO will not be hybrid" >&2
-  GRUB_MKRESCUE_FLAGS=()
+  if [ "$GRUB_HAS_BIOS" = "1" ]; then
+    GRUB_MKRESCUE_FLAGS=(--directory="$GRUB_BIOS_DIR")
+  elif [ "$GRUB_HAS_EFI" = "1" ]; then
+    GRUB_MKRESCUE_FLAGS=(--directory="$GRUB_EFI_DIR")
+  else
+    echo "[build-iso] FATAL: no GRUB platform module directory found" >&2
+    exit 69
+  fi
 else
   # Step 1 — build BOOTX64.EFI via grub-mkimage against the EFI module
   # dir. The loader is small (~750 KiB) and self-contained; it knows
@@ -389,7 +408,7 @@ else
   # at runtime.
   mkdir -p "$WORK/EFI/BOOT"
   echo "[build-iso] running grub-mkimage --directory=$GRUB_EFI_DIR --format=x86_64-efi"
-  grub-mkimage \
+  "$GRUB_MKIMAGE_BIN" \
     --directory="$GRUB_EFI_DIR" \
     --prefix="/boot/grub" \
     --format=x86_64-efi \
@@ -488,7 +507,7 @@ EOF
   GRUB_MKRESCUE_FLAGS=(--directory="$GRUB_BIOS_DIR" --xorriso="$GRUB_XORRISO_WRAPPER")
 fi
 
-grub-mkrescue \
+"$GRUB_MKRESCUE_BIN" \
   "${GRUB_MKRESCUE_FLAGS[@]}" \
   --compress=xz \
   --product-name='ReproOS' \

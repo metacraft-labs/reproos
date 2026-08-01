@@ -112,6 +112,7 @@ const reproosIsoRootfsDeps = @[
   "audit",
   "libbsd",
   "mesa",
+  "llvm",
   "qt6-base",
   "qt6-declarative",
   "qt6-quickcontrols2",
@@ -237,6 +238,7 @@ package reproosIso:
     "audit"
     "libbsd"
     "mesa"
+    "llvm"
     "qt6-base"
     "qt6-declarative"
     "qt6-quickcontrols2"

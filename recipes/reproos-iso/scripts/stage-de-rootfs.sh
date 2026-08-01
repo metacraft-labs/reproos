@@ -208,6 +208,24 @@ if [ -d "$STAGED_GCC_PREFIX" ]; then
         source_replacement="$(find "$SOURCE_GLIBC_INSTALL_ROOT" \
           \( -type f -o -type l \) -name "$bootstrap_name" \
           -print -quit 2>/dev/null)"
+        # glibc 2.34 folded these libraries into libc and no longer installs
+        # every unversioned development linker script. Preserve the bootstrap
+        # compiler's -l aliases by pointing them at the source compatibility
+        # SONAMEs.
+        if [ -z "$source_replacement" ]; then
+          case "$bootstrap_name" in
+            libdl.so) bootstrap_compat_name=libdl.so.2 ;;
+            libpthread.so) bootstrap_compat_name=libpthread.so.0 ;;
+            librt.so) bootstrap_compat_name=librt.so.1 ;;
+            libutil.so) bootstrap_compat_name=libutil.so.1 ;;
+            *) bootstrap_compat_name= ;;
+          esac
+          if [ -n "$bootstrap_compat_name" ]; then
+            source_replacement="$(find "$SOURCE_GLIBC_INSTALL_ROOT" \
+              \( -type f -o -type l \) -name "$bootstrap_compat_name" \
+              -print -quit 2>/dev/null)"
+          fi
+        fi
         ;;
     esac
     if [ -z "$source_replacement" ] || \

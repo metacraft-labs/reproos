@@ -70,6 +70,7 @@ const reproosIsoRootfsDeps = @[
   "gdk-pixbuf",
   "gmp",
   "harfbuzz",
+  "icu",
   "libinput",
   "lzo",
   "libmd",
@@ -194,6 +195,7 @@ package reproosIso:
     "gdk-pixbuf"
     "gmp"
     "harfbuzz"
+    "icu"
     "libinput"
     "lzo"
     "libmd"

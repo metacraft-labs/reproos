@@ -79,7 +79,15 @@ if [ "$REPRO_BASE_ROOTFS_DISABLE" != "1" ]; then
   SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}" \
     bash "$SCRIPT_DIR_SELF/build-base-rootfs.sh" "$base_tar"
   echo "[stage-de-rootfs] extracting base userspace into $STAGE_DIR"
-  tar --same-permissions -C "$STAGE_DIR" -xf "$base_tar"
+  xz_install_root="${REPRO_XZ_INSTALL_ROOT:-$REPRO_FROM_SOURCE_ROOT/xz/.repro/output/install}"
+  xz_bin="$xz_install_root/usr/bin/xz"
+  xz_lib_dir="$xz_install_root/usr/lib"
+  if [ ! -x "$xz_bin" ] || [ ! -e "$xz_lib_dir/liblzma.so.5" ]; then
+    echo "[stage-de-rootfs] source xz artifact is incomplete: $xz_install_root" >&2
+    exit 66
+  fi
+  LD_LIBRARY_PATH="$xz_lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$xz_bin" -dc "$base_tar" | tar --same-permissions -C "$STAGE_DIR" -xf -
   rm -f "$base_tar"
 fi
 

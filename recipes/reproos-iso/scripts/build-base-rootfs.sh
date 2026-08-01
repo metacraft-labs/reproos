@@ -11,9 +11,10 @@
 #
 # Required environment:
 #   SOURCE_DATE_EPOCH
+#   REPRO_FROM_SOURCE_ROOT
 #
 # Required host tools:
-#   bash, chmod, ln, mkdir, mktemp, mv, rm, sha256sum, stat, tar, xz
+#   bash, chmod, ln, mkdir, mktemp, mv, rm, sha256sum, stat, tar
 
 set -euo pipefail
 
@@ -24,8 +25,17 @@ fi
 OUT_TAR="$1"
 
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH must be set}"
+: "${REPRO_FROM_SOURCE_ROOT:?REPRO_FROM_SOURCE_ROOT must be set}"
 
-for tool in chmod ln mkdir mktemp mv rm sha256sum stat tar xz; do
+XZ_INSTALL_ROOT="${REPRO_XZ_INSTALL_ROOT:-$REPRO_FROM_SOURCE_ROOT/xz/.repro/output/install}"
+XZ_BIN="$XZ_INSTALL_ROOT/usr/bin/xz"
+XZ_LIB_DIR="$XZ_INSTALL_ROOT/usr/lib"
+if [ ! -x "$XZ_BIN" ] || [ ! -e "$XZ_LIB_DIR/liblzma.so.5" ]; then
+  echo "build-base-rootfs.sh: source xz artifact is incomplete: $XZ_INSTALL_ROOT" >&2
+  exit 66
+fi
+
+for tool in chmod ln mkdir mktemp mv rm sha256sum stat tar; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "build-base-rootfs.sh: required tool missing: $tool" >&2
     exit 66
@@ -335,7 +345,8 @@ tar \
   --group=0 \
   -cf "$TMP_TAR" \
   -C "$ROOTFS_DIR" .
-xz --threads=1 --check=crc64 -9e -c "$TMP_TAR" > "$OUT_TAR.tmp"
+LD_LIBRARY_PATH="$XZ_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  "$XZ_BIN" --threads=1 --check=crc64 -9e -c "$TMP_TAR" > "$OUT_TAR.tmp"
 mv "$OUT_TAR.tmp" "$OUT_TAR"
 
 bytes="$(stat -c %s "$OUT_TAR")"

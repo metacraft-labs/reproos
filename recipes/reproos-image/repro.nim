@@ -172,6 +172,7 @@ const reproosImageRootfsDeps = @[
   "gdk-pixbuf",
   "gmp",
   "harfbuzz",
+  "icu",
   "libinput",
   "lzo",
   "libmd",
@@ -310,6 +311,7 @@ package reproosImage:
     "gdk-pixbuf"
     "gmp"
     "harfbuzz"
+    "icu"
     "libinput"
     "lzo"
     "libmd"

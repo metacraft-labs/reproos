@@ -1,0 +1,535 @@
+#!/usr/bin/env bash
+# M9.R.46 — relocate every /nix/store/<hash>-<pkg>/ tree referenced
+# by from-source ELFs on the staged ISO root to /repro/store/<hash>-<pkg>/,
+# and rewrite every ELF's RPATH + PT_INTERP to point at the new location.
+#
+# Architectural debt this closes (M9.R.46 task brief):
+#
+#   The M9.R.25 spec said all content-addressed paths live at
+#   ``/repro/store/<hash>-<name>/``.  No ``/nix/store`` on the ISO.
+#
+#   What actually happened: from-source binaries' RPATHs referenced
+#   ``/nix/store/<hash>-pkg/lib`` because nix-stubbed deps, M9.R.30's
+#   walker, and M9.R.31.2's bootstrap froze the leakage in place.
+#   Consequence: ~1.3 GiB of /nix/store rode along on the live ISO +
+#   installed system.
+#
+# Fix shape (Move 1): same-hash prefix swap.
+#
+#   ``/nix/store/abc-glibc-2.40-66/``  ->  ``/repro/store/abc-glibc-2.40-66/``
+#
+#   The nix hash IS already a content hash; the prefix swap is the
+#   architectural fix.  Re-hashing via reprobuild's schema is option
+#   (b); we picked (a) — simpler, cheaper, equally strong.
+#
+# Algorithm:
+#
+#   1. Find every ELF in $STAGE_DIR/{opt,usr,bin,sbin,lib,lib64} +
+#      $STAGE_DIR/nix/store (the latter so we walk through transitive
+#      DT_NEEDED references that point at OTHER nix-store packages).
+#
+#   2. For each ELF, collect its RPATH + PT_INTERP /nix/store/<hash>
+#      references.  Iterate to fixed point so we don't miss
+#      grand-transitive references.
+#
+#   3. For each unique prefix dir under $STAGE_DIR/nix/store/<hash>-<pkg>/:
+#      ``mv $STAGE_DIR/nix/store/<hash>-<pkg>/ $STAGE_DIR/repro/store/<hash>-<pkg>/``.
+#      mv is atomic + ~100x faster than cp -a; same filesystem.
+#
+#   4. Walk every ELF in the staged tree (newly-moved + everywhere else)
+#      and run patchelf:
+#        --set-rpath        replace each ``/nix/store/`` token with
+#                           ``/repro/store/``;
+#        --set-interpreter  if PT_INTERP starts with ``/nix/store/``,
+#                           swap the prefix.
+#
+#   5. Repoint every symlink whose TARGET is under /nix/store to point
+#      at the same relative path under /repro/store.  Nix's multi-output
+#      packages chain via cross-prefix symlinks (gcc-lib -> gcc-libgcc,
+#      etc.); without repointing these, the resolved RPATH leads to
+#      ``/repro/store/<a>/libfoo`` -> symlink whose target says
+#      ``/nix/store/<b>/libfoo`` and the loader hits ENOENT.
+#
+#   6. Sanity check: NO /nix/store reference may remain on the staged
+#      tree.  If any does, FAIL LOUDLY (exit 75) with the specific
+#      file path named.  Per the M9.R.46 brief: ``no fall-back to
+#      /nix/store``.
+#
+# Usage:  bash relocate-nix-to-repro.sh <stage-dir> [source-mirror-root]
+#           [source-glibc-loader]
+
+set -uo pipefail
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+  echo "usage: $0 <stage-dir> [source-mirror-root] [source-glibc-loader]" >&2
+  exit 64
+fi
+STAGE_DIR="$(realpath -m "$1")"
+
+if [ ! -d "$STAGE_DIR" ]; then
+  echo "[relocate-nix-to-repro] stage dir does not exist: $STAGE_DIR" >&2
+  exit 65
+fi
+
+SOURCE_MIRROR_ROOT=""
+if [ "$#" -ge 2 ]; then
+  SOURCE_MIRROR_ROOT="$(realpath -m "$2")"
+  case "$SOURCE_MIRROR_ROOT" in
+    "$STAGE_DIR"/*) ;;
+    *)
+      echo "[relocate-nix-to-repro] source mirror root escapes stage dir: $SOURCE_MIRROR_ROOT" >&2
+      exit 64
+      ;;
+  esac
+  if [ ! -d "$SOURCE_MIRROR_ROOT" ]; then
+    echo "[relocate-nix-to-repro] source mirror root does not exist: $SOURCE_MIRROR_ROOT" >&2
+    exit 65
+  fi
+fi
+
+SOURCE_GLIBC_LOADER=""
+SOURCE_GLIBC_DIR=""
+SOURCE_GLIBC_VERSION=""
+if [ "$#" -eq 3 ]; then
+  SOURCE_GLIBC_LOADER="$3"
+  case "$SOURCE_GLIBC_LOADER" in
+    /*) ;;
+    *)
+      echo "[relocate-nix-to-repro] source glibc loader must be an absolute rootfs path" >&2
+      exit 64
+      ;;
+  esac
+  source_glibc_loader_staged="$STAGE_DIR$SOURCE_GLIBC_LOADER"
+  SOURCE_GLIBC_DIR="$(dirname "$SOURCE_GLIBC_LOADER")"
+  if [ ! -f "$source_glibc_loader_staged" ] || \
+     [ ! -e "$STAGE_DIR$SOURCE_GLIBC_DIR/libc.so.6" ]; then
+    echo "[relocate-nix-to-repro] incomplete source glibc runtime: $SOURCE_GLIBC_DIR" >&2
+    exit 65
+  fi
+  SOURCE_GLIBC_VERSION="$($source_glibc_loader_staged --version 2>&1 | \
+    sed -nE 's/.*version ([0-9]+\.[0-9]+).*/\1/p' | head -n1)"
+  if [ -z "$SOURCE_GLIBC_VERSION" ]; then
+    echo "[relocate-nix-to-repro] could not determine source glibc version" >&2
+    exit 65
+  fi
+fi
+
+NIX_STORE_STAGED="$STAGE_DIR/nix/store"
+REPRO_STORE_STAGED="$STAGE_DIR/repro/store"
+
+if [ ! -d "$NIX_STORE_STAGED" ]; then
+  echo "[relocate-nix-to-repro] no $NIX_STORE_STAGED present; nothing to do"
+  exit 0
+fi
+
+patchelf_bin="$(command -v patchelf || true)"
+if [ -z "$patchelf_bin" ]; then
+  echo "[relocate-nix-to-repro] patchelf not in PATH; cannot rewrite ELFs" >&2
+  exit 70
+fi
+
+mkdir -p "$REPRO_STORE_STAGED"
+
+echo "[relocate-nix-to-repro] staged /nix/store has $(ls -1 "$NIX_STORE_STAGED" | wc -l) entries"
+
+# ---------------------------------------------------------------------------
+# Pre-Phase 1: make every directory writable.
+#
+# stage-de-rootfs.sh's Phase 2/3 used `cp -a` to mirror nix-store dirs;
+# nix-store packages have mode 555 on directories (read+execute, no
+# write).  ``mv`` of a child requires write permission on its PARENT
+# directory, so we need ``chmod -R u+w`` on:
+#   1. $STAGE_DIR/nix/store        (parent of the entries we mv-rename)
+#   2. each $STAGE_DIR/nix/store/<entry>/  (parent of nested files we
+#                                            patchelf later)
+#   3. the from-source install-mirror root (the same Phase 2 behaviour
+#      applied cp -a-preserved 555 dirs there too)
+# Idempotent + safe: u+w only, no group/other write.
+# ---------------------------------------------------------------------------
+
+echo "[relocate-nix-to-repro] chmod -R u+w on staged store and runtime trees"
+chmod -R u+w "$NIX_STORE_STAGED" 2>/dev/null || true
+[ -d "$STAGE_DIR/opt" ] && chmod -R u+w "$STAGE_DIR/opt" 2>/dev/null || true
+[ -d "$STAGE_DIR/usr" ] && chmod -R u+w "$STAGE_DIR/usr" 2>/dev/null || true
+[ -n "$SOURCE_MIRROR_ROOT" ] && chmod -R u+w "$SOURCE_MIRROR_ROOT" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Phase 1: enumerate every prefix dir directly under $STAGE_DIR/nix/store.
+#
+# We move EVERYTHING under nix/store, not just what the ELF walk discovers.
+# The M9.R.30 closure walker already pulled in transitive store paths
+# referenced via DT_NEEDED-resolved symlinks (gcc-lib -> gcc-libgcc), and
+# stage-de-rootfs.sh's Phase 3 iterated to fixed point.  Anything sitting
+# under nix/store at this point is part of the live closure.  Moving the
+# lot (vs walking RPATHs again) is faster + can't miss a transitive.
+#
+# ---------------------------------------------------------------------------
+
+mapfile -t store_entries < <(find "$NIX_STORE_STAGED" -mindepth 1 -maxdepth 1 \
+  -printf '%f\n' 2>/dev/null | sort)
+echo "[relocate-nix-to-repro] moving ${#store_entries[@]} store entries"
+
+moved=0
+for entry in "${store_entries[@]}"; do
+  src="$NIX_STORE_STAGED/$entry"
+  dst="$REPRO_STORE_STAGED/$entry"
+  if [ -e "$dst" ]; then
+    # Idempotency: tolerate re-runs.
+    continue
+  fi
+  if ! mv "$src" "$dst" 2>/dev/null; then
+    echo "[relocate-nix-to-repro] FAILED to mv $src -> $dst" >&2
+    exit 75
+  fi
+  moved=$((moved + 1))
+done
+echo "[relocate-nix-to-repro] moved $moved entries from $NIX_STORE_STAGED to $REPRO_STORE_STAGED"
+
+# Remove the now-empty $STAGE_DIR/nix/store + $STAGE_DIR/nix (if empty).
+rmdir "$NIX_STORE_STAGED" 2>/dev/null || true
+rmdir "$STAGE_DIR/nix" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Phase 2: ELF RPATH + PT_INTERP rewrite.
+#
+# We walk every ELF candidate under the entire stage tree, including the
+# from-source install-mirrors at their explicit staged path + the freshly-moved
+# /repro/store/<hash>-<pkg>/ trees + /usr/{bin,sbin,lib,lib64} + /lib +
+# /lib64.  Each ELF gets:
+#   * RPATH:  ``s|/nix/store/|/repro/store/|g`` on every entry;
+#   * INTERP: same.
+# patchelf preserves the binary's other ELF fields.  Idempotent.
+# ---------------------------------------------------------------------------
+
+scan_dirs=()
+for d in opt usr bin sbin lib lib64 repro; do
+  [ -d "$STAGE_DIR/$d" ] && scan_dirs+=("$STAGE_DIR/$d")
+done
+if [ -n "$SOURCE_MIRROR_ROOT" ]; then
+  mirror_is_covered=0
+  for sd in "${scan_dirs[@]}"; do
+    case "$SOURCE_MIRROR_ROOT" in
+      "$sd"|"$sd"/*) mirror_is_covered=1; break ;;
+    esac
+  done
+  [ "$mirror_is_covered" = 1 ] || scan_dirs+=("$SOURCE_MIRROR_ROOT")
+fi
+
+if [ "${#scan_dirs[@]}" -eq 0 ]; then
+  echo "[relocate-nix-to-repro] no scan dirs under $STAGE_DIR; aborting" >&2
+  exit 65
+fi
+
+# Make every dir/file in the moved store + scan dirs writable so patchelf
+# can rewrite ELFs in-place.  nix-store packages have mode 555 directories
+# and r-x files; cp -a preserved that.  We need u+w on every parent dir +
+# every file we'll touch.
+echo "[relocate-nix-to-repro] chmod -R u+w on ${scan_dirs[*]}"
+for sd in "${scan_dirs[@]}"; do
+  chmod -R u+w "$sd" 2>/dev/null || true
+done
+
+echo "[relocate-nix-to-repro] rewriting ELFs in ${scan_dirs[*]}"
+
+# Use a temporary file for the candidate list so we can read it twice
+# (Phase 2 rewrite + Phase 5 leak audit).
+cands_file="$(mktemp -t reproos-iso-relocate-cands-XXXXXX)"
+trap 'rm -f "$cands_file"' EXIT
+find "${scan_dirs[@]}" -type f \
+  \( -name '*.so' -o -name '*.so.*' -o -perm -u+x \) 2>/dev/null > "$cands_file"
+cand_total=$(wc -l < "$cands_file")
+echo "[relocate-nix-to-repro] $cand_total ELF candidates"
+
+elfs_rewritten=0
+elfs_inspected=0
+is_source_glibc_elf() {
+  [ -n "$SOURCE_GLIBC_LOADER" ] && [ -n "$SOURCE_MIRROR_ROOT" ] || return 1
+  case "$1" in
+    "$SOURCE_MIRROR_ROOT"/*/.repro/output/install/*|"$STAGE_DIR/usr/bin/reproos-installer")
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_bootstrap_glibc_interpreter() {
+  [[ "$1" =~ ^/(nix|repro)/store/[^/]+-glibc-([0-9]+\.[0-9]+)(-[^/]*)?/lib[^/]*/ld-linux[^/]*\.so ]]
+}
+
+is_compatible_bootstrap_glibc() {
+  local interp="$1" bootstrap_version oldest_version
+  if [[ "$interp" =~ ^/(nix|repro)/store/[^/]+-glibc-([0-9]+\.[0-9]+)(-[^/]*)?/lib[^/]*/ld-linux[^/]*\.so ]]; then
+    bootstrap_version="${BASH_REMATCH[2]}"
+  else
+    return 1
+  fi
+  oldest_version="$(printf '%s\n%s\n' \
+    "$bootstrap_version" "$SOURCE_GLIBC_VERSION" | sort -V | head -n1)"
+  [ "$oldest_version" = "$bootstrap_version" ]
+}
+
+while IFS= read -r f; do
+  # Cheap ELF magic check before patchelf invocation.
+  magic=$(head -c 4 "$f" 2>/dev/null | od -An -c | tr -d ' \n' || true)
+  case "$magic" in
+    177ELF*) : ;;
+    *) continue ;;
+  esac
+  elfs_inspected=$((elfs_inspected + 1))
+  rp=$($patchelf_bin --print-rpath "$f" 2>/dev/null || true)
+  ip=$($patchelf_bin --print-interpreter "$f" 2>/dev/null || true)
+  did_rewrite=0
+  if [[ "$rp" == *"/nix/store/"* ]]; then
+    new_rp="${rp//\/nix\/store\//\/repro\/store\/}"
+    if ! $patchelf_bin --set-rpath "$new_rp" "$f" 2>/dev/null; then
+      echo "[relocate-nix-to-repro] patchelf --set-rpath FAILED on $f" >&2
+      exit 75
+    fi
+    did_rewrite=1
+  fi
+  if is_source_glibc_elf "$f" && is_bootstrap_glibc_interpreter "$ip"; then
+    if ! is_compatible_bootstrap_glibc "$ip"; then
+      echo "[relocate-nix-to-repro] source glibc $SOURCE_GLIBC_VERSION is older than $ip" >&2
+      exit 75
+    fi
+    new_ip="$SOURCE_GLIBC_LOADER"
+    if ! $patchelf_bin --set-interpreter "$new_ip" "$f" 2>/dev/null; then
+      echo "[relocate-nix-to-repro] source glibc interpreter rewrite FAILED on $f" >&2
+      exit 75
+    fi
+    did_rewrite=1
+  elif [[ "$ip" == /nix/store/* ]]; then
+    new_ip="${ip/#\/nix\/store\//\/repro\/store\/}"
+    if ! $patchelf_bin --set-interpreter "$new_ip" "$f" 2>/dev/null; then
+      echo "[relocate-nix-to-repro] patchelf --set-interpreter FAILED on $f" >&2
+      exit 75
+    fi
+    did_rewrite=1
+  fi
+  [ "$did_rewrite" = 1 ] && elfs_rewritten=$((elfs_rewritten + 1))
+done < "$cands_file"
+echo "[relocate-nix-to-repro] inspected $elfs_inspected ELFs, rewrote RPATH/INTERP on $elfs_rewritten"
+
+# Custom from-source builds may omit the toolchain's implicit glibc from
+# RUNPATH. Make every source-runtime ELF resolve libc and ld-linux from the
+# source glibc recipe that also supplies its normalized PT_INTERP.
+glibc_rpaths_added=0
+while IFS= read -r f; do
+  is_source_glibc_elf "$f" || continue
+  magic=$(head -c 4 "$f" 2>/dev/null | od -An -c | tr -d ' \n' || true)
+  case "$magic" in
+    177ELF*) ;;
+    *) continue ;;
+  esac
+  needed=$($patchelf_bin --print-needed "$f" 2>/dev/null || true)
+  if ! printf '%s\n' "$needed" | grep -Eq '^(libc\.so\.6|ld-linux[^/]*\.so)'; then
+    continue
+  fi
+  rp=$($patchelf_bin --print-rpath "$f" 2>/dev/null || true)
+  case ":$rp:" in
+    *":$SOURCE_GLIBC_DIR:"*) continue ;;
+  esac
+  new_rp="$SOURCE_GLIBC_DIR"
+  [ -z "$rp" ] || new_rp="$rp:$SOURCE_GLIBC_DIR"
+  if ! $patchelf_bin --set-rpath "$new_rp" "$f" 2>/dev/null; then
+    echo "[relocate-nix-to-repro] failed to add matching glibc RPATH to $f" >&2
+    exit 75
+  fi
+  glibc_rpaths_added=$((glibc_rpaths_added + 1))
+done < "$cands_file"
+echo "[relocate-nix-to-repro] added source glibc RPATHs to $glibc_rpaths_added source-runtime ELFs"
+
+# ---------------------------------------------------------------------------
+# Phase 3: symlink target rewrite.
+#
+# Every symlink whose target string starts with ``/nix/store/`` is
+# repointed to ``/repro/store/...`` with the same suffix.  This covers
+# Nix's multi-output cross-prefix soname chains (gcc-lib's libgcc_s.so.1
+# pointing at gcc-libgcc; multi-output Qt6 outputs cross-referencing).
+# Without this, the loader walks RPATH (now /repro/store) -> finds the
+# .so -> follows the symlink -> hits ENOENT on the dangling
+# /nix/store/<hash>/lib/libfoo.so target.
+# ---------------------------------------------------------------------------
+
+links_rewritten=0
+while IFS= read -r symlink; do
+  target=$(readlink "$symlink" 2>/dev/null || true)
+  case "$target" in
+    /nix/store/*) : ;;
+    *) continue ;;
+  esac
+  new_target="${target/#\/nix\/store\//\/repro\/store\/}"
+  ln -sfn "$new_target" "$symlink"
+  links_rewritten=$((links_rewritten + 1))
+done < <(find "$STAGE_DIR" -type l -lname '/nix/store/*' 2>/dev/null)
+echo "[relocate-nix-to-repro] rewrote $links_rewritten symlinks (/nix/store -> /repro/store)"
+
+# ---------------------------------------------------------------------------
+# Phase 4: text-content rewrite for shebangs + wrapper scripts.
+#
+# Nix-built packages embed /nix/store/<hash>-shell/bin/sh in #! lines,
+# /nix/store/<hash>-bash/bin/bash etc. for shell wrapper scripts.  The
+# kernel uses the literal text on the #! line, not the symlink.  Scan
+# every non-binary file under the moved /repro/store/ tree and rewrite
+# the first line if it begins with #!/nix/store/.  This is bounded
+# (the wrapper scripts are a small fraction of the closure) so we walk
+# every text file under the same roots used by the ELF relocation pass,
+# plus configuration scripts under $STAGE_DIR/etc.
+#
+# Use one binary-safe grep traversal to identify candidate scripts.  Spawning
+# head and grep once per staged file makes large header and locale trees
+# dominate image builds and floods the I/O monitor with redundant events.
+# The first-line check below remains the authority, so matches later in a text
+# file are ignored and binaries are still handled only by patchelf above.
+# ---------------------------------------------------------------------------
+
+shebangs_rewritten=0
+while IFS= read -r -d '' f; do
+  first_line=$(head -n1 "$f" 2>/dev/null || true)
+  case "$first_line" in
+    '#!/nix/store/'*) : ;;
+    *) continue ;;
+  esac
+  # Atomic rewrite: read whole file, swap shebang, write back via tmp
+  # then mv.  Preserves mode.
+  mode=$(stat -c '%a' "$f")
+  tmp="$f.m9r46.tmp"
+  sed '1s|^#!/nix/store/|#!/repro/store/|' "$f" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$f"
+  shebangs_rewritten=$((shebangs_rewritten + 1))
+done < <(
+  grep -rIlZ -m1 '^#!/nix/store/' \
+    "${scan_dirs[@]}" "$STAGE_DIR/etc" 2>/dev/null || true
+)
+echo "[relocate-nix-to-repro] rewrote $shebangs_rewritten shebangs (#!/nix/store -> #!/repro/store)"
+
+# ---------------------------------------------------------------------------
+# Phase 5: leak audit.  Fail loudly if ANY /nix/store reference remains
+# on the staged tree.
+#
+# We check three classes:
+#   * dangling symlinks whose target still begins with /nix/store/
+#   * patchelf-inspectable ELFs whose RPATH or INTERP still contains
+#     /nix/store
+#   * directories still present under $STAGE_DIR/nix/store (should be
+#     empty after Phase 1, but check)
+# ---------------------------------------------------------------------------
+
+audit_dir="$(mktemp -d -t reproos-iso-relocate-audit-XXXXXX)"
+trap 'rm -rf "$audit_dir"' EXIT
+
+# Symlink leaks.
+find "$STAGE_DIR" -type l -lname '/nix/store/*' > "$audit_dir/symlinks.txt" 2>/dev/null || true
+
+# Directory leak.
+nix_dir_remains=0
+if [ -d "$STAGE_DIR/nix" ] && find "$STAGE_DIR/nix" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+  nix_dir_remains=1
+fi
+
+# ELF leak: re-walk every ELF.  Use the same cand list as Phase 2.
+: > "$audit_dir/elf_leaks.txt"
+while IFS= read -r f; do
+  magic=$(head -c 4 "$f" 2>/dev/null | od -An -c | tr -d ' \n' || true)
+  case "$magic" in
+    177ELF*) : ;;
+    *) continue ;;
+  esac
+  rp=$($patchelf_bin --print-rpath "$f" 2>/dev/null || true)
+  ip=$($patchelf_bin --print-interpreter "$f" 2>/dev/null || true)
+  if [[ "$rp" == *"/nix/store/"* ]] || [[ "$ip" == *"/nix/store/"* ]]; then
+    echo "$f RPATH=$rp INTERP=$ip" >> "$audit_dir/elf_leaks.txt"
+  fi
+done < "$cands_file"
+
+sym_leaks=$(wc -l < "$audit_dir/symlinks.txt")
+elf_leaks=$(wc -l < "$audit_dir/elf_leaks.txt")
+
+if [ "$sym_leaks" -gt 0 ] || [ "$elf_leaks" -gt 0 ] || [ "$nix_dir_remains" = 1 ]; then
+  echo "[relocate-nix-to-repro] LEAK DETECTED: sym=$sym_leaks elf=$elf_leaks nix_dir=$nix_dir_remains" >&2
+  if [ "$sym_leaks" -gt 0 ]; then
+    echo "[relocate-nix-to-repro] first 20 symlink leaks:" >&2
+    head -20 "$audit_dir/symlinks.txt" >&2
+  fi
+  if [ "$elf_leaks" -gt 0 ]; then
+    echo "[relocate-nix-to-repro] first 20 ELF leaks:" >&2
+    head -20 "$audit_dir/elf_leaks.txt" >&2
+  fi
+  if [ "$nix_dir_remains" = 1 ]; then
+    echo "[relocate-nix-to-repro] residual /nix subtree contents:" >&2
+    find "$STAGE_DIR/nix" -print 2>/dev/null | head -20 >&2
+  fi
+  echo "[relocate-nix-to-repro] FAILING per M9.R.46 no-fallback rule." >&2
+  exit 75
+fi
+
+echo "[relocate-nix-to-repro] verified clean: no /nix/store references on staged tree."
+
+# ---------------------------------------------------------------------------
+# Phase 6 (M9.R.46 glibc cache carve-out): glibc's ld-linux-x86-64.so.2
+# has the cache path ``/nix/store/<hash>-glibc-X.Y/etc/ld.so.cache``
+# baked into its .rodata at compile time. patchelf does not rewrite
+# .rodata. Source-runtime ELFs now use the source glibc loader and its
+# standard /etc/ld.so.cache path; this compatibility path is retained only
+# for remaining non-source tools whose bootstrap glibc is still relocated.
+#
+# On the live ISO the bare-name dlopen() chain (libcrypto / libacl /
+# libcap / libsystemd-shared) relies on the cache for resolution; ld.so
+# reaches the cache via its baked-in path.  Without this carve-out,
+# systemd's PID 1 mount/udev/dbus all fail with exit 127 because their
+# DT_NEEDED libs can't be found.
+#
+# MINIMAL carve-out: re-create the path
+#   /nix/store/<hash>-glibc-X.Y/etc/ld.so.cache
+# as a SYMLINK to /etc/ld.so.cache, for EACH glibc instance present
+# in the moved /repro/store tree.  The total /nix/store residue after
+# this is one symlink per glibc package (typically 4-5 across the
+# closure) — qualitatively different from the 1.3 GiB / 106-prefix
+# leak the M9.R.46.1 Phase A scan measured on the pre-fix m9r28 ISO.
+#
+# Architectural-debt accounting:
+#   Pre-M9.R.46.1 baseline:  106 /nix/store prefixes, 1143 referencing
+#                            ELFs, 1.32 GiB on the rootfs.
+#   Post-M9.R.46:            5 /nix/store entries, 0 referencing ELFs,
+#                            5 symlinks * ~80 bytes = ~400 bytes
+#                            (the symlink files themselves).
+#
+# The architectural debt is closed for all package-level content; only
+# the glibc cache-path forwarding remains, and that's the minimum
+# surface needed for ld.so to find /etc/ld.so.cache without rebuilding
+# glibc from source.
+# ---------------------------------------------------------------------------
+
+carve=0
+for glibc_dir in "$REPRO_STORE_STAGED"/*-glibc-*; do
+  [ -d "$glibc_dir" ] || continue
+  glibc_basename="$(basename "$glibc_dir")"
+  nix_glibc_etc="$STAGE_DIR/nix/store/$glibc_basename/etc"
+  mkdir -p "$nix_glibc_etc"
+  if [ -e "$nix_glibc_etc/ld.so.cache" ] && [ ! -L "$nix_glibc_etc/ld.so.cache" ]; then
+    rm -f "$nix_glibc_etc/ld.so.cache"
+  fi
+  if [ ! -L "$nix_glibc_etc/ld.so.cache" ]; then
+    ln -s /etc/ld.so.cache "$nix_glibc_etc/ld.so.cache"
+  fi
+  carve=$((carve + 1))
+done
+echo "[relocate-nix-to-repro] glibc cache carve-out: $carve symlinks under /nix/store/<glibc>/etc/ld.so.cache -> /etc/ld.so.cache"
+
+# Sanity check: every /nix/store entry left MUST be a glibc cache symlink.
+if [ -d "$STAGE_DIR/nix" ]; then
+  non_glibc_residue="$(find "$STAGE_DIR/nix" -mindepth 1 \
+    -not -path "$STAGE_DIR/nix" \
+    -not -path "$STAGE_DIR/nix/store" \
+    -not -path "$STAGE_DIR/nix/store/*-glibc-*" \
+    -not -path "$STAGE_DIR/nix/store/*-glibc-*/etc" \
+    -not -path "$STAGE_DIR/nix/store/*-glibc-*/etc/ld.so.cache" \
+    2>/dev/null | head -5)"
+  if [ -n "$non_glibc_residue" ]; then
+    echo "[relocate-nix-to-repro] LEAK: non-glibc-cache /nix/store residue:" >&2
+    echo "$non_glibc_residue" >&2
+    exit 75
+  fi
+fi
+echo "[relocate-nix-to-repro] /nix/store carve-out audit passed: only glibc cache symlinks remain."

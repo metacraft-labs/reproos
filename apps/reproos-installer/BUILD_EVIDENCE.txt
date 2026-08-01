@@ -1,0 +1,345 @@
+M9.R.18 -- ReproOS Installer build evidence.
+================================================
+
+Standalone-build verification (eli-wsl, 2026-06-23):
+
+1. CMake configure:
+     cd /opt/repro/reprobuild/apps/reproos-installer
+     nix-shell -p qt6.qtbase qt6.qtdeclarative qt6.qtwayland cmake ninja \
+                 gcc14 pkg-config --run \
+       'cmake -S . -B /tmp/installer-build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.16'
+   Result: PASS (Qt6 found, ninja generator, Threads/Atomic/OpenGL detected)
+
+2. CMake build:
+     cmake --build /tmp/installer-build
+   Result: PASS (8/8 ninja steps, exit 0)
+     [1/8] Running qmlimportscanner for reproos-installer
+     [2/8] Automatic MOC and UIC for target reproos-installer
+     [3/8] Running rcc for resource qml-resources
+     [4/8] Building qrc_qml-resources.cpp.o
+     [5/8] Building mocs_compilation.cpp.o
+     [6/8] Building src/installer_state.cpp.o
+     [7/8] Building src/main.cpp.o
+     [8/8] Linking CXX executable reproos-installer
+
+3. Binary verification:
+     ls -la /tmp/installer-build/reproos-installer
+     => -rwxr-xr-x 1 root root 87856 Jun 23 11:47 reproos-installer
+
+4. CLI surface verification:
+     /tmp/installer-build/reproos-installer --help
+   Result:
+     Usage: reproos-installer [options]
+     ReproOS first-boot installer wizard. See ReproOS-Installer-PRD.md
+     Options:
+       -h, --help                Displays help on commandline options.
+       --help-all                Displays help, including generic Qt options.
+       -v, --version             Displays version information.
+       --activities-toml <path>  Path to the activity catalog TOML.
+       --dry-run                 Stop before the destructive install step.
+
+5. Version reporting (proves QGuiApplication bootstrap works):
+     QT_QPA_PLATFORM=offscreen reproos-installer --version
+   Result: ReproOS Installer 0.1.0
+
+Screens implemented (9 total):
+  - Welcome.qml      ($BAR M9.R.18.5)
+  - Locale.qml       ($BAR M9.R.18.6)
+  - Keyboard.qml     ($BAR M9.R.18.7)
+  - Users.qml        ($BAR M9.R.18.8)
+  - DeSelect.qml     ($BAR M9.R.18.9)
+  - Activities.qml   ($BAR M9.R.18.10)
+  - Summary.qml      ($BAR M9.R.18.11)
+  - Install.qml      ($BAR M9.R.18.12)
+  - Finished.qml     ($BAR M9.R.18.12)
+
+InstallerState C++ model exposes 12 QProperty fields:
+  hostname / locale / timezone / keymap / username / fullName / password
+  / isAdmin / desktopKind / activeActivities / activitiesTomlPath / dryRun
+
+Plus 3 Q_INVOKABLE methods:
+  renderSystemNim()   -- Sec 3.3 system.nim preview text
+  toggleActivity()    -- catalog checkbox toggle
+  hasActivity()       -- catalog checkbox initial-state probe
+
+Pending for M9.R.19:
+  - qt6-quickcontrols2 from-source recipe (currently only the nix-shell
+    QtQuickControls2 path works; the reprobuild recipe needs it landed
+    before the engine can build the installer end-to-end).
+  - Wire the launcher into the live ISO autologin chain (M9.R.18.14 --
+    deferred; pre-requires the binary landing in the base rootfs).
+  - Quick-path implementations (Welcome screen's USB / git URL buttons).
+  - Activity TOML loader (Activities.qml currently inlines the catalog).
+  - M82 broker integration for the destructive install step.
+
+================================================
+M9.R.19 closure (eli-wsl, 2026-06-23):
+================================================
+
+M9.R.19.1 -- qt6-quickcontrols2 from-source recipe
+  Landed `recipes/packages/source/qt6-quickcontrols2/repro.nim`. Builds
+  from the shared qtdeclarative-everywhere-src-6.8.1.tar.xz tarball
+  (referenced via `file:../qt6-declarative/vendor/...` so the 36-MiB
+  blob isn't duplicated). Upstream Qt merged QuickControls2 INTO
+  qtdeclarative at Qt 6.2; the standalone qtquickcontrols2-everywhere-
+  src-<ver>.tar.xz returns HTTP 404 from download.qt.io (verified
+  M9.R.19).
+
+M9.R.19.1.2 -- NIX_CFLAGS_COMPILE leak fix
+  Cleared NIX_CFLAGS_COMPILE for the qt6-quickcontrols2 cmake configure
+  via extraEnv. Without this fix, CMake's implicit-include-dir scan
+  picks up sibling Qt include dirs from the nix-shell env and
+  deduplicates the explicit -I.../QtCore + -isystem .../usr/include
+  flags out of the per-target compile commands; the actual gcc
+  invocation then lacks them and fails with
+  "QtCore/qtsymbolmacros.h: No such file or directory" when compiling
+  qrc_jsRootMetaTypes_init.cpp.
+
+M9.R.19.3 -- ISO integration
+  stage-de-rootfs.sh now consumes
+  apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer
+  as the canonical source for the installer binary. The script exits
+  with code 66 if the binary is missing (was a soft skip in M9.R.18.14).
+  Defaults the SDDM autologin Session= to reproos-installer (was
+  plasma in M9.R.18.1 as a placeholder). reproos-iso/repro.nim
+  declares the installer binary path as an extraInput so the engine
+  refingerprints the ISO when the wizard changes.
+
+M9.R.19.1.3 -- qt6-quickcontrols2 shim
+  The cmake_package-based build of the qtdeclarative tarball hits a
+  deterministic cmake_autogen wedge in the
+  qtquickcontrols2nativestyleplugin_autogen target after producing
+  51 of 60 moc files. Reproduced across two independent eli-wsl runs.
+  Switched the recipe to a shim that copies the QuickControls2
+  artifacts out of the sibling qt6-declarative install mirror. The
+  share-only fast-path in the from-source tool resolver matches as
+  soon as Qt6QuickControls2Config.cmake lands at the expected layout.
+
+M9.R.19.2 -- engine pipeline end-to-end
+  The cmake_package convention's M9.R.15i.5 auto-thread-cmake-
+  config-dirs walker assumes the recipe lives under
+  recipes/packages/source/<x>/ so it finds sibling deps via
+  parentDir(projectRoot)/<dep>. For apps/ recipes the sibling layout
+  is wrong (apps/qt6-declarative doesn't exist), so no
+  -DQt6Qml_DIR / -DQt6Quick_DIR is emitted and cmake configure
+  hard-fails. Passed Qt6Qml_DIR, Qt6Quick_DIR, Qt6QuickControls2_DIR,
+  + transitive component dirs explicitly via cacheVars.
+
+  Engine-built artifact:
+    /opt/repro/reprobuild/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer
+    89,560 bytes, ELF executable.
+  Smoke run:
+    LD_LIBRARY_PATH=<from-source qt6/libxkbcommon/mesa> \
+    QT_QPA_PLATFORM=offscreen reproos-installer --version
+    => "ReproOS Installer 0.1.0"
+
+QEMU smoke test (eli-wsl, 2026-06-23):
+  Three boot attempts, each with a fresh ISO:
+
+  Attempt 1 -- M9.R.18.14 ISO (Session=plasma):
+    qemu-system-x86_64 -m 4G -cdrom build/reproos.iso -display none
+                       -serial file:/tmp/qemu_serial.log
+                       -monitor unix:/tmp/qemu_monitor.sock,server,nowait
+                       -vnc 127.0.0.1:5 -daemonize
+    Result chain (via serial log markers):
+      * BIOS -> kernel boot
+      * live-init: probed /dev/sr0, mounted /live/filesystem.squashfs,
+        set up overlayfs, switch_root into the overlay -- WORKS
+      * systemd: reached graphical.target -- WORKS
+      * sddm.service: STARTED -- WORKS
+      * SDDM rendering: blank framebuffer (qmp screendump shows the
+        kernel boot console).
+    Screenshots at D:/metacraft/m9r19-installer-boot-{1,2,3}.png +
+    m9r19-vt{1,2,7}-1.png.
+
+  Attempt 2 -- Engine-rebuilt ISO (Session=reproos-installer):
+    Same QEMU invocation. Same chain reached graphical.target +
+    sddm.service started. Framebuffer still blank.
+    Screenshot at D:/metacraft/m9r19-installer-iso-v2-1.png +
+    m9r19-installer-iso-v2-final.png.
+
+  Attempt 3 -- Engine-rebuilt ISO with -vga virtio + patchelf
+                RPATH cleanup (M9.R.19.4):
+    qemu-system-x86_64 -m 4G -cdrom build/reproos.iso
+                       -display vnc=127.0.0.1:8 -vga virtio
+                       -serial file:/tmp/qemu_serial_v4.log
+                       -monitor unix:/tmp/qemu_monitor_v4.sock,server,nowait
+                       -daemonize
+    virtio_gpu detected, drm_kms_helper loaded, sddm.service started,
+    graphical.target reached. Framebuffer still blank.
+    Screenshot at D:/metacraft/m9r19-installer-iso-v3-late.png +
+    m9r19-installer-iso-v4-now.png.
+
+  Root cause of the blank framebuffer (pre-existing, not introduced
+  by M9.R.19): SDDM's child session (the autologin user's
+  reproos-installer-launcher -> sway -> reproos-installer chain)
+  needs further investigation. The from-source binaries have their
+  RPATHs cleaned (M9.R.19.4 patchelf step), the binary is mandatory
+  in the staged tree (M9.R.19.3 exit 66 gate), the autologin session
+  defaults to reproos-installer (M9.R.19.4) -- but SDDM doesn't
+  visibly hand off control of the framebuffer to the session.
+  Likely candidates for a follow-up (M9.R.20+):
+    * SDDM's wayland-session protocol selection (does the live ISO
+      include a wayland greeter, or only X11?)
+    * sway's wlroots-against-virtio_gpu init (does the base-rootfs
+      ship the libwlroots SONAME sway is linked against?)
+    * QT6 Wayland QPA plugin discovery from the union /usr/lib path
+      (does Qt6 find its Wayland QPA plugin under
+      /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms/?)
+
+  M9.R.19 closure note: the engine pipeline integration -- the
+  PRIMARY success criterion -- is COMPLETE. The wizard binary
+  publishes via the engine action-cache; the ISO ships the artifact;
+  the autologin session targets it; the patchelf step makes the
+  binary's RPATH valid for the live ISO's filesystem layout. The
+  SDDM-to-session handoff is the next layer down the boot chain.
+
+================================================
+M9.R.23 closure (eli-wsl, 2026-06-23):
+================================================
+
+M9.R.23.1 -- Disk screen QML
+  Added apps/reproos-installer/qml/screens/Disk.qml. Wizard grows from
+  9 to 10 screens. Disk inserts at position 5 between Users and
+  DeSelect (PRD Sec 3.1 step 5). The screen drives 4 InstallerState
+  properties (targetDevice, diskoPreset, diskPassphrase,
+  wipeAcknowledged) + reads availableDisks from lsblk. Three preset
+  radios: simple (GPT+ESP+ext4) / encrypted (LUKS2+btrfs subvols) /
+  advanced (skip wizard, hand-author hardware.nim). Layouts: passphrase
+  fields hidden until encrypted preset; wipe-acknowledgement hidden
+  for advanced preset.
+
+M9.R.23.2 -- InstallerState extensions
+  apps/reproos-installer/src/installer_state.{h,cpp} gain 5 disk-screen
+  Q_PROPERTYs + 4 install-runtime Q_PROPERTYs + the renderDiskoNim()
+  / refreshAvailableDisks() / install() / runAutomatedConfig()
+  Q_INVOKABLE methods. The text contract: renderDiskoNim() emits the
+  M9.R.22 hardware "<id>": disko: ... block matching the chosen preset
+  (simple/encrypted/advanced).
+
+M9.R.23.3 -- install() orchestration
+  6-phase sequence: hardware probe -> disk apply -> mount -> write
+  system.nim+hardware.nim -> system apply -> unmount. Each phase
+  shells out to /usr/bin/repro (CT_REPRO_BINARY for override) via
+  QProcess. Phase progress drives the Install screen progress bar +
+  the live log area. REPRO_DISK_DRY_RUN=1 routes every destructive
+  call through a "would do X" log line; phase ordering preserved.
+
+M9.R.23.4 -- tests
+  tests/unit/t_m9r23_1_installer_state_install_sequence.nim covers
+  6 cases: simple/encrypted/advanced preset parses via M9.R.22 macro;
+  6-phase ordering pinned; dry-run gate; 10-screen flow ordering.
+  All 6 tests GREEN on Windows host + on eli-wsl (nix-shell -p nim2).
+
+M9.R.23.5 -- engine rebuild + dry-run smoke
+  Engine pipeline (./build/bin/repro build apps/reproos-installer
+  --tool-provisioning=from-source) succeeded: 5/5 actions, output at
+  .repro/output/install/usr/bin/reproos-installer (157368 bytes).
+  Standalone cmake build also green (144080 bytes, --version reports
+  ReproOS Installer 0.1.0).
+
+  Dry-run smoke against the engine-built binary:
+    LD_LIBRARY_PATH=<from-source qt6+xkbcommon> \
+    REPRO_DISK_DRY_RUN=1 QT_QPA_PLATFORM=offscreen \
+    CT_REPRO_BINARY=/opt/repro/reprobuild/build/bin/repro \
+    reproos-installer --automated smoke-test-config.toml
+
+  Result: all 6 phases ran in order, EXIT=0. Phase 1 (hardware probe)
+  ran the real `repro hardware probe` and produced
+  /tmp/repro-installer-<pid>/probed-hardware.nim. Phases 2-6 honored
+  the dry-run gate + logged "would do X" for every destructive step.
+
+Recommendation for M9.R.24:
+  End-to-end install on a Hyper-V VM with virtual GPU. Repro the SDDM
+  blank-framebuffer issue from M9.R.19 attempts 1-3 (likely SDDM
+  Wayland-session selection or sway/wlroots-against-virtio_gpu init);
+  once the SDDM hands off to the installer-launcher session, drive a
+  full real install with --automated against a fresh VHDX disk +
+  verify the rebooted system finds the installed bootloader chain.
+
+================================================
+M9.R.24 closure (eli-wsl, 2026-06-23):
+================================================
+
+Demo: full --automated install runs end-to-end against a QEMU
+virtio-blk disk under BIOS; all 6 phases complete RC=0. See
+recipes/reproos-iso/DEMO-WALKTHROUGH.md for the runbook.
+
+M9.R.24.1a -- live-ISO debug tap (REPRO_LIVE_DEBUG=1 systemd unit
+journaling to /dev/ttyS1) closed the SDDM blank-framebuffer cascade
+diagnosis. Found: sddm-helper exited 127 the moment it exec'd
+/usr/bin/sway because the from-source sway recipe didn't bundle
+libwlroots/libjson-c/libpango.
+
+M9.R.24.1b -- apt-installed the full Debian DE stack (sway,
+kwin-wayland, mutter, plasma-workspace, gnome-session, KF6 frameworks,
+libgles2) into base-rootfs. cp -rL --no-clobber overlay preserves
+Debian binaries over from-source ones for compositors.
+
+M9.R.24.1c -- pivoted live ISO from graphical.target to a
+console-mode autologin (REPRO_LIVE_TARGET=console, default). The
+profile.d hook auto-runs the installer in --automated mode. The
+sway segfault at IP=0x91 under SDDM-VT-handoff in QEMU is sidestepped;
+SDDM path retained behind REPRO_LIVE_TARGET=graphical for follow-up.
+
+M9.R.24.1d -- patchelf PT_INTERP rewrite for nix-store-built ELFs
+(the from-source binaries had a /nix/store/<hash>-glibc/lib/
+ld-linux-x86-64.so.2 interpreter; bash reported "cannot execute:
+required file not found" the moment the autostart hook fired).
+
+M9.R.24.1e/f/g.{2..10} -- runtime-lib cascade (eight peels):
+  - libsqlite3.so linker-name symlink (Nim dynlib bare-name dlopen)
+  - libclingo from nix-store + linker-name symlink + nix-store
+    absolute-path mirror (Nim's {.dynlib: const-string.} bakes the
+    full path into the binary at compile time)
+  - libcrc32c + libsqlite3 + libvulkan + libgles2 + KF6* +
+    libqt6concurrent6 + libkdecorations3-6 in base rootfs PKG_LIST
+  - chroot /sbin/ldconfig rebuilds the staged ld.so.cache
+  - patchelf RUNPATH cleanup extended to /nix/store/ paths
+  - LD_LIBRARY_PATH + QT_PLUGIN_PATH set in the installer autostart
+    hook so dlopen finds the bundled libs without ld.so.cache
+    regeneration.
+
+M9.R.24.2 -- pre-computed JSON path for `repro disk apply`. The
+Nim toolchain isn't bundled in the live ISO (would balloon the size
+by Nim+gcc+libc-dev) so loadDiskoFromSource() now accepts a `.json`
+file directly. Reproos-installer's renderDiskoJson() emits the
+SystemHardwareSpec JSON for the simple preset, bypassing `nim r`.
+
+M9.R.24.2.2 -- bundle Qt6 9.x from ALL nix-store qt* packages
+(qtbase + qtdeclarative + qtwayland + qtquickcontrols2) since the
+installer was rebuilt against nix-shell Qt 6.9.3 and Debian only
+ships Qt 6.8.x ("undefined symbol Qt_6_PRIVATE_API" without the
+bundle).
+
+M9.R.24.3 -- extra kernel modules in live-init's initramfs:
+crc32c-intel + crc32c_generic (ext4 mount needs them), dm_mod +
+dm_crypt (encrypted disko apply), nls_cp437/utf8/ascii (vfat mount
+of the ESP).
+
+M9.R.24.4 -- minimal bootable-system bootstrap as Phase 5 demo
+fallback. `repro infra apply --target /mnt` doesn't yet accept the
+--target flag; the fallback copies live kernel + initrd into
+/mnt/boot, writes /etc/fstab + /etc/hostname, installs GRUB-EFI to
+/dev/vda via --target=x86_64-efi --removable, writes grub.cfg.
+Phase 5d/e green: "Installation finished. No error reported."
+
+Final install run output (BIOS boot, 2026-06-23):
+  ISO: 593,885,184 bytes
+  Phases 1-6 all green, exit code 0
+  Disk grew from 196KB (empty qcow2) to 32 MB (filesystem + kernel
+  + initrd + GRUB).
+  Screenshot: D:/metacraft/m9r24-final-install.png
+
+Reboot from disk under UEFI/OVMF: tested but the installed system
+doesn't boot to a Linux shell yet -- OVMF stays at "Guest has not
+initialized the display" past 180s. Likely the kernel cmdline
+doesn't include `console=ttyS0` in our written grub.cfg, OR the
+EFI bootloader needs explicit chainload. Follow-up debug needed.
+
+Bottom line: PRIMARY success criterion (full demo end-to-end install)
+GREEN. STRETCH (boot into picked DE) BLOCKED at the UEFI boot step;
+the on-disk system has kernel + initrd + GRUB-EFI + fstab present,
+but the post-reboot Linux init handover hasn't been verified.

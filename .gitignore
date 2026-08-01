@@ -1,0 +1,7 @@
+.repro/
+build/
+**/.repro/
+**/build/
+**/run-evidence/
+result
+result-*

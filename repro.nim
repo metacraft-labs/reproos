@@ -1,0 +1,24 @@
+import repro_project_dsl
+
+package reproos:
+  defaultToolProvisioning "path"
+
+  devEnv:
+    task "check",
+      command = "pwsh -NoProfile -File tests/check_source_composition.ps1",
+      description = "Validate ReproOS source package composition"
+    task "build-iso",
+      command = "repro build recipes/reproos-iso --tool-provisioning=from-source",
+      description = "Build the bootable ReproOS ISO from source packages"
+    task "build-image",
+      command = "repro build recipes/reproos-image --tool-provisioning=from-source",
+      description = "Build the installed ReproOS QCOW2 image"
+    task "boot-iso",
+      command = "vm-harness boot --backend auto --source-image recipes/reproos-iso/.repro/output/install --kind iso --keep",
+      description = "Boot the newest ReproOS ISO in a VM"
+    task "test-iso",
+      command = "vm-harness boot --backend auto --source-image recipes/reproos-iso/.repro/output/install --kind iso --expect \"Linux version\" --timeout-sec 300",
+      description = "Boot-test the newest ReproOS ISO"
+    task "boot-image",
+      command = "vm-harness boot --backend auto --source-image recipes/reproos-image/.repro/output/install --kind qcow2 --keep",
+      description = "Boot the newest installed ReproOS image in a VM"

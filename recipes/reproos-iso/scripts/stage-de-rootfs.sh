@@ -189,6 +189,41 @@ fi
 export SOURCE_GLIBC_VERSION
 echo "[stage-de-rootfs] source glibc runtime: $SOURCE_GLIBC_RUNTIME_DIR"
 
+# GCC's stage-one host compiler carries a pinned bootstrap sysroot so it can
+# build the source glibc without depending on the target runtime. Repoint those
+# bootstrap links inside the image mirror to the completed source glibc. The
+# host package remains unchanged, while the bootable closure contains no Nix
+# glibc payload and the staged compiler remains usable.
+STAGED_GCC_PREFIX="$ISO_SRC_MIRROR_ROOT/gcc/.repro/output/install/usr"
+gcc_bootstrap_links_rewritten=0
+if [ -d "$STAGED_GCC_PREFIX" ]; then
+  while IFS= read -r bootstrap_link; do
+    bootstrap_target="$(readlink "$bootstrap_link")"
+    case "$bootstrap_link" in
+      */include/bootstrap-libc)
+        source_replacement="$SOURCE_GLIBC_INSTALL_ROOT/usr/include"
+        ;;
+      *)
+        bootstrap_name="$(basename "$bootstrap_target")"
+        source_replacement="$(find "$SOURCE_GLIBC_INSTALL_ROOT" \
+          \( -type f -o -type l \) -name "$bootstrap_name" \
+          -print -quit 2>/dev/null)"
+        ;;
+    esac
+    if [ -z "$source_replacement" ] || \
+       { [ ! -e "$source_replacement" ] && [ ! -L "$source_replacement" ]; }; then
+      echo "[stage-de-rootfs] source glibc replacement missing for GCC bootstrap link: $bootstrap_link -> $bootstrap_target" >&2
+      exit 75
+    fi
+    ln -sfn "${source_replacement#$STAGE_DIR}" "$bootstrap_link"
+    gcc_bootstrap_links_rewritten=$((gcc_bootstrap_links_rewritten + 1))
+  done < <(
+    find "$STAGED_GCC_PREFIX" -type l -lname '/nix/store/*glibc*' \
+      -print 2>/dev/null | sort
+  )
+fi
+echo "[stage-de-rootfs] repointed $gcc_bootstrap_links_rewritten GCC bootstrap links to source glibc"
+
 # ---------------------------------------------------------------------------
 # Phase 1b (M9.R.56.6): overlay every from-source recipe's ``etc/`` subtree
 # onto the stage's ``/etc/``.  Every from-source recipe was built with

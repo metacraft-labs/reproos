@@ -139,6 +139,7 @@ package reproosIso:
 
   uses:
     "sh"
+    "patchelf"
 
   buildDeps:
     "sway"

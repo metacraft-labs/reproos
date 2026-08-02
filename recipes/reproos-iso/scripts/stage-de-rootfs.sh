@@ -615,6 +615,7 @@ BASE_USERSPACE_RECIPES=(
   util-linux
   kmod
   dbus
+  pam
   sudo
   e2fsprogs
   btrfs-progs
@@ -706,6 +707,44 @@ link_base_recipe_binaries() {
       done
     done
   done
+  # systemd's module loader units use the historical /sbin/modprobe path.
+  # ReproOS uses merged /usr, so expose the source kmod dispatcher in
+  # /usr/sbin as well as the upstream /usr/bin installation.
+  if [ "$recipe" = "kmod" ]; then
+    local modprobe_src="$install_usr/bin/modprobe"
+    if [ ! -e "$modprobe_src" ]; then
+      echo "[stage-de-rootfs] required source modprobe binary missing" >&2
+      return 1
+    fi
+    local modprobe_target="${modprobe_src#$STAGE_DIR}"
+    mkdir -p "$STAGE_DIR/usr/sbin"
+    ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"
+  fi
+  # PAM resolves bare module names through fixed security directories, not
+  # through the dynamic linker's search path. Shadow each source-built module
+  # into the common upstream and Debian multiarch locations. pam_systemd is
+  # supplied separately by the systemd recipe and is intentionally preserved.
+  if [ "$recipe" = "pam" ]; then
+    local pam_modules="$install_usr/lib/security"
+    if [ ! -f "$pam_modules/pam_unix.so" ] || \
+       [ ! -f "$pam_modules/pam_nologin.so" ]; then
+      echo "[stage-de-rootfs] required source PAM modules missing" >&2
+      return 1
+    fi
+    local pam_security_dir
+    for pam_security_dir in usr/lib/security usr/lib64/security \
+      usr/lib/x86_64-linux-gnu/security; do
+      mkdir -p "$STAGE_DIR/$pam_security_dir"
+      local pam_module
+      for pam_module in "$pam_modules"/*; do
+        [ -e "$pam_module" ] || continue
+        local pam_module_name
+        pam_module_name="$(basename "$pam_module")"
+        ln -sfn "${pam_module#$STAGE_DIR}" \
+          "$STAGE_DIR/$pam_security_dir/$pam_module_name"
+      done
+    done
+  fi
   # Upstream installs the whole suite under SBINDIR, while Debian exposes
   # the unprivileged socket-inspection command as /usr/bin/ss.
   if [ "$recipe" = "iproute2" ]; then
@@ -1868,6 +1907,61 @@ echo "[stage-de-rootfs] normalizing source-only runtime closure"
 bash "$SCRIPT_DIR_SELF/normalize-source-runtime.sh" \
   "$STAGE_DIR" "$ISO_SRC_MIRROR_ROOT" "$SOURCE_GLIBC_LOADER" \
   "$STAGE_DIR/usr/bin/reproos-installer" "$STAGE_DIR/usr/bin/repro"
+
+# Resolve source-mirror symlinks as image paths, never as host paths. A normal
+# host-side `find -L` can incorrectly accept a dangling image link when the
+# same absolute build path happens to exist on the build machine.
+resolve_staged_image_path() {
+  local image_path="$1"
+  local hop=0
+  case "$image_path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  while [ "$hop" -lt 40 ]; do
+    local staged_path="$STAGE_DIR$image_path"
+    if [ -L "$staged_path" ]; then
+      local target
+      target="$(readlink "$staged_path")"
+      case "$target" in
+        /*) image_path="$target" ;;
+        *) image_path="$(realpath -ms "$(dirname "$image_path")/$target")" ;;
+      esac
+      hop=$((hop + 1))
+      continue
+    fi
+    [ -e "$staged_path" ] && return 0
+    echo "[stage-de-rootfs] dangling image symlink target: $image_path" >&2
+    return 1
+  done
+  echo "[stage-de-rootfs] image symlink chain exceeds 40 hops: $image_path" >&2
+  return 1
+}
+
+source_symlinks_checked=0
+source_symlink_failure=0
+while IFS= read -r -d '' staged_link; do
+  link_target="$(readlink "$staged_link")"
+  case "$staged_link" in
+    "$ISO_SRC_MIRROR_ROOT"/*) ;;
+    *)
+      case "$link_target" in
+        "$SRC_RECIPES_ROOT"/*) ;;
+        *) continue ;;
+      esac
+      ;;
+  esac
+  image_link="${staged_link#$STAGE_DIR}"
+  if ! resolve_staged_image_path "$image_link"; then
+    echo "[stage-de-rootfs] unresolved source symlink: $image_link -> $link_target" >&2
+    source_symlink_failure=1
+  fi
+  source_symlinks_checked=$((source_symlinks_checked + 1))
+done < <(find "$STAGE_DIR" -type l -print0)
+if [ "$source_symlink_failure" -ne 0 ]; then
+  exit 75
+fi
+echo "[stage-de-rootfs] resolved $source_symlinks_checked source image symlinks"
 
 for bootstrap_store in "$STAGE_DIR/nix" "$STAGE_DIR/repro/store"; do
   [ -e "$bootstrap_store" ] || continue

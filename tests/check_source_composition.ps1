@@ -54,5 +54,17 @@ foreach ($path in $activeSources) {
     }
 }
 
-Write-Host "Validated $($isoDependencies.Count) source packages in both bootable targets."
+$stageSource = Get-Content -LiteralPath $activeSources[2] -Raw
+foreach ($requiredRuntimeSurface in @(
+    'ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"',
+    'usr/lib/x86_64-linux-gnu/security',
+    'resolve_staged_image_path "$image_link"')) {
+    if (-not $stageSource.Contains($requiredRuntimeSurface)) {
+        throw "ISO staging is missing runtime surface: $requiredRuntimeSurface"
+    }
+}
+if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  pam$.*?^\)') {
+    throw 'Source PAM is not part of the base userspace staging set.'
+}
 
+Write-Host "Validated $($isoDependencies.Count) source packages in both bootable targets."

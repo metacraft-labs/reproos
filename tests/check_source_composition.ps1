@@ -58,6 +58,9 @@ $stageSource = Get-Content -LiteralPath $activeSources[2] -Raw
 foreach ($requiredRuntimeSurface in @(
     'ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"',
     'usr/lib/x86_64-linux-gnu/security',
+    'REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source',
+    'rewrote $rewritten_source_links build-root source links',
+    'required source D-Bus configuration missing',
     '"$ISO_SRC_MIRROR_ROOT"/*) continue',
     'resolve_staged_image_path "$image_link"')) {
     if (-not $stageSource.Contains($requiredRuntimeSurface)) {

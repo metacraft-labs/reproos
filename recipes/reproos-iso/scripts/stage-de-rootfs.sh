@@ -92,10 +92,10 @@ if [ "$REPRO_BASE_ROOTFS_DISABLE" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 1: mirror every built from-source install-mirror onto the ISO
-# at the same absolute path the build-host has them under.  Preserves
-# every embedded RPATH M9.R.14f bakes into the ELFs verbatim — no
-# patchelf rewriting, no path translation.
+# Phase 1: mirror every built from-source install-mirror onto the ISO at a
+# stable runtime path. The build may run below a private home directory, which
+# system services cannot traverse and systemd sandboxing may hide entirely.
+# normalize-source-runtime.sh rewrites every ELF to this image-owned path.
 # ---------------------------------------------------------------------------
 
 SRC_RECIPES_ROOT="${REPRO_FROM_SOURCE_ROOT:-$REPROBUILD_PACKAGES_ROOT/packages/source}"
@@ -114,12 +114,19 @@ source_recipe_selected() {
   esac
 }
 
-# The from-source mirror prefix on the ISO is the SAME absolute path
-# the recipes use on the build host.  Without this fidelity, every
-# embedded RPATH like
-#   /opt/repro/reprobuild-packages/packages/source/wlroots/.repro/...
-# fails to resolve and ldd reports 'not found'.
-ISO_SRC_MIRROR_ROOT="$STAGE_DIR$SRC_RECIPES_ROOT"
+# Keep the source catalog location independent from the image runtime path.
+# This makes images built from /root, /home, or a CI checkout identical and
+# keeps the closure visible to DynamicUser/User= services and ProtectHome=
+# sandboxes.
+RUNTIME_SRC_RECIPES_ROOT="${REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source}"
+case "$RUNTIME_SRC_RECIPES_ROOT" in
+  /*) ;;
+  *)
+    echo "[stage-de-rootfs] runtime source root must be absolute: $RUNTIME_SRC_RECIPES_ROOT" >&2
+    exit 64
+    ;;
+esac
+ISO_SRC_MIRROR_ROOT="$STAGE_DIR$RUNTIME_SRC_RECIPES_ROOT"
 mkdir -p "$ISO_SRC_MIRROR_ROOT"
 
 staged_recipes=0
@@ -146,6 +153,22 @@ for recipe_dir in "$SRC_RECIPES_ROOT"/*; do
   staged_recipes=$((staged_recipes + 1))
 done
 echo "[stage-de-rootfs] staged $staged_recipes from-source install-mirrors"
+
+# Source install trees occasionally contain absolute sibling links. Translate
+# links rooted in the build catalog so they remain inside the stable image
+# catalog after the copy. Other absolute links are audited after normalization.
+rewritten_source_links=0
+while IFS= read -r source_link; do
+  source_target="$(readlink "$source_link")"
+  case "$source_target" in
+    "$SRC_RECIPES_ROOT"/*)
+      runtime_target="$RUNTIME_SRC_RECIPES_ROOT${source_target#$SRC_RECIPES_ROOT}"
+      ln -sfn "$runtime_target" "$source_link"
+      rewritten_source_links=$((rewritten_source_links + 1))
+      ;;
+  esac
+done < <(find "$ISO_SRC_MIRROR_ROOT" -type l -print 2>/dev/null | sort)
+echo "[stage-de-rootfs] rewrote $rewritten_source_links build-root source links"
 
 # Source-built packages use the ABI supplied by the glibc source
 # recipe. Record its final rootfs path before computing the bootstrap closure:
@@ -744,6 +767,19 @@ link_base_recipe_binaries() {
           "$STAGE_DIR/$pam_security_dir/$pam_module_name"
       done
     done
+  fi
+  # D-Bus 1.16 installs its daemon configuration below datadir. The daemon's
+  # compiled default is /usr/share/dbus-1/system.conf, so expose the source
+  # files at that FHS path alongside service policy fragments.
+  if [ "$recipe" = "dbus" ]; then
+    local dbus_data="$install_usr/share/dbus-1"
+    if [ ! -f "$dbus_data/system.conf" ] || \
+       [ ! -f "$dbus_data/session.conf" ]; then
+      echo "[stage-de-rootfs] required source D-Bus configuration missing" >&2
+      return 1
+    fi
+    mkdir -p "$STAGE_DIR/usr/share/dbus-1"
+    cp -an "$dbus_data"/. "$STAGE_DIR/usr/share/dbus-1/"
   fi
   # Upstream installs the whole suite under SBINDIR, while Debian exposes
   # the unprivileged socket-inspection command as /usr/bin/ss.

@@ -72,4 +72,15 @@ if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  pam$.*?^\)') {
     throw 'Source PAM is not part of the base userspace staging set.'
 }
 
+$normalizerSource = Get-Content -LiteralPath (
+    Join-Path $root 'recipes/reproos-iso/scripts/normalize-source-runtime.sh') -Raw
+foreach ($requiredNormalizerSurface in @(
+    'stage_path_is_executable',
+    'staged_path="$stage_dir$link_target"',
+    'if ! stage_path_is_executable "$target"')) {
+    if (-not $normalizerSource.Contains($requiredNormalizerSurface)) {
+        throw "Source runtime normalization is missing: $requiredNormalizerSurface"
+    }
+}
+
 Write-Host "Validated $($isoDependencies.Count) source packages in both bootable targets."

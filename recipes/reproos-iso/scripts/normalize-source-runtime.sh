@@ -82,6 +82,26 @@ is_elf() {
   [ "$magic" = $'\177ELF' ]
 }
 
+stage_path_is_executable() {
+  local runtime_path="$1"
+  local staged_path="$stage_dir$runtime_path"
+  local link_target=""
+  local hop
+
+  for hop in $(seq 1 40); do
+    if [ -x "$staged_path" ]; then
+      return 0
+    fi
+    [ -L "$staged_path" ] || return 1
+    link_target="$(readlink "$staged_path")"
+    case "$link_target" in
+      /*) staged_path="$stage_dir$link_target" ;;
+      *) staged_path="$(dirname "$staged_path")/$link_target" ;;
+    esac
+  done
+  return 1
+}
+
 plan_runtime_shebangs() {
   local plan_file="$1"
   local error_file="$2"
@@ -117,7 +137,7 @@ plan_runtime_shebangs() {
         continue
         ;;
     esac
-    if [ ! -x "$stage_dir$target" ]; then
+    if ! stage_path_is_executable "$target"; then
       printf 'missing-shebang-interpreter:%s\t%s\n' \
         "$target" "$runtime_path" >> "$error_file"
       continue

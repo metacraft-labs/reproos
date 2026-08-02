@@ -58,6 +58,7 @@ $stageSource = Get-Content -LiteralPath $activeSources[2] -Raw
 foreach ($requiredRuntimeSurface in @(
     'ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"',
     'usr/lib/x86_64-linux-gnu/security',
+    '"$ISO_SRC_MIRROR_ROOT"/*) continue',
     'resolve_staged_image_path "$image_link"')) {
     if (-not $stageSource.Contains($requiredRuntimeSurface)) {
         throw "ISO staging is missing runtime surface: $requiredRuntimeSurface"

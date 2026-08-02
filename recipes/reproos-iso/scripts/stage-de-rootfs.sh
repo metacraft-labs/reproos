@@ -1943,13 +1943,15 @@ source_symlink_failure=0
 while IFS= read -r -d '' staged_link; do
   link_target="$(readlink "$staged_link")"
   case "$staged_link" in
-    "$ISO_SRC_MIRROR_ROOT"/*) ;;
-    *)
-      case "$link_target" in
-        "$SRC_RECIPES_ROOT"/*) ;;
-        *) continue ;;
-      esac
-      ;;
+    # The install mirrors intentionally retain development-only links such as
+    # kernel `build`, libtool archives, and unversioned linker names. Audit the
+    # source-backed links exposed through the image filesystem; resolving one
+    # of those links still follows every subsequent hop inside the mirror.
+    "$ISO_SRC_MIRROR_ROOT"/*) continue ;;
+  esac
+  case "$link_target" in
+    "$SRC_RECIPES_ROOT"/*) ;;
+    *) continue ;;
   esac
   image_link="${staged_link#$STAGE_DIR}"
   if ! resolve_staged_image_path "$image_link"; then

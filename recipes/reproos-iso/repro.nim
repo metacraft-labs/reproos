@@ -315,7 +315,7 @@ package reproosIso:
                  # cleanup succeeds without sudo.
                  "if [ -d build/de-rootfs ]; then chmod -R u+w build/de-rootfs 2>/dev/null || true; fi; " &
                  "rm -rf build/de-rootfs && mkdir -p build/de-rootfs build; " &
-                 "bash scripts/stage-de-rootfs.sh build/de-rootfs; " &
+                 "REPRO_LIVE_TARGET=graphical bash scripts/stage-de-rootfs.sh build/de-rootfs; " &
                  "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC " &
                  "REPRO_DE_ROOTFS_DIR=\"$PWD/build/de-rootfs\" " &
                  "REPRO_GRUB_VARIANT=multi-de " &

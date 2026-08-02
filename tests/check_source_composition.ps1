@@ -32,7 +32,8 @@ if ($isoSource -match 'vendor/(vmlinuz|initrd)') {
 foreach ($required in @(
     'reprobuild-packages/packages/source/kernel',
     'reproos-initramfs.img',
-    'REPRO_BUSYBOX_INSTALL_ROOT')) {
+    'REPRO_BUSYBOX_INSTALL_ROOT',
+    'REPRO_LIVE_TARGET=graphical')) {
     if (-not $isoSource.Contains($required)) {
         throw "ISO recipe is missing source-build input: $required"
     }

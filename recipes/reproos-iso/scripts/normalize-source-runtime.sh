@@ -27,7 +27,7 @@ if [ -z "$patchelf_bin" ]; then
 fi
 
 source_glibc_loader_staged="$stage_dir$source_glibc_loader"
-source_glibc_dir="$(dirname "$source_glibc_loader")"
+source_glibc_dir="${source_glibc_loader%/*}"
 if [ ! -x "$source_glibc_loader_staged" ] || \
    [ ! -e "$stage_dir$source_glibc_dir/libc.so.6" ]; then
   echo "[normalize-source-runtime] incomplete source glibc: $source_glibc_dir" >&2
@@ -45,7 +45,7 @@ declare -A source_provider=()
 declare -A provider_conflicts=()
 
 while IFS= read -r -d '' library; do
-  name="$(basename "$library")"
+  name="${library##*/}"
   runtime_path="${library#$stage_dir}"
   if [ -z "${source_provider[$name]:-}" ]; then
     source_provider["$name"]="$runtime_path"
@@ -96,7 +96,7 @@ stage_path_is_executable() {
     link_target="$(readlink "$staged_path")"
     case "$link_target" in
       /*) staged_path="$stage_dir$link_target" ;;
-      *) staged_path="$(dirname "$staged_path")/$link_target" ;;
+      *) staged_path="${staged_path%/*}/$link_target" ;;
     esac
   done
   return 1
@@ -274,10 +274,10 @@ while IFS= read -r elf; do
           shopt -s nullglob
           for library in "$host_path"/*.so*; do
             [ -f "$library" ] || [ -L "$library" ] || continue
-            name="$(basename "$library")"
+            name="${library##*/}"
             provider="${source_provider[$name]:-}"
             [ -n "$provider" ] || continue
-            add_rpath "$(dirname "$provider")"
+            add_rpath "${provider%/*}"
             mapped=1
           done
           shopt -u nullglob
@@ -303,7 +303,7 @@ while IFS= read -r elf; do
       echo "[normalize-source-runtime] provider disappeared for $needed" >&2
       exit 75
     fi
-    add_rpath "$(dirname "$provider")"
+    add_rpath "${provider%/*}"
   done < <("$patchelf_bin" --print-needed "$elf" 2>/dev/null || true)
 
   chmod u+w "$elf" 2>/dev/null || true

@@ -806,6 +806,18 @@ link_base_recipe_binaries() {
     mkdir -p "$STAGE_DIR/usr/sbin"
     ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"
   fi
+  # BusyBox installs one multicall binary. Expose the hostname applet that
+  # the live environment and acceptance tooling expect as a normal command.
+  if [ "$recipe" = "busybox" ]; then
+    local busybox_src="$install_usr/bin/busybox"
+    if [ ! -x "$busybox_src" ] || \
+       ! "$busybox_src" --list | grep -qx hostname; then
+      echo "[stage-de-rootfs] required source BusyBox hostname applet missing" >&2
+      return 1
+    fi
+    local busybox_target="${busybox_src#$STAGE_DIR}"
+    ln -sfn "$busybox_target" "$STAGE_DIR/usr/bin/hostname"
+  fi
   # PAM resolves bare module names through fixed security directories, not
   # through the dynamic linker's search path. Shadow each source-built module
   # into the common upstream and Debian multiarch locations. pam_systemd is

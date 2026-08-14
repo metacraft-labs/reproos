@@ -58,6 +58,8 @@ foreach ($path in $activeSources) {
 $stageSource = Get-Content -LiteralPath $activeSources[2] -Raw
 foreach ($requiredRuntimeSurface in @(
     'ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"',
+    'ln -sfn "$busybox_target" "$STAGE_DIR/usr/bin/hostname"',
+    'required source BusyBox hostname applet missing',
     'usr/lib/x86_64-linux-gnu/security',
     'REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source',
     'rewrote $rewritten_source_links build-root source links',

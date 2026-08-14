@@ -128,6 +128,12 @@ if (-not $baseRootfsSource.Contains('chown -R 1000:1002 "$ROOTFS_DIR/home/live"'
     throw 'Live user home ownership is not staged.'
 }
 
+$buildIsoSource = Get-Content -LiteralPath (
+    Join-Path $root 'recipes/reproos-iso/scripts/build-iso.sh') -Raw
+if (-not $buildIsoSource.Contains('-p "home/live m 0700 1000 1002"')) {
+    throw 'Live user home ownership is not encoded in the SquashFS image.'
+}
+
 $installerQml = Get-Content -LiteralPath (
     Join-Path $root 'apps/reproos-installer/qml/main.qml') -Raw
 if (-not $installerQml.Contains(

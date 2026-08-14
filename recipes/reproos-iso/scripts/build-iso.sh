@@ -150,8 +150,11 @@ if [ -n "$REPRO_DE_ROOTFS_DIR" ]; then
   # flags. -no-xattrs drops xattr noise; -comp xz -Xbcj x86 is the
   # same xz-with-x86-BCJ variant Debian Live uses, producing the
   # smallest reproducible output; -noappend prevents appending to a
-  # stale image.
+  # stale image. Reprobuild's directory materialization intentionally does
+  # not preserve host ownership, so encode the live user's home ownership in
+  # the SquashFS metadata instead of relying on the staging-tree uid/gid.
   mksquashfs "$REPRO_DE_ROOTFS_DIR" "$WORK/live/filesystem.squashfs" \
+    -p "home/live m 0700 1000 1002" \
     -no-xattrs \
     -comp xz -Xbcj x86 \
     -noappend \

@@ -62,6 +62,8 @@ foreach ($requiredRuntimeSurface in @(
     'REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source',
     'rewrote $rewritten_source_links build-root source links',
     'required source D-Bus configuration missing',
+    'resolve_staged_image_path "/sbin/ldconfig"',
+    '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
     '"$ISO_SRC_MIRROR_ROOT"/*) continue',
     'resolve_staged_image_path "$image_link"')) {
     if (-not $stageSource.Contains($requiredRuntimeSurface)) {
@@ -70,6 +72,12 @@ foreach ($requiredRuntimeSurface in @(
 }
 if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  pam$.*?^\)') {
     throw 'Source PAM is not part of the base userspace staging set.'
+}
+if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  kbd$.*?^\)') {
+    throw 'Source kbd is not part of the base userspace staging set.'
+}
+if (-not $stageSource.Contains('required source loadkeys binary missing')) {
+    throw 'Source kbd runtime validation is missing.'
 }
 
 $normalizerSource = Get-Content -LiteralPath (

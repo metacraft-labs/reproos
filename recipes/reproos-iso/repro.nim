@@ -45,6 +45,7 @@ const reproosIsoRootfsDeps = @[
   "iputils",
   "nano",
   "iproute2",
+  "kbd",
   "xkeyboard-config",
   "libxkbfile",
   "xkbcomp",
@@ -171,6 +172,7 @@ package reproosIso:
     "iputils"
     "nano"
     "iproute2"
+    "kbd"
     "xkeyboard-config"
     "libxkbfile"
     "xkbcomp"

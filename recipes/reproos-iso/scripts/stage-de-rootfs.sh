@@ -660,6 +660,7 @@ BASE_USERSPACE_RECIPES=(
   iputils
   nano
   iproute2
+  kbd
   xkeyboard-config
   libxkbfile
   xkbcomp
@@ -792,6 +793,23 @@ link_base_recipe_binaries() {
     local ss_link_target="${ss_src#$STAGE_DIR}"
     mkdir -p "$STAGE_DIR/usr/bin"
     ln -sf "$ss_link_target" "$STAGE_DIR/usr/bin/ss"
+  fi
+  # loadkeys needs the source-built keymap database at its conventional path.
+  if [ "$recipe" = "kbd" ]; then
+    local loadkeys_src="$install_usr/bin/loadkeys"
+    local keymaps_src="$install_usr/share/keymaps"
+    if [ ! -x "$loadkeys_src" ]; then
+      echo "[stage-de-rootfs] required source loadkeys binary missing" >&2
+      return 1
+    fi
+    if [ ! -f "$keymaps_src/i386/qwerty/us.map" ]; then
+      echo "[stage-de-rootfs] required source console keymap data missing" >&2
+      return 1
+    fi
+    local keymaps_link_target="${keymaps_src#$STAGE_DIR}"
+    mkdir -p "$STAGE_DIR/usr/share"
+    rm -rf "$STAGE_DIR/usr/share/keymaps"
+    ln -sf "$keymaps_link_target" "$STAGE_DIR/usr/share/keymaps"
   fi
   if [ "$recipe" = "xkbcomp" ]; then
     local xkbcomp_src="$install_usr/bin/xkbcomp"
@@ -2046,7 +2064,17 @@ mkdir -p "$STAGE_DIR/etc/ld.so.conf.d"
 } > "$STAGE_DIR/etc/ld.so.conf.d/zz-reproos-overlay.conf"
 
 chroot_ldconfig="$STAGE_DIR/sbin/ldconfig"
-if [ -x "$chroot_ldconfig" ]; then
+source_ldconfig=""
+for candidate in \
+  "$ISO_SRC_MIRROR_ROOT/glibc/.repro/output/install/usr/sbin/ldconfig" \
+  "$ISO_SRC_MIRROR_ROOT/glibc/.repro/output/install/sbin/ldconfig"; do
+  if [ -x "$candidate" ]; then
+    source_ldconfig="$candidate"
+    break
+  fi
+done
+if resolve_staged_image_path "/sbin/ldconfig" >/dev/null && \
+   [ -n "$source_ldconfig" ]; then
   # M9.R.37.3 — ``chroot $STAGE_DIR /sbin/ldconfig`` requires root
   # privilege (Linux's mount-namespace barrier).  The engine runs the
   # ISO build as the invoking user, NOT root, so the chroot syscall
@@ -2070,7 +2098,11 @@ if [ -x "$chroot_ldconfig" ]; then
   # debootstrap + Arch's pacstrap both use.
   ldconfig_log="$STAGE_DIR/tmp/reproos-ldconfig.log"
   mkdir -p "$(dirname "$ldconfig_log")"
-  if ! "$chroot_ldconfig" -r "$STAGE_DIR" >"$ldconfig_log" 2>&1; then
+  # Run through the staged source loader so image-owned /opt RPATHs never
+  # resolve against the build host while retaining ldconfig's unprivileged -r.
+  if ! "$STAGE_DIR$SOURCE_GLIBC_LOADER" \
+      --library-path "$STAGE_DIR$SOURCE_GLIBC_RUNTIME_DIR" \
+      "$source_ldconfig" -r "$STAGE_DIR" >"$ldconfig_log" 2>&1; then
     cat "$ldconfig_log" >&2
     rm -f "$ldconfig_log"
     echo "[stage-de-rootfs] source ldconfig failed" >&2

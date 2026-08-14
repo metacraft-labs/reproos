@@ -147,6 +147,7 @@ const reproosImageRootfsDeps = @[
   "iputils",
   "nano",
   "iproute2",
+  "kbd",
   "xkeyboard-config",
   "libxkbfile",
   "xkbcomp",
@@ -287,6 +288,7 @@ package reproosImage:
     "iputils"
     "nano"
     "iproute2"
+    "kbd"
     "xkeyboard-config"
     "libxkbfile"
     "xkbcomp"

@@ -209,6 +209,30 @@ if [ ! -x "$STAGE_DIR$SOURCE_GLIBC_LOADER" ] || \
   exit 67
 fi
 
+# Qt and the display manager require a real UTF-8 locale, not merely a LANG
+# value naming one. Generate it with the source-built glibc and upstream
+# locale data so the image does not inherit the build host's locale archive.
+SOURCE_GLIBC_LOCALEDEF="$SOURCE_GLIBC_INSTALL_ROOT/usr/bin/localedef"
+SOURCE_GLIBC_LOCALEDATA="$SRC_RECIPES_ROOT/glibc/src/localedata"
+if [ ! -x "$SOURCE_GLIBC_LOCALEDEF" ] || \
+   [ ! -f "$SOURCE_GLIBC_LOCALEDATA/locales/C" ] || \
+   [ ! -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" ]; then
+  echo "[stage-de-rootfs] required source glibc locale inputs missing" >&2
+  exit 67
+fi
+mkdir -p "$STAGE_DIR/usr/lib/locale"
+"$SOURCE_GLIBC_LOADER_STAGED" \
+  --library-path "$SOURCE_GLIBC_RUNTIME_DIR_STAGED" \
+  "$SOURCE_GLIBC_LOCALEDEF" \
+  --prefix="$STAGE_DIR" \
+  -i "$SOURCE_GLIBC_LOCALEDATA/locales/C" \
+  -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" \
+  C.UTF-8
+if [ ! -s "$STAGE_DIR/usr/lib/locale/locale-archive" ]; then
+  echo "[stage-de-rootfs] source glibc C.UTF-8 locale generation failed" >&2
+  exit 67
+fi
+
 export SOURCE_GLIBC_VERSION
 echo "[stage-de-rootfs] source glibc runtime: $SOURCE_GLIBC_RUNTIME_DIR"
 
@@ -558,6 +582,7 @@ link_entry() {
 # DE entry-points.  Each maps to one Wayland-session .desktop file
 # below.
 link_entry sway sway
+link_entry sway swaymsg
 link_entry kwin kwin_wayland
 link_entry kwin kwin_wayland_wrapper
 link_entry mutter mutter
@@ -569,6 +594,9 @@ if [ ! -f "$SDDM_INSTALL_ROOT/usr/lib/systemd/system/sddm.service" ] || \
    [ ! -f "$SDDM_INSTALL_ROOT/usr/lib/sysusers.d/sddm.conf" ] || \
    [ ! -f "$SDDM_INSTALL_ROOT/usr/lib/tmpfiles.d/sddm.conf" ] || \
    [ ! -f "$SDDM_INSTALL_ROOT/usr/share/dbus-1/system.d/org.freedesktop.DisplayManager.conf" ] || \
+   [ ! -x "$SDDM_INSTALL_ROOT/usr/libexec/sddm-helper" ] || \
+   [ ! -x "$SDDM_INSTALL_ROOT/usr/libexec/sddm-helper-start-wayland" ] || \
+   [ ! -x "$SDDM_INSTALL_ROOT/usr/libexec/sddm-helper-start-x11user" ] || \
    [ ! -x "$SDDM_INSTALL_ROOT/usr/share/sddm/scripts/wayland-session" ] || \
    [ ! -f "$SDDM_INSTALL_ROOT/etc/pam.d/sddm" ] || \
    [ ! -f "$SDDM_INSTALL_ROOT/etc/pam.d/sddm-autologin" ]; then
@@ -576,6 +604,7 @@ if [ ! -f "$SDDM_INSTALL_ROOT/usr/lib/systemd/system/sddm.service" ] || \
   exit 1
 fi
 mkdir -p "$STAGE_DIR/usr/lib/systemd/system" \
+  "$STAGE_DIR/usr/libexec" \
   "$STAGE_DIR/usr/lib/sysusers.d" \
   "$STAGE_DIR/usr/lib/tmpfiles.d" \
   "$STAGE_DIR/usr/share/dbus-1/system.d" \
@@ -589,6 +618,11 @@ cp "$SDDM_INSTALL_ROOT/usr/lib/tmpfiles.d/sddm.conf" \
   "$STAGE_DIR/usr/lib/tmpfiles.d/sddm.conf"
 cp "$SDDM_INSTALL_ROOT/usr/share/dbus-1/system.d/org.freedesktop.DisplayManager.conf" \
   "$STAGE_DIR/usr/share/dbus-1/system.d/org.freedesktop.DisplayManager.conf"
+for sddm_helper in sddm-helper sddm-helper-start-wayland \
+  sddm-helper-start-x11user; do
+  ln -sfn "${SDDM_INSTALL_ROOT#$STAGE_DIR}/usr/libexec/$sddm_helper" \
+    "$STAGE_DIR/usr/libexec/$sddm_helper"
+done
 cp -a "$SDDM_INSTALL_ROOT/usr/share/sddm/scripts" \
   "$STAGE_DIR/usr/share/sddm/scripts"
 cp "$SDDM_INSTALL_ROOT/etc/pam.d/sddm" "$STAGE_DIR/etc/pam.d/sddm"
@@ -596,6 +630,33 @@ cp "$SDDM_INSTALL_ROOT/etc/pam.d/sddm-autologin" \
   "$STAGE_DIR/etc/pam.d/sddm-autologin"
 cp "$SDDM_INSTALL_ROOT/etc/pam.d/sddm-greeter" \
   "$STAGE_DIR/etc/pam.d/sddm-greeter"
+# Upstream Linux-PAM does not implement Debian's @include extension used by
+# the packaged SDDM policy files. Keep the product policies explicit and use
+# PAM's portable `include` control syntax for the shared source-built stack.
+cat > "$STAGE_DIR/etc/pam.d/sddm" <<'EOF'
+#%PAM-1.0
+auth include common-auth
+account include common-account
+password include common-password
+session include common-session
+session optional pam_env.so
+EOF
+cat > "$STAGE_DIR/etc/pam.d/sddm-autologin" <<'EOF'
+#%PAM-1.0
+auth required pam_permit.so
+account required pam_permit.so
+password required pam_deny.so
+session include common-session
+session optional pam_env.so
+EOF
+cat > "$STAGE_DIR/etc/pam.d/sddm-greeter" <<'EOF'
+#%PAM-1.0
+auth required pam_permit.so
+account required pam_permit.so
+password required pam_deny.so
+session include common-session
+session optional pam_env.so
+EOF
 mkdir -p "$STAGE_DIR/etc/systemd/system/sddm.service.d"
 cat > "$STAGE_DIR/etc/systemd/system/sddm.service.d/reproos.conf" <<'EOF'
 [Unit]
@@ -603,6 +664,7 @@ After=seatd.service
 StartLimitIntervalSec=0
 
 [Service]
+Environment=LANG=C.UTF-8
 RestartSec=1s
 EOF
 link_entry plasma-workspace plasmashell
@@ -1069,6 +1131,10 @@ link_base_recipe_binaries() {
   fi
   if [ "$recipe" = "systemd" ]; then
     local systemd_lib="$install_usr/lib/systemd"
+    local systemd_dbus="$install_usr/share/dbus-1"
+    local systemd_pam="$install_usr/lib/pam.d"
+    local systemd_sysusers="$install_usr/lib/sysusers.d"
+    local systemd_tmpfiles="$install_usr/lib/tmpfiles.d"
     local udev_lib="$install_usr/lib/udev"
     local pam_systemd_src=""
     for pam_systemd_src in "$install_usr/lib64/security/pam_systemd.so" \
@@ -1077,6 +1143,11 @@ link_base_recipe_binaries() {
     done
     if [ ! -x "$install_usr/bin/udevadm" ] || \
        [ ! -e "$systemd_lib/systemd-udevd" ] || [ ! -d "$udev_lib/rules.d" ] || \
+       [ ! -f "$systemd_dbus/system-services/org.freedesktop.login1.service" ] || \
+       [ ! -f "$systemd_dbus/system.d/org.freedesktop.login1.conf" ] || \
+       [ ! -f "$systemd_pam/systemd-user" ] || \
+       [ ! -f "$systemd_sysusers/basic.conf" ] || \
+       [ ! -f "$systemd_tmpfiles/systemd.conf" ] || \
        [ ! -f "$pam_systemd_src" ]; then
       echo "[stage-de-rootfs] required source systemd udev surface missing" >&2
       return 1
@@ -1084,8 +1155,16 @@ link_base_recipe_binaries() {
 
     mkdir -p "$STAGE_DIR/usr/lib/systemd" "$STAGE_DIR/usr/lib/systemd/system" \
       "$STAGE_DIR/usr/lib/systemd/system/sysinit.target.wants" \
-      "$STAGE_DIR/usr/lib/systemd/system/sockets.target.wants" "$STAGE_DIR/usr/lib"
+      "$STAGE_DIR/usr/lib/systemd/system/sockets.target.wants" "$STAGE_DIR/usr/lib" \
+      "$STAGE_DIR/usr/share/dbus-1" "$STAGE_DIR/usr/lib/pam.d" \
+      "$STAGE_DIR/usr/lib/sysusers.d" "$STAGE_DIR/usr/lib/tmpfiles.d" \
+      "$STAGE_DIR/etc/pam.d"
     cp -a "$systemd_lib"/. "$STAGE_DIR/usr/lib/systemd/"
+    cp -an "$systemd_dbus"/. "$STAGE_DIR/usr/share/dbus-1/"
+    cp -a "$systemd_pam"/. "$STAGE_DIR/usr/lib/pam.d/"
+    cp -a "$systemd_sysusers"/. "$STAGE_DIR/usr/lib/sysusers.d/"
+    cp -a "$systemd_tmpfiles"/. "$STAGE_DIR/usr/lib/tmpfiles.d/"
+    cp "$systemd_pam/systemd-user" "$STAGE_DIR/etc/pam.d/systemd-user"
     ln -sfn "${systemd_lib#$STAGE_DIR}/systemd-udevd" \
       "$STAGE_DIR/usr/lib/systemd/systemd-udevd"
     rm -rf "$STAGE_DIR/usr/lib/udev"
@@ -1110,8 +1189,9 @@ link_base_recipe_binaries() {
       "$STAGE_DIR/usr/lib/systemd/system/sockets.target.wants/systemd-udevd-kernel.socket"
 
     local pam_systemd_target="${pam_systemd_src#$STAGE_DIR}"
-    mkdir -p "$STAGE_DIR/usr/lib64/security" \
+    mkdir -p "$STAGE_DIR/usr/lib/security" "$STAGE_DIR/usr/lib64/security" \
       "$STAGE_DIR/usr/lib/x86_64-linux-gnu/security"
+    ln -sfn "$pam_systemd_target" "$STAGE_DIR/usr/lib/security/pam_systemd.so"
     ln -sfn "$pam_systemd_target" "$STAGE_DIR/usr/lib64/security/pam_systemd.so"
     ln -sfn "$pam_systemd_target" \
       "$STAGE_DIR/usr/lib/x86_64-linux-gnu/security/pam_systemd.so"
@@ -1162,6 +1242,23 @@ mkdir -p "$STAGE_DIR/etc/ssl/certs" "$STAGE_DIR/etc/pki/tls"
 cp "$CA_CERTIFICATES_BUNDLE" "$STAGE_DIR/etc/ssl/certs/ca-certificates.crt"
 ln -sfn ../../ssl/certs/ca-certificates.crt "$STAGE_DIR/etc/pki/tls/cert.pem"
 
+# Mesa and fontconfig load data/plugins from conventional paths rather than
+# through ELF dependency resolution. Expose their source-built runtime trees.
+MESA_INSTALL_ROOT="$ISO_SRC_MIRROR_ROOT/mesa/.repro/output/install"
+FONTCONFIG_INSTALL_ROOT="$ISO_SRC_MIRROR_ROOT/fontconfig/.repro/output/install"
+if [ ! -f "$MESA_INSTALL_ROOT/usr/lib/dri/kms_swrast_dri.so" ] || \
+   [ ! -e "$MESA_INSTALL_ROOT/usr/lib/dri/virtio_gpu_dri.so" ] || \
+   [ ! -f "$FONTCONFIG_INSTALL_ROOT/usr/etc/fonts/fonts.conf" ]; then
+  echo "[stage-de-rootfs] required source graphics runtime data missing" >&2
+  exit 1
+fi
+mkdir -p "$STAGE_DIR/usr/lib" "$STAGE_DIR/usr/etc"
+ln -sfn "${MESA_INSTALL_ROOT#$STAGE_DIR}/usr/lib/dri" \
+  "$STAGE_DIR/usr/lib/dri"
+rm -rf "$STAGE_DIR/usr/etc/fonts"
+ln -s "${FONTCONFIG_INSTALL_ROOT#$STAGE_DIR}/usr/etc/fonts" \
+  "$STAGE_DIR/usr/etc/fonts"
+
 # Stage /etc/wayland-sessions/ session files for SDDM/GDM to enumerate.
 cat > "$STAGE_DIR/usr/share/wayland-sessions/sway.desktop" <<EOF
 [Desktop Entry]
@@ -1209,6 +1306,8 @@ cat > "$STAGE_DIR/usr/bin/reproos-installer-launcher" <<'EOF'
 
 set -eu
 
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 INSTALLER_BIN=/usr/bin/reproos-installer
 if [ ! -x "$INSTALLER_BIN" ]; then
   exec /usr/bin/startplasma-wayland
@@ -1221,13 +1320,15 @@ fi
 # kiosk launcher's child-process behavior explicit.
 _repro_source_dirs=""
 if [ ! -e /opt/repro/reprobuild-packages/packages/source/clingo/.repro/output/install/usr/lib/libclingo.so ] || \
-   [ ! -e /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib/libsqlite3.so ]; then
-  echo "required source clingo/sqlite runtime libraries missing" >&2
+   [ ! -e /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib/libsqlite3.so ] || \
+   [ ! -e /opt/repro/reprobuild-packages/packages/source/gcc/.repro/output/install/usr/lib64/libstdc++.so.6 ]; then
+  echo "required source clingo/sqlite/GCC runtime libraries missing" >&2
   exit 127
 fi
 for d in \
   /opt/repro/reprobuild-packages/packages/source/clingo/.repro/output/install/usr/lib \
-  /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib; do
+  /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib \
+  /opt/repro/reprobuild-packages/packages/source/gcc/.repro/output/install/usr/lib64; do
   [ -d "$d" ] || continue
   if ! ( set -- "$d"/*.so*; [ -e "$1" ] ); then
     continue
@@ -1247,6 +1348,12 @@ export LD_LIBRARY_PATH
 
 export QT_QPA_PLATFORM=wayland
 export QT_QUICK_CONTROLS_STYLE=Material
+export QT_QUICK_BACKEND=software
+export WLR_RENDERER=pixman
+export LANG=C.UTF-8
+export FONTCONFIG_PATH=/usr/etc/fonts
+export FONTCONFIG_FILE=fonts.conf
+export LIBGL_DRIVERS_PATH=/usr/lib/dri
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
   XDG_RUNTIME_DIR="/run/user/$(id -u)"
   export XDG_RUNTIME_DIR
@@ -1257,7 +1364,7 @@ fi
 SWAY_INIT=$(mktemp -t reproos-installer-sway-init-XXXXXX.sh)
 cat > "$SWAY_INIT" <<'INIT'
 #!/bin/sh
-/usr/bin/reproos-installer "$@"
+/usr/bin/reproos-installer-launcher.sh "$@"
 /usr/bin/swaymsg exit
 INIT
 chmod +x "$SWAY_INIT"
@@ -1453,6 +1560,8 @@ cat > "$STAGE_DIR/usr/bin/reproos-installer-launcher.sh" <<'EOF'
 #                              ``QT_QPA_PLATFORM=offscreen`` env var
 #                              the installer respects resolves the
 #                              ``libqoffscreen.so`` plugin.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 _repro_source_libs=""
 _repro_qt_plugins=""
 _repro_qml_imports=""
@@ -1489,10 +1598,12 @@ fi
 # This dramatically narrows LD_LIBRARY_PATH from ~600 entries to
 # a handful, slashing each dlopen()'s syscall cost from ~600 ENOENT
 # probes to ~5.
-# Source clingo and sqlite provide the two bare-name dlopen targets.
+# Source clingo and sqlite provide the two bare-name dlopen targets. Source
+# GCC provides libstdc++ and libgcc_s for clingo's transitive C++ runtime.
 for d in \
   /opt/repro/reprobuild-packages/packages/source/clingo/.repro/output/install/usr/lib \
-  /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib; do
+  /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib \
+  /opt/repro/reprobuild-packages/packages/source/gcc/.repro/output/install/usr/lib64; do
   [ -d "$d" ] || continue
   # M9.R.37.5: include ONLY dirs that ship a library the ``repro``
   # binary's Nim {.dynlib: "..."} pragma resolves by bare leaf name:
@@ -1501,7 +1612,8 @@ for d in \
   # plus any sqlite3 successor name (the bindings tries _64 / _32
   # variants on Windows only; libsqlite3.so covers POSIX).
   if [ -e "$d/libclingo.so" ] || [ -e "$d/libsqlite3.so" ] || \
-     [ -e "$d/libsqlite3.so.0" ]; then
+     [ -e "$d/libsqlite3.so.0" ] || [ -e "$d/libstdc++.so.6" ] || \
+     [ -e "$d/libgcc_s.so.1" ]; then
     if [ -z "$_repro_source_libs" ]; then
       _repro_source_libs="$d"
     else
@@ -1515,8 +1627,18 @@ done
 # /nix/store; without this Qt finds no plugins + falls back to system
 # Debian Qt6 (which doesn't exist in the live DE rootfs) + crashes on
 # QtQuick init.
-for repro_qt_pkg in qt6-base qt6-declarative qt6-quickcontrols2 qt6-tools; do
-  qtpkg_dir="/opt/repro/reprobuild-packages/packages/source/${repro_qt_pkg}/.repro/output/install/usr/lib"
+for repro_qt_pkg in qt6-base qt6-declarative qt6-quickcontrols2 qt6-wayland qt6-tools; do
+  qtpkg_prefix="/opt/repro/reprobuild-packages/packages/source/${repro_qt_pkg}/.repro/output/install/usr"
+  qtpkg_dir="${qtpkg_prefix}/lib"
+  if [ -d "${qtpkg_prefix}/plugins" ]; then
+    _repro_qt_plugins="${qtpkg_prefix}/plugins${_repro_qt_plugins:+:$_repro_qt_plugins}"
+    if [ -d "${qtpkg_prefix}/plugins/platforms" ]; then
+      _repro_qpa_plugins="${qtpkg_prefix}/plugins/platforms${_repro_qpa_plugins:+:$_repro_qpa_plugins}"
+    fi
+  fi
+  if [ -d "${qtpkg_prefix}/qml" ]; then
+    _repro_qml_imports="${qtpkg_prefix}/qml${_repro_qml_imports:+:$_repro_qml_imports}"
+  fi
   if [ -d "${qtpkg_dir}/qt-6/plugins" ]; then
     _repro_qt_plugins="${qtpkg_dir}/qt-6/plugins${_repro_qt_plugins:+:$_repro_qt_plugins}"
     if [ -d "${qtpkg_dir}/qt-6/plugins/platforms" ]; then
@@ -1793,7 +1915,8 @@ chmod 0755 "$STAGE_DIR/usr/bin/reproos-installer-launcher.sh"
 # Profile hook to auto-launch the installer on root login (tty1 only).
 cat > "$STAGE_DIR/etc/profile.d/zz-reproos-installer-autostart.sh" <<'EOF'
 # ReproOS live-ISO console-mode installer autostart.
-if [ "$(tty)" = "/dev/tty1" ] && [ -z "${REPRO_INSTALLER_RAN:-}" ]; then
+if [ "$(id -u)" -eq 0 ] && [ "$(tty)" = "/dev/tty1" ] && \
+   [ -z "${REPRO_INSTALLER_RAN:-}" ]; then
   export REPRO_INSTALLER_RAN=1
   AUTO_CFG=""
   for cand in /etc/reproos/auto-config.toml /run/reproos/auto-config.toml; do
@@ -1961,6 +2084,25 @@ echo "[stage-de-rootfs] normalizing source-only runtime closure"
 bash "$SCRIPT_DIR_SELF/normalize-source-runtime.sh" \
   "$STAGE_DIR" "$ISO_SRC_MIRROR_ROOT" "$SOURCE_GLIBC_LOADER" \
   "$STAGE_DIR/usr/bin/reproos-installer" "$STAGE_DIR/usr/bin/repro"
+
+# libclingo is loaded by name at runtime and therefore is not visible to the
+# normalizer's DT_NEEDED walk. Keep these source providers on repro's RUNPATH
+# so hardware probing also works when callers sanitize LD_LIBRARY_PATH.
+repro_runtime_rpath="$($patchelf_bin --print-rpath "$STAGE_DIR/usr/bin/repro")"
+for runtime_dir in \
+  /opt/repro/reprobuild-packages/packages/source/clingo/.repro/output/install/usr/lib \
+  /opt/repro/reprobuild-packages/packages/source/sqlite/.repro/output/install/usr/lib \
+  /opt/repro/reprobuild-packages/packages/source/gcc/.repro/output/install/usr/lib64; do
+  if [ ! -d "$STAGE_DIR$runtime_dir" ]; then
+    echo "[stage-de-rootfs] required source repro runtime library directory missing: $runtime_dir" >&2
+    exit 67
+  fi
+  case ":$repro_runtime_rpath:" in
+    *":$runtime_dir:"*) ;;
+    *) repro_runtime_rpath="${repro_runtime_rpath:+$repro_runtime_rpath:}$runtime_dir" ;;
+  esac
+done
+$patchelf_bin --set-rpath "$repro_runtime_rpath" "$STAGE_DIR/usr/bin/repro"
 
 # Resolve source-mirror symlinks as image paths, never as host paths. A normal
 # host-side `find -L` can incorrectly accept a dangling image link when the

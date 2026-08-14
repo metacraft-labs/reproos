@@ -177,7 +177,8 @@ package reproosInstaller:
         "Qt6QuickTemplates2_DIR=" & qtQc2 & "/Qt6QuickTemplates2",
       ]
       let pkg = cmake_package(srcDir = ".", generator = "Ninja",
-        cacheVars = opts, allowSourceWrites = true)
+        cacheVars = opts,
+        allowSourceWrites = true)
       discard pkg.executable("reproos-installer")
     finally:
       clearCurrentOwningPackageOverride()

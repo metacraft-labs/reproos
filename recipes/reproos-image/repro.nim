@@ -192,6 +192,7 @@ const reproosImageRootfsDeps = @[
   "readline",
   "libseccomp",
   "sqlite",
+  "clingo",
   "wayland",
   "wlroots",
   "libxcb",
@@ -219,6 +220,7 @@ const reproosImageRootfsDeps = @[
   "qt6-base",
   "qt6-declarative",
   "qt6-quickcontrols2",
+  "qt6-wayland",
   "adwaita-icon-theme",
   "dejavu-fonts",
   "xorg-server",
@@ -333,6 +335,7 @@ package reproosImage:
     "readline"
     "libseccomp"
     "sqlite"
+    "clingo"
     "wayland"
     "wlroots"
     "libxcb"
@@ -360,6 +363,7 @@ package reproosImage:
     "qt6-base"
     "qt6-declarative"
     "qt6-quickcontrols2"
+    "qt6-wayland"
     "adwaita-icon-theme"
     "dejavu-fonts"
     "xorg-server"

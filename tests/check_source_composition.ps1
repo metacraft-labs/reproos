@@ -62,6 +62,29 @@ foreach ($requiredRuntimeSurface in @(
     'REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source',
     'rewrote $rewritten_source_links build-root source links',
     'required source D-Bus configuration missing',
+    'org.freedesktop.login1.service',
+    'usr/lib/security/pam_systemd.so',
+    'usr/libexec/sddm-helper',
+    'auth required pam_permit.so',
+    'session include common-session',
+    'etc/pam.d/systemd-user',
+    'required source graphics runtime data missing',
+    'usr/lib/dri/virtio_gpu_dri.so',
+    'FONTCONFIG_PATH=/usr/etc/fonts',
+    'LIBGL_DRIVERS_PATH=/usr/lib/dri',
+    'export QT_QUICK_BACKEND=software',
+    'export WLR_RENDERER=pixman',
+    'qtpkg_prefix="/opt/repro/reprobuild-packages/packages/source/${repro_qt_pkg}/.repro/output/install/usr"',
+    '${qtpkg_prefix}/plugins/platforms',
+    'Environment=LANG=C.UTF-8',
+    'packages/source/gcc/.repro/output/install/usr/lib64',
+    'required source repro runtime library directory missing',
+    '--set-rpath "$repro_runtime_rpath" "$STAGE_DIR/usr/bin/repro"',
+    '/usr/bin/reproos-installer-launcher.sh "$@"',
+    'link_entry sway swaymsg',
+    'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    'if [ "$(id -u)" -eq 0 ] && [ "$(tty)" = "/dev/tty1" ]',
+    'source glibc C.UTF-8 locale generation failed',
     'resolve_staged_image_path "/sbin/ldconfig"',
     '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
     '"$ISO_SRC_MIRROR_ROOT"/*) continue',
@@ -75,6 +98,12 @@ if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  pam$.*?^\)') {
 }
 if ($stageSource -notmatch '(?ms)BASE_USERSPACE_RECIPES=\(.*?^  kbd$.*?^\)') {
     throw 'Source kbd is not part of the base userspace staging set.'
+}
+if ($isoDependencies -notcontains 'clingo') {
+    throw 'Source clingo is not part of the bootable package closure.'
+}
+if ($isoDependencies -notcontains 'qt6-wayland') {
+    throw 'Source qt6-wayland is not part of the bootable package closure.'
 }
 if (-not $stageSource.Contains('required source loadkeys binary missing')) {
     throw 'Source kbd runtime validation is missing.'
@@ -91,4 +120,16 @@ foreach ($requiredNormalizerSurface in @(
     }
 }
 
+$baseRootfsSource = Get-Content -LiteralPath (
+    Join-Path $root 'recipes/reproos-iso/scripts/build-base-rootfs.sh') -Raw
+if (-not $baseRootfsSource.Contains('chown -R 1000:1002 "$ROOTFS_DIR/home/live"')) {
+    throw 'Live user home ownership is not staged.'
+}
+
+$installerQml = Get-Content -LiteralPath (
+    Join-Path $root 'apps/reproos-installer/qml/main.qml') -Raw
+if (-not $installerQml.Contains(
+    'background: Rectangle { color: "#1a1a22" }')) {
+    throw 'Installer screen stack does not provide a readable dark background.'
+}
 Write-Host "Validated $($isoDependencies.Count) source packages in both bootable targets."

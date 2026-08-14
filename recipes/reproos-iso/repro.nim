@@ -90,6 +90,7 @@ const reproosIsoRootfsDeps = @[
   "readline",
   "libseccomp",
   "sqlite",
+  "clingo",
   "wayland",
   "wlroots",
   "libxcb",
@@ -117,6 +118,7 @@ const reproosIsoRootfsDeps = @[
   "qt6-base",
   "qt6-declarative",
   "qt6-quickcontrols2",
+  "qt6-wayland",
   "adwaita-icon-theme",
   "dejavu-fonts",
   "xorg-server",
@@ -217,6 +219,7 @@ package reproosIso:
     "readline"
     "libseccomp"
     "sqlite"
+    "clingo"
     "wayland"
     "wlroots"
     "libxcb"
@@ -244,6 +247,7 @@ package reproosIso:
     "qt6-base"
     "qt6-declarative"
     "qt6-quickcontrols2"
+    "qt6-wayland"
     "adwaita-icon-theme"
     "dejavu-fonts"
     "xorg-server"

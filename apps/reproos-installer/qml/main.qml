@@ -132,6 +132,7 @@ ApplicationWindow {
             id: stack
             Layout.fillWidth: true
             Layout.fillHeight: true
+            background: Rectangle { color: "#1a1a22" }
         }
 
         // Footer: Back / Next.

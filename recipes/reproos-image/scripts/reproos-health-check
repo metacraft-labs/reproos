@@ -31,7 +31,32 @@ for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
   fi
 done
 
-expected_hostname="$(sed -n 's/^hostname = "\([^"]*\)"/\1/p' /etc/repro/auto-config.toml 2>/dev/null | head -n1)"
+toml_string() {
+  local wanted_section="$1"
+  local wanted_key="$2"
+  local current_section=''
+  local line
+  local prefix
+  local value
+
+  prefix="$wanted_key = \""
+  while IFS= read -r line; do
+    if [[ "$line" == \[*\] ]]; then
+      current_section="${line#\[}"
+      current_section="${current_section%\]}"
+      continue
+    fi
+    if [[ "$current_section" == "$wanted_section" &&
+          "$line" == "$prefix"* && "$line" == *\" ]]; then
+      value="${line#"$prefix"}"
+      printf '%s\n' "${value%\"}"
+      return 0
+    fi
+  done < /etc/repro/auto-config.toml
+  return 1
+}
+
+expected_hostname="$(toml_string '' hostname || true)"
 actual_hostname="$(cat /etc/hostname 2>/dev/null || true)"
 if [[ -n "$expected_hostname" && "$actual_hostname" == "$expected_hostname" ]]; then
   pass "hostname:$actual_hostname"
@@ -39,8 +64,16 @@ else
   fail "hostname:expected=$expected_hostname:actual=$actual_hostname"
 fi
 
-expected_user="$(sed -n '/^\[user\]$/,/^\[/s/^name = "\([^"]*\)"/\1/p' /etc/repro/auto-config.toml 2>/dev/null | head -n1)"
-if [[ -n "$expected_user" ]] && grep -q "^${expected_user}:x:1000:1000:" /etc/passwd; then
+expected_user="$(toml_string user name || true)"
+user_record_found=0
+while IFS=: read -r account_name _ account_uid account_gid _; do
+  if [[ "$account_name" == "$expected_user" &&
+        "$account_uid" == 1000 && "$account_gid" == 1000 ]]; then
+    user_record_found=1
+    break
+  fi
+done < /etc/passwd
+if [[ -n "$expected_user" && "$user_record_found" == 1 ]]; then
   pass "user:$expected_user"
 else
   fail "user:$expected_user"

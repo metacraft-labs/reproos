@@ -7,7 +7,7 @@ const
     "welcome", "locale", "keyboard", "users", "disk", "deSelect",
     "activities", "summary", "install", "finished"
   ]
-  Sizes = ["wide", "compact"]
+  Sizes = ["wide", "vm", "compact"]
   MinimumSsim = 0.995
 
 proc fail(message: string) =
@@ -32,7 +32,11 @@ for view in Views:
     if not fileExists(golden):
       fail("missing golden installer frame: " & golden)
 
-    let expectedSize = if size == "wide": (1280, 800) else: (960, 720)
+    let expectedSize =
+      case size
+      of "wide": (1280, 800)
+      of "vm": (1024, 768)
+      else: (960, 720)
     let actualSize = probeImageSize(current)
     if actualSize != expectedSize:
       fail(&"unexpected dimensions for {filename}: " &

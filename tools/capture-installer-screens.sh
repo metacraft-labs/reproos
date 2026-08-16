@@ -14,7 +14,7 @@ usage() {
 usage: capture-installer-screens.sh [--view ID|all] [--size NAME|all]
                                     [--output DIR] [--no-build]
 
-Named sizes: wide (1280x800), compact (960x720)
+Named sizes: wide (1280x800), vm (1024x768), compact (960x720)
 Named views: welcome, locale, keyboard, users, disk, deSelect,
              activities, summary, install, finished
 EOF
@@ -32,7 +32,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 views=(welcome locale keyboard users disk deSelect activities summary install finished)
-sizes=(wide compact)
+sizes=(wide vm compact)
 
 contains() {
   local needle="$1"; shift
@@ -105,6 +105,7 @@ for current_view in "${views[@]}"; do
     [ "$size" = all ] || [ "$size" = "$current_size" ] || continue
     case "$current_size" in
       wide) dimensions=1280x800 ;;
+      vm) dimensions=1024x768 ;;
       compact) dimensions=960x720 ;;
     esac
     output="$output_root/${current_view}-${current_size}.png"

@@ -20,6 +20,8 @@
 #include <QtCore/QUrl>
 #include <QtCore/QDebug>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QFont>
+#include <QtGui/QFontDatabase>
 #include <QtGui/QImage>
 #include <QtQml/QQmlApplicationEngine>
 #include <QtQml/QQmlContext>
@@ -46,10 +48,24 @@ int main(int argc, char *argv[]) {
         }
     }
     std::unique_ptr<QCoreApplication> application;
-    if (coreOnly)
+    if (coreOnly) {
         application = std::make_unique<QCoreApplication>(argc, argv);
-    else
+    } else {
         application = std::make_unique<QGuiApplication>(argc, argv);
+        const QString fontFile = qEnvironmentVariable(
+            "REPROOS_INSTALLER_FONT_FILE",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+        QString fontFamily = QStringLiteral("DejaVu Sans");
+        const int fontId = QFontDatabase::addApplicationFont(fontFile);
+        if (fontId >= 0) {
+            const QStringList families = QFontDatabase::applicationFontFamilies(fontId);
+            if (!families.isEmpty())
+                fontFamily = families.first();
+        }
+        QFont applicationFont(fontFamily);
+        applicationFont.setStyleHint(QFont::SansSerif);
+        static_cast<QGuiApplication *>(application.get())->setFont(applicationFont);
+    }
 
     QCommandLineParser parser;
     parser.setApplicationDescription(

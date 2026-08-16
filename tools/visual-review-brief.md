@@ -14,8 +14,8 @@ kiosk session, so the wizard itself must provide all navigation and status.
   only for destructive warnings. Avoid a one-hue blue or purple appearance.
 - Dense enough for repeated technical use without looking like a dashboard.
 - Honest about available functionality; unavailable choices must not look live.
-- Keyboard-accessible controls, readable contrast, and stable layouts at both
-  1280x800 and 960x720.
+- Keyboard-accessible controls, readable contrast, and stable layouts at
+  1280x800, the Hyper-V console's 1024x768, and 960x720.
 - Cards are reserved for selectable repeated items. Sections and page content
   remain unframed.
 
@@ -104,7 +104,7 @@ before judging aesthetics. Any view missing a required element rates at most
 ## Regression Workflow
 
 Run `repro test-installer-visuals` after changing installer QML. The task
-recaptures all 20 view/size combinations and compares them with the reviewed
+recaptures all 30 view/size combinations and compares them with the reviewed
 goldens through GuiAssert. After completing a visual review, accept an intended
 change with `bash tests/test-installer-visuals.sh --update-goldens`, inspect the
 new complete set, and commit the QML and goldens together.

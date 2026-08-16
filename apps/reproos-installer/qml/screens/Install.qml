@@ -21,34 +21,54 @@ InstallerPage {
         }
     }
 
-    RowLayout {
+    ColumnLayout {
         Layout.fillWidth: true
-        spacing: 16
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 4
-            Label {
-                text: installerState.installStatus
-                color: Theme.text
-                font.pixelSize: 14
-                font.weight: Font.DemiBold
-            }
-            Label {
-                text: qsTr("Target: %1").arg(installerState.targetDevice)
-                color: Theme.muted
-                font.pixelSize: 11
-            }
+        spacing: 3
+        Label {
+            text: installerState.installStatus
+            color: Theme.text
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
         }
-        AppButton {
-            visible: installerState.installProgress < 1.0
-            danger: true
-            text: installerState.installRunning ? qsTr("Installing") : qsTr("Erase disk and install")
-            enabled: !installerState.installRunning
-            onClicked: installerState.install()
+        Label {
+            text: qsTr("Target: %1").arg(installerState.targetDevice)
+            color: Theme.muted
+            font.pixelSize: 11
+        }
+    }
+
+    Rectangle {
+        visible: installerState.installProgress <= 0
+        Layout.fillWidth: true
+        Layout.preferredHeight: 58
+        color: Theme.dangerSoft
+        radius: 6
+        border.width: 1
+        border.color: Theme.danger
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 14
+            anchors.rightMargin: 10
+            spacing: 14
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("This is the final confirmation. Existing data cannot be recovered.")
+                color: Theme.text
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            AppButton {
+                danger: true
+                text: qsTr("Erase disk and install")
+                onClicked: installerState.install()
+            }
         }
     }
 
     ProgressBar {
+        visible: installerState.installProgress > 0
+            || installerState.installRunning
         Layout.fillWidth: true
         value: installerState.installProgress
         indeterminate: installerState.installRunning
@@ -67,7 +87,7 @@ InstallerPage {
         }
         Label {
             text: qsTr("Live log")
-            color: Theme.subtle
+            color: Theme.muted
             font.pixelSize: 10
         }
     }

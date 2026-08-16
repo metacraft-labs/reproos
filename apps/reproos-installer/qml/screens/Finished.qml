@@ -60,14 +60,15 @@ InstallerPage {
         Label { text: qsTr("Replayable unattended-install input"); color: Theme.muted; font.pixelSize: 12 }
     }
 
-    Item { Layout.fillHeight: true }
-
     Label {
+        Layout.topMargin: 10
         Layout.fillWidth: true
         Layout.maximumWidth: 760
-        text: qsTr("After reboot, edit the configuration and run `repro infra apply` to create the next system generation.")
+        text: qsTr("After reboot, edit the configuration and run repro infra apply to create the next system generation.")
         color: Theme.muted
         font.pixelSize: 12
         wrapMode: Text.WordWrap
     }
+
+    Item { Layout.fillHeight: true }
 }

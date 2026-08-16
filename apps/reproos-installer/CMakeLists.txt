@@ -56,6 +56,7 @@ qt_add_resources(reproos-installer "qml-resources"
         qml/components/qmldir
         qml/components/Theme.qml
         qml/components/InstallerPage.qml
+        qml/components/IncludedSummary.qml
         qml/components/AppButton.qml
         qml/components/AppTextField.qml
         qml/components/AppComboBox.qml

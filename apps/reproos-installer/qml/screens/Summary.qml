@@ -9,20 +9,25 @@ InstallerPage {
     title: qsTr("Review the installation")
     description: qsTr("Confirm the destination and account before entering the destructive install stage.")
 
-    RowLayout {
+    GridLayout {
         Layout.fillWidth: true
-        spacing: 10
+        columns: 3
+        rowSpacing: 8
+        columnSpacing: 8
 
         Repeater {
             model: [
                 { label: qsTr("TARGET"), value: installerState.targetDevice.length > 0 ? installerState.targetDevice : qsTr("Not selected") },
                 { label: qsTr("ACCOUNT"), value: installerState.username },
-                { label: qsTr("DESKTOP"), value: "Sway" }
+                { label: qsTr("DESKTOP"), value: "Sway" },
+                { label: qsTr("LOCALE"), value: installerState.locale },
+                { label: qsTr("TIMEZONE"), value: installerState.timezone },
+                { label: qsTr("KEYBOARD"), value: installerState.keymap.toUpperCase() }
             ]
             delegate: Rectangle {
                 required property var modelData
                 Layout.fillWidth: true
-                Layout.preferredHeight: 62
+                Layout.preferredHeight: 54
                 radius: 6
                 color: Theme.surface
                 border.width: 1
@@ -48,6 +53,29 @@ InstallerPage {
                     }
                 }
             }
+        }
+    }
+
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 48
+        color: Theme.warningSoft
+        radius: 6
+        border.width: 1
+        border.color: Theme.warning
+
+        Label {
+            anchors.fill: parent
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            text: qsTr("All partitions and data on %1 will be permanently erased.")
+                .arg(installerState.targetDevice.length > 0
+                    ? installerState.targetDevice : qsTr("the selected disk"))
+            color: Theme.text
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+            verticalAlignment: Text.AlignVCenter
+            wrapMode: Text.WordWrap
         }
     }
 
@@ -80,6 +108,7 @@ InstallerPage {
             anchors.fill: parent
             anchors.margins: 10
             clip: true
+            ScrollBar.vertical.policy: ScrollBar.AlwaysOn
             TextArea {
                 id: previewArea
                 readOnly: true

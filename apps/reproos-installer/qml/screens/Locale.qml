@@ -7,16 +7,16 @@ import "../components"
 InstallerPage {
     eyebrow: qsTr("System identity")
     title: qsTr("Region and machine name")
-    description: qsTr("These settings are written to system.nim and activated consistently in the live session and installed system.")
+    description: qsTr("These settings configure the live environment and installed system, and remain editable in system.nim.")
 
     GridLayout {
         Layout.fillWidth: true
-        Layout.maximumWidth: 650
+        Layout.maximumWidth: 760
         columns: 2
         rowSpacing: 16
         columnSpacing: 24
 
-        Label { text: qsTr("System locale"); color: Theme.muted; font.pixelSize: 12 }
+        Label { Layout.preferredWidth: 130; text: qsTr("System locale"); color: Theme.muted; font.pixelSize: 12 }
         AppComboBox {
             id: localeCombo
             Layout.fillWidth: true
@@ -28,7 +28,7 @@ InstallerPage {
             onCurrentTextChanged: installerState.locale = currentText
         }
 
-        Label { text: qsTr("Timezone"); color: Theme.muted; font.pixelSize: 12 }
+        Label { Layout.preferredWidth: 130; text: qsTr("Timezone"); color: Theme.muted; font.pixelSize: 12 }
         AppComboBox {
             id: timezoneCombo
             Layout.fillWidth: true
@@ -40,7 +40,7 @@ InstallerPage {
             onCurrentTextChanged: installerState.timezone = currentText
         }
 
-        Label { text: qsTr("Machine name"); color: Theme.muted; font.pixelSize: 12 }
+        Label { Layout.preferredWidth: 130; text: qsTr("Machine name"); color: Theme.muted; font.pixelSize: 12 }
         AppTextField {
             Layout.fillWidth: true
             text: installerState.hostname
@@ -50,11 +50,11 @@ InstallerPage {
     }
 
     Label {
-        Layout.maximumWidth: 650
+        Layout.maximumWidth: 760
         Layout.fillWidth: true
         text: qsTr("The machine name identifies this installation in logs, shells, and local networking. Use lowercase letters, numbers, and hyphens.")
-        color: Theme.subtle
-        font.pixelSize: 11
+        color: Theme.muted
+        font.pixelSize: 12
         wrapMode: Text.WordWrap
     }
 

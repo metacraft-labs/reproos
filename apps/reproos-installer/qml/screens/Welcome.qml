@@ -85,7 +85,7 @@ InstallerPage {
 
     Rectangle {
         Layout.fillWidth: true
-        Layout.preferredHeight: 58
+        Layout.preferredHeight: 70
         radius: 6
         color: Theme.surface
         border.width: 1
@@ -106,7 +106,8 @@ InstallerPage {
                 text: qsTr("The installer produces system.nim, hardware.nim, and an unattended install configuration.")
                 color: Theme.muted
                 font.pixelSize: 12
-                elide: Text.ElideRight
+                lineHeight: 1.2
+                wrapMode: Text.WordWrap
             }
         }
     }

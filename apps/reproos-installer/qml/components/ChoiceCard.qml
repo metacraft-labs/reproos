@@ -10,13 +10,14 @@ Rectangle {
     property bool selected: false
     signal chosen()
 
-    implicitHeight: 92
+    implicitHeight: Math.max(92, contentRow.implicitHeight + 32)
     radius: 6
     color: selected ? Theme.accentSoft : Theme.surface
     border.width: selected ? 2 : 1
     border.color: selected ? Theme.accent : Theme.border
 
     RowLayout {
+        id: contentRow
         anchors.fill: parent
         anchors.margins: 16
         spacing: 14
@@ -50,6 +51,7 @@ Rectangle {
                     color: Theme.text
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
+                    elide: Text.ElideRight
                 }
                 Label {
                     visible: card.meta.length > 0

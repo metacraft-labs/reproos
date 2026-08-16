@@ -11,7 +11,7 @@ InstallerPage {
 
     RowLayout {
         Layout.fillWidth: true
-        Layout.maximumWidth: 650
+        Layout.maximumWidth: 760
         spacing: 24
         Label {
             Layout.preferredWidth: 130
@@ -69,8 +69,8 @@ InstallerPage {
         }
         Label {
             text: qsTr("Nothing typed here is saved.")
-            color: Theme.subtle
-            font.pixelSize: 11
+            color: Theme.muted
+            font.pixelSize: 12
         }
     }
 

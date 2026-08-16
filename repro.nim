@@ -10,6 +10,12 @@ package reproos:
     task "installer-screenshots",
       command = "bash tools/capture-installer-screens.sh",
       description = "Capture every installer screen at the visual-review sizes"
+    task "preview-installer",
+      command = "bash tools/run-installer-preview.sh",
+      description = "Launch the complete non-destructive installer desktop preview"
+    task "test-installer-preview",
+      command = "bash tests/test-installer-preview.sh",
+      description = "Verify the local preview renders and simulates installation"
     task "test-installer-visuals",
       command = "bash tests/test-installer-visuals.sh",
       description = "Capture all installer screens and compare GuiAssert goldens"

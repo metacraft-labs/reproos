@@ -8,13 +8,14 @@ Item {
     property string title
     property string description
     default property alias body: content.data
+    readonly property int horizontalInset: width < 820 ? 28 : 36
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.leftMargin: 36
-        anchors.rightMargin: 36
-        anchors.topMargin: 28
-        anchors.bottomMargin: 24
+        anchors.leftMargin: page.horizontalInset
+        anchors.rightMargin: page.horizontalInset
+        anchors.topMargin: width < 820 ? 24 : 28
+        anchors.bottomMargin: 20
         spacing: 0
 
         Label {
@@ -35,7 +36,7 @@ Item {
         }
 
         Label {
-            Layout.topMargin: 8
+            Layout.topMargin: 7
             Layout.fillWidth: true
             Layout.maximumWidth: 760
             text: page.description
@@ -49,8 +50,8 @@ Item {
             id: content
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.topMargin: 24
-            spacing: 14
+            Layout.topMargin: width < 820 ? 20 : 24
+            spacing: 12
         }
     }
 }

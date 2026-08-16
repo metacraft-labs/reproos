@@ -2,8 +2,6 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-installer_project="$repo_root/apps/reproos-installer"
-installer_bin="$installer_project/.repro/output/install/usr/bin/reproos-installer"
 output_root="$repo_root/build/visual-review/installer"
 view=all
 size=all
@@ -52,46 +50,13 @@ if [ "$size" != all ] && ! contains "$size" "${sizes[@]}"; then
   exit 2
 fi
 
+# shellcheck source=tools/installer-dev-runtime.sh
+source "$repo_root/tools/installer-dev-runtime.sh"
+reproos_installer_runtime_init "$repo_root"
 if [ "$no_build" -eq 0 ]; then
-  repro_bin="${REPRO_BIN:-repro}"
-  "$repro_bin" build "$installer_project" --tool-provisioning=from-source
+  reproos_build_installer
 fi
-if [ ! -x "$installer_bin" ]; then
-  echo "installer binary missing: $installer_bin" >&2
-  echo "run without --no-build or set REPRO_BIN" >&2
-  exit 3
-fi
-
-source_root="${REPRO_FROM_SOURCE_ROOT:-$repo_root/../reprobuild-packages/packages/source}"
-qt_plugin_path=""
-qml_import_path=""
-qpa_plugin_path=""
-for qt_package in qt6-base qt6-declarative qt6-quickcontrols2 qt6-wayland qt6-tools; do
-  prefix="$source_root/$qt_package/.repro/output/install/usr"
-  for plugins in "$prefix/plugins" "$prefix/lib/qt-6/plugins"; do
-    if [ -d "$plugins" ]; then
-      qt_plugin_path="$plugins${qt_plugin_path:+:$qt_plugin_path}"
-      if [ -d "$plugins/platforms" ]; then
-        qpa_plugin_path="$plugins/platforms${qpa_plugin_path:+:$qpa_plugin_path}"
-      fi
-    fi
-  done
-  for imports in "$prefix/qml" "$prefix/lib/qt-6/qml"; do
-    if [ -d "$imports" ]; then
-      qml_import_path="$imports${qml_import_path:+:$qml_import_path}"
-    fi
-  done
-done
-
-if [ -z "$qml_import_path" ] || [ -z "$qpa_plugin_path" ]; then
-  echo "source-built Qt QML or platform plugins are missing under $source_root" >&2
-  exit 3
-fi
-
-fontconfig_path="$source_root/fontconfig/.repro/output/install/usr/etc/fonts"
-if [ ! -d "$fontconfig_path" ]; then
-  fontconfig_path="/etc/fonts"
-fi
+reproos_require_installer
 
 if [ "$view" = all ] && [ "$size" = all ]; then
   rm -rf "$output_root"
@@ -111,12 +76,7 @@ for current_view in "${views[@]}"; do
     output="$output_root/${current_view}-${current_size}.png"
     QT_QPA_PLATFORM=offscreen \
     QT_QUICK_BACKEND=software \
-    QT_QUICK_CONTROLS_STYLE=Basic \
-    QT_PLUGIN_PATH="$qt_plugin_path" \
-    QT_QPA_PLATFORM_PLUGIN_PATH="$qpa_plugin_path" \
-    QML2_IMPORT_PATH="$qml_import_path" \
-    FONTCONFIG_PATH="$fontconfig_path" \
-      "$installer_bin" \
+      "$REPROOS_INSTALLER_BIN" \
         --visual-screen "$current_view" \
         --window-size "$dimensions" \
         --screenshot "$output"

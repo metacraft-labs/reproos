@@ -83,21 +83,17 @@ InstallerPage {
         Layout.topMargin: 4
     }
 
-    ChoiceCard {
+    IncludedSummary {
         Layout.fillWidth: true
-        Layout.preferredHeight: 82
         title: qsTr("UEFI + ext4")
         description: qsTr("512 MiB EFI System Partition and one ext4 root filesystem. This is the currently validated unattended-install layout.")
-        meta: qsTr("RECOMMENDED")
-        selected: true
-        onChosen: installerState.diskoPreset = "simple"
+        status: qsTr("VALIDATED")
     }
-
-    Item { Layout.fillHeight: true }
 
     Rectangle {
         Layout.fillWidth: true
-        Layout.preferredHeight: 72
+        Layout.preferredHeight: 76
+        Layout.topMargin: 8
         radius: 6
         color: Theme.warningSoft
         border.width: 1
@@ -133,6 +129,8 @@ InstallerPage {
             }
         }
     }
+
+    Item { Layout.fillHeight: true }
 
     Component.onCompleted: {
         installerState.diskoPreset = "simple";

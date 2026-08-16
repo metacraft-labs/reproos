@@ -767,6 +767,11 @@ bool InstallerState::runReproHardwareProbe(const QString &outputPath) {
     // `repro hardware probe --output <path> --regenerate` writes the
     // probed hardware.nim. The wizard later overlays the disko block on
     // top by composing the rendered text directly.
+    if (dryRunDestructive()) {
+        appendLog(QString("[dry-run] would probe hardware into %1")
+                  .arg(outputPath));
+        return true;
+    }
     QStringList args = {"hardware", "probe", "--output", outputPath,
                         "--regenerate"};
     return runReproSubcommand(args) == 0;

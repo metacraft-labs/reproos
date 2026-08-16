@@ -103,6 +103,10 @@ int main(int argc, char *argv[]) {
         "Capture the selected wizard screen to OUTPUT_PNG and exit. "
         "Use QT_QPA_PLATFORM=offscreen for unattended capture.",
         "output-png");
+    QCommandLineOption previewOpt(
+        "preview",
+        "Run the complete wizard as a non-destructive desktop preview. "
+        "Seeds representative fixture data and simulates install commands.");
     QCommandLineOption visualScreenOpt(
         "visual-screen",
         "Open a named wizard screen for deterministic visual review.",
@@ -119,13 +123,15 @@ int main(int argc, char *argv[]) {
     parser.addOption(configOpt);
     parser.addOption(emitArtifactsOpt);
     parser.addOption(screenshotOpt);
+    parser.addOption(previewOpt);
     parser.addOption(visualScreenOpt);
     parser.addOption(windowSizeOpt);
     parser.process(*application);
 
     InstallerState state;
     state.setActivitiesTomlPath(parser.value(activitiesOpt));
-    state.setDryRun(parser.isSet(dryRunOpt));
+    const bool previewMode = parser.isSet(previewOpt);
+    state.setDryRun(parser.isSet(dryRunOpt) || previewMode);
 
     if (parser.isSet(configOpt)) {
         QString configError;
@@ -149,7 +155,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    if (parser.isSet(screenshotOpt)) {
+    if (parser.isSet(screenshotOpt) || previewMode) {
         // Stable, non-destructive fixture data keeps every visual state
         // meaningful without probing the host or touching a disk.
         state.setHostname("repro-workstation");
@@ -180,6 +186,7 @@ int main(int argc, char *argv[]) {
         "startupScreenId", parser.value(visualScreenOpt));
     engine.rootContext()->setContextProperty(
         "visualCaptureMode", parser.isSet(screenshotOpt));
+    engine.rootContext()->setContextProperty("previewMode", previewMode);
 
     const QUrl url(QStringLiteral("qrc:/qml/main.qml"));
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
@@ -191,17 +198,17 @@ int main(int argc, char *argv[]) {
         }, Qt::QueuedConnection);
     engine.load(url);
 
-    if (parser.isSet(screenshotOpt)) {
-        if (engine.rootObjects().isEmpty()) {
-            qCritical() << "screenshot capture has no root window";
-            return 2;
-        }
-        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-        if (!window) {
-            qCritical() << "screenshot capture root is not a QQuickWindow";
-            return 2;
-        }
+    if (engine.rootObjects().isEmpty()) {
+        qCritical() << "installer has no root window";
+        return 2;
+    }
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!window) {
+        qCritical() << "installer root is not a QQuickWindow";
+        return 2;
+    }
 
+    if (parser.isSet(windowSizeOpt) || parser.isSet(screenshotOpt) || previewMode) {
         const QStringList dimensions = parser.value(windowSizeOpt).split('x');
         bool widthOk = false;
         bool heightOk = false;
@@ -215,7 +222,9 @@ int main(int argc, char *argv[]) {
         }
         window->setWidth(width);
         window->setHeight(height);
+    }
 
+    if (parser.isSet(screenshotOpt)) {
         const QString output = QFileInfo(
             parser.value(screenshotOpt)).absoluteFilePath();
         QDir().mkpath(QFileInfo(output).absolutePath());

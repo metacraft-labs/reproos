@@ -640,7 +640,7 @@ QString InstallerState::renderDiskoJson(const QString &id) const {
         s << ",\"pools\":[]";
         s << "}";
     }
-    s << "}";
+    s << "}\n";
     return out;
 }
 

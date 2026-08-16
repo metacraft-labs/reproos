@@ -108,3 +108,8 @@ recaptures all 30 view/size combinations and compares them with the reviewed
 goldens through GuiAssert. After completing a visual review, accept an intended
 change with `bash tests/test-installer-visuals.sh --update-goldens`, inspect the
 new complete set, and commit the QML and goldens together.
+
+For a booted Hyper-V integration check, open the VM in Virtual Machine
+Connection, capture it with `tools/capture-hyperv-vm.ps1`, then run
+`tests/test-installer-vm-frame.sh FRAME.png`. This verifies the real console
+contains the expected welcome controls through GuiAssert OCR.

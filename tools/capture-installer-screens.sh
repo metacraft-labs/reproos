@@ -62,6 +62,37 @@ if [ ! -x "$installer_bin" ]; then
   exit 3
 fi
 
+source_root="${REPRO_FROM_SOURCE_ROOT:-$repo_root/../reprobuild-packages/packages/source}"
+qt_plugin_path=""
+qml_import_path=""
+qpa_plugin_path=""
+for qt_package in qt6-base qt6-declarative qt6-quickcontrols2 qt6-wayland qt6-tools; do
+  prefix="$source_root/$qt_package/.repro/output/install/usr"
+  for plugins in "$prefix/plugins" "$prefix/lib/qt-6/plugins"; do
+    if [ -d "$plugins" ]; then
+      qt_plugin_path="$plugins${qt_plugin_path:+:$qt_plugin_path}"
+      if [ -d "$plugins/platforms" ]; then
+        qpa_plugin_path="$plugins/platforms${qpa_plugin_path:+:$qpa_plugin_path}"
+      fi
+    fi
+  done
+  for imports in "$prefix/qml" "$prefix/lib/qt-6/qml"; do
+    if [ -d "$imports" ]; then
+      qml_import_path="$imports${qml_import_path:+:$qml_import_path}"
+    fi
+  done
+done
+
+if [ -z "$qml_import_path" ] || [ -z "$qpa_plugin_path" ]; then
+  echo "source-built Qt QML or platform plugins are missing under $source_root" >&2
+  exit 3
+fi
+
+fontconfig_path="$source_root/fontconfig/.repro/output/install/usr/etc/fonts"
+if [ ! -d "$fontconfig_path" ]; then
+  fontconfig_path="/etc/fonts"
+fi
+
 if [ "$view" = all ] && [ "$size" = all ]; then
   rm -rf "$output_root"
 fi
@@ -80,6 +111,10 @@ for current_view in "${views[@]}"; do
     QT_QPA_PLATFORM=offscreen \
     QT_QUICK_BACKEND=software \
     QT_QUICK_CONTROLS_STYLE=Basic \
+    QT_PLUGIN_PATH="$qt_plugin_path" \
+    QT_QPA_PLATFORM_PLUGIN_PATH="$qpa_plugin_path" \
+    QML2_IMPORT_PATH="$qml_import_path" \
+    FONTCONFIG_PATH="$fontconfig_path" \
       "$installer_bin" \
         --visual-screen "$current_view" \
         --window-size "$dimensions" \

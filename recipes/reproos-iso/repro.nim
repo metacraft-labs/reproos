@@ -294,16 +294,11 @@ package reproosIso:
     # with ``No such file or directory``. Drop the prefix; paths are
     # already relative to the recipe dir.
     #
-    # M9.R.16.8 — multi-DE ISO variant. Stage the DE rootfs union
-    # (sway + mutter + kwin + sddm + plasma-workspace + gdm) before
-    # invoking grub-mkrescue; the build-iso.sh wraps it in a
+    # M9.R.16.8 — graphical ISO variant. Stage the source-built Sway +
+    # SDDM rootfs before invoking grub-mkrescue; build-iso.sh wraps it in a
     # deterministic SquashFS at /live/filesystem.squashfs. The GRUB
-    # variant is ``multi-de`` (four menu entries: Hyprland/GNOME/Plasma/
-    # Recovery) so the ISO advertises the DE choice at boot. The
-    # rootfs union depends on the from-source compositor recipes
-    # having been built first; missing recipes degrade gracefully
-    # (stage-de-rootfs.sh emits a warning + drops their binaries from
-    # the squashfs).
+    # variant retains its historical ``multi-de`` API name, but advertises
+    # only sessions that are actually present in the source closure.
     shell(
       command = ("set -euo pipefail; " &
                  "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$(cd ../../.. && pwd)/reprobuild-packages}\"; " &

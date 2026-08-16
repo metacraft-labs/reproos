@@ -179,11 +179,9 @@ fi
 #     one menuentry.
 #
 #   REPRO_GRUB_VARIANT=multi-de
-#     four menuentries (DEM1): Hyprland (default), GNOME, KDE Plasma,
-#     Recovery (no-DE). Each entry passes a different `repro.de=<name>`
-#     kernel cmdline parameter that repro-de-select.service consumes.
-#     REPRO_GRUB_DEFAULT picks the 0-based default entry index
-#     (default 0 = Hyprland).
+#     historical API name for the graphical source image. It exposes Sway,
+#     Sway with safe graphics, and Recovery. REPRO_GRUB_DEFAULT picks the
+#     0-based default entry index (default 0 = Sway).
 #
 # The variant is invoked by build-mvp-iso.sh stage 4k when
 # MVP_INCLUDE_MULTI_DE=1.
@@ -192,7 +190,7 @@ REPRO_GRUB_DEFAULT="${REPRO_GRUB_DEFAULT:-0}"
 REPRO_GRUB_TIMEOUT="${REPRO_GRUB_TIMEOUT:-0}"
 
 # M9.R.39.2 — when ``REPRO_INSTALLER_AUTORUN=1`` is set at build time,
-# the default Hyprland menu entry's cmdline gets
+# the default Sway menu entry's cmdline gets
 # ``repro.installer.autorun=1`` appended, which trips the
 # ``reproos-installer-autorun.service`` systemd unit
 # (stage-de-rootfs.sh Phase 5) on boot.  The unit runs the launcher in
@@ -223,11 +221,8 @@ menuentry 'ReproOS' {
 EOF
     ;;
   multi-de)
-    # DEM1: four menu entries, one per DE + recovery. Each linux line
-    # passes `repro.de=<name>` so /usr/local/sbin/repro-de-select.sh
-    # arranges the display-manager.service symlink before
-    # graphical.target. Default = Hyprland (index 0; smallest, validates
-    # fastest).
+    # Keep the historical variant name for recipe compatibility, but expose
+    # only the source-built Sway session that is present in this image.
     #
     # M9.R.18.2 -- real-hardware graphics coverage. Two extra entries:
     #   * "Safe graphics (nomodeset)" boots with nomodeset so the
@@ -245,23 +240,13 @@ serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
 terminal_input  serial console
 terminal_output serial console
 
-menuentry 'ReproOS -- Hyprland (default)' {
-  linux  /vmlinuz repro.de=hyprland i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text${REPRO_INSTALLER_AUTORUN_PARAM}
-  initrd /initrd.img
-}
-
-menuentry 'ReproOS -- GNOME' {
-  linux  /vmlinuz repro.de=gnome i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text
-  initrd /initrd.img
-}
-
-menuentry 'ReproOS -- KDE Plasma' {
-  linux  /vmlinuz repro.de=plasma i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text
+menuentry 'ReproOS -- Sway (default)' {
+  linux  /vmlinuz repro.de=sway i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text${REPRO_INSTALLER_AUTORUN_PARAM}
   initrd /initrd.img
 }
 
 menuentry 'ReproOS -- Safe graphics (nomodeset)' {
-  linux  /vmlinuz repro.de=plasma nomodeset console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text
+  linux  /vmlinuz repro.de=sway nomodeset console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text
   initrd /initrd.img
 }
 

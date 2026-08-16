@@ -7,6 +7,9 @@ package reproos:
     task "check",
       command = "pwsh -NoProfile -File tests/check_source_composition.ps1",
       description = "Validate ReproOS source package composition"
+    task "installer-screenshots",
+      command = "bash tools/capture-installer-screens.sh",
+      description = "Capture every installer screen at the visual-review sizes"
     task "build-iso",
       command = "repro build recipes/reproos-iso --tool-provisioning=from-source",
       description = "Build the bootable ReproOS ISO from source packages"

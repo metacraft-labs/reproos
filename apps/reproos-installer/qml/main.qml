@@ -76,7 +76,18 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: gotoScreenIndex(0)
+    Component.onCompleted: {
+        var requestedIndex = 0;
+        if (typeof startupScreenId !== "undefined" && startupScreenId.length > 0) {
+            for (var i = 0; i < screens.length; ++i) {
+                if (screens[i].id === startupScreenId) {
+                    requestedIndex = i;
+                    break;
+                }
+            }
+        }
+        gotoScreenIndex(requestedIndex);
+    }
 
     ColumnLayout {
         anchors.fill: parent

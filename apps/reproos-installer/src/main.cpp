@@ -13,12 +13,17 @@
 // that prefer pre-configured installs.
 
 #include <QtCore/QCommandLineParser>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/QDebug>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QImage>
 #include <QtQml/QQmlApplicationEngine>
 #include <QtQml/QQmlContext>
+#include <QtQuick/QQuickWindow>
 
 #include "installer_state.h"
 
@@ -53,14 +58,51 @@ int main(int argc, char *argv[]) {
         "parser (no nested tables). Smoke harness + first-boot kiosk "
         "use this path.",
         "config-toml");
+    QCommandLineOption screenshotOpt(
+        "screenshot",
+        "Capture the selected wizard screen to OUTPUT_PNG and exit. "
+        "Use QT_QPA_PLATFORM=offscreen for unattended capture.",
+        "output-png");
+    QCommandLineOption visualScreenOpt(
+        "visual-screen",
+        "Open a named wizard screen for deterministic visual review.",
+        "screen-id",
+        "welcome");
+    QCommandLineOption windowSizeOpt(
+        "window-size",
+        "Set the capture window size as WIDTHxHEIGHT.",
+        "size",
+        "1280x800");
     parser.addOption(activitiesOpt);
     parser.addOption(dryRunOpt);
     parser.addOption(automatedOpt);
+    parser.addOption(screenshotOpt);
+    parser.addOption(visualScreenOpt);
+    parser.addOption(windowSizeOpt);
     parser.process(app);
 
     InstallerState state;
     state.setActivitiesTomlPath(parser.value(activitiesOpt));
     state.setDryRun(parser.isSet(dryRunOpt));
+
+    if (parser.isSet(screenshotOpt)) {
+        // Stable, non-destructive fixture data keeps every visual state
+        // meaningful without probing the host or touching a disk.
+        state.setHostname("repro-workstation");
+        state.setUsername("repro");
+        state.setFullName("Repro User");
+        state.setPassword("visual-fixture");
+        state.setDesktopKind("sway");
+        state.setTargetDevice("/dev/vda");
+        state.setAvailableDisks({
+            "vda 64G VirtIO_System_Disk Red_Hat",
+            "sdb 16G ReproOS_Install_Media Metacraft"
+        });
+        state.setWipeAcknowledged(true);
+        state.setActiveActivities({
+            "daily-computing", "development", "system-tools"
+        });
+    }
 
     if (parser.isSet(automatedOpt)) {
         // Headless install path. main.cpp returns the install() exit
@@ -72,6 +114,10 @@ int main(int argc, char *argv[]) {
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("installerState", &state);
+    engine.rootContext()->setContextProperty(
+        "startupScreenId", parser.value(visualScreenOpt));
+    engine.rootContext()->setContextProperty(
+        "visualCaptureMode", parser.isSet(screenshotOpt));
 
     const QUrl url(QStringLiteral("qrc:/qml/main.qml"));
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
@@ -81,6 +127,46 @@ int main(int argc, char *argv[]) {
             }
         }, Qt::QueuedConnection);
     engine.load(url);
+
+    if (parser.isSet(screenshotOpt)) {
+        if (engine.rootObjects().isEmpty()) {
+            qCritical() << "screenshot capture has no root window";
+            return 2;
+        }
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        if (!window) {
+            qCritical() << "screenshot capture root is not a QQuickWindow";
+            return 2;
+        }
+
+        const QStringList dimensions = parser.value(windowSizeOpt).split('x');
+        bool widthOk = false;
+        bool heightOk = false;
+        const int width = dimensions.value(0).toInt(&widthOk);
+        const int height = dimensions.value(1).toInt(&heightOk);
+        if (dimensions.size() != 2 || !widthOk || !heightOk ||
+            width < 720 || height < 540) {
+            qCritical() << "invalid --window-size; expected WIDTHxHEIGHT with"
+                        << "minimum 720x540";
+            return 2;
+        }
+        window->setWidth(width);
+        window->setHeight(height);
+
+        const QString output = QFileInfo(
+            parser.value(screenshotOpt)).absoluteFilePath();
+        QDir().mkpath(QFileInfo(output).absolutePath());
+        QTimer::singleShot(700, &app, [window, output, &app]() {
+            const QImage image = window->grabWindow();
+            if (image.isNull() || !image.save(output, "PNG")) {
+                qCritical() << "failed to capture wizard screenshot" << output;
+                app.exit(3);
+                return;
+            }
+            qInfo().noquote() << "captured" << output << image.size();
+            app.exit(0);
+        });
+    }
 
     return app.exec();
 }

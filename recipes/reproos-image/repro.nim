@@ -484,6 +484,8 @@ package reproosImage:
         "../reproos-iso/scripts/relocate-nix-to-repro.sh",
         "../reproos-iso/scripts/normalize-source-runtime.sh",
         "../reproos-iso/scripts/build-base-rootfs.sh",
+        "../reproos-iso/scripts/build-initramfs.sh",
+        "../reproos-iso/initramfs/init-disk",
       ],
       extraOutputs = @[
         "build/reproos-installed.qcow2",

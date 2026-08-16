@@ -373,7 +373,9 @@ if [ ! -s "$SOURCE_KERNEL" ] || [ ! -x "$SOURCE_BUSYBOX" ]; then
 fi
 SOURCE_KERNEL_SHA256="$(sha256sum "$SOURCE_KERNEL" | awk '{print $1}')"
 SOURCE_BUSYBOX_SHA256="$(sha256sum "$SOURCE_BUSYBOX" | awk '{print $1}')"
-BOOT_INPUT_ID="$SOURCE_KERNEL_RELEASE-${SOURCE_KERNEL_SHA256:0:16}-${SOURCE_BUSYBOX_SHA256:0:16}"
+DISK_INIT_SOURCE="$REPO_ROOT/recipes/reproos-iso/initramfs/init-disk"
+DISK_INIT_SHA256="$(sha256sum "$DISK_INIT_SOURCE" | awk '{print $1}')"
+BOOT_INPUT_ID="$SOURCE_KERNEL_RELEASE-${SOURCE_KERNEL_SHA256:0:16}-${SOURCE_BUSYBOX_SHA256:0:16}-${DISK_INIT_SHA256:0:16}"
 # M9.R.51: generate a boot-from-disk initramfs (init-disk variant of
 # the live-init) instead of reusing the ISO's live-boot initrd (which
 # probes for /live/filesystem.squashfs and drops to rescue on an
@@ -588,19 +590,17 @@ echo "[build-reproos-image] repro infra install-root --target $MNT_DIR --source 
   --hostname "$HOSTNAME_VAL" \
   || { echo "[build-reproos-image] install-root failed" >&2; exit 70; }
 
-# M9.R.51: rewrite build-time NBD device paths to boot-time virtio
-# paths.  install-root's renderInstalledGrubCfg + renderFstab bake
+# M9.R.51: rewrite build-time NBD device paths to stable filesystem
+# labels. install-root's renderInstalledGrubCfg + renderFstab bake
 # $NBD_DEV (e.g. /dev/nbd0p2) into grub.cfg's root= and fstab's
-# device columns.  At boot, the disk appears as /dev/vda under
-# QEMU virtio.  Substitute NBD -> VDA post-render.  A future
-# milestone will move this into the render functions themselves
-# (parameterize via env or emit LABEL=/UUID= from mkfs.ext4 -L).
+# device columns. Device names differ between QEMU, Hyper-V, and
+# physical systems, while the filesystem labels are part of the
+# declared disk layout and remain stable.
 NBD_BASE="$(basename "$NBD_DEV")"       # e.g. nbd0
-BOOT_DEV_BASE="vda"
-echo "[build-reproos-image] rewriting $NBD_BASE -> $BOOT_DEV_BASE in grub.cfg + fstab"
+echo "[build-reproos-image] rewriting $NBD_BASE partitions to filesystem labels in grub.cfg + fstab"
 for f in "$MNT_DIR/boot/grub/grub.cfg" "$MNT_DIR/etc/fstab"; do
   if [ -f "$f" ]; then
-    "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p([0-9]+)|/dev/${BOOT_DEV_BASE}\\1|g; s|/dev/${NBD_BASE}|/dev/${BOOT_DEV_BASE}|g" "$f"
+    "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$f"
   fi
 done
 

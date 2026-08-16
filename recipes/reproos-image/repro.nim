@@ -84,6 +84,7 @@ const reproosImageRuntimeTools = @[
   "grub-mkconfig",
   # Tree-sync into the mount point.
   "rsync",
+  "patchelf",
   # Kernel module management for the nbd module load/unload.
   "modprobe",
   "rmmod",
@@ -246,7 +247,7 @@ package reproosImage:
 
   devEnv:
     task "boot-vm",
-      command = "vm-harness boot --backend auto --source-image .repro/output/install --kind qcow2 --keep",
+      command = "vm-harness boot --backend auto --source-image build/reproos-installed.qcow2 --kind qcow2 --keep",
       description = "Boot the newest built ReproOS image in a transient VM"
 
   uses:
@@ -407,6 +408,7 @@ package reproosImage:
     "grub-install"
     "grub-mkconfig"
     "rsync"
+    "patchelf"
     "modprobe"
     "rmmod"
     "lsmod"

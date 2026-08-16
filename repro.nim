@@ -26,5 +26,11 @@ package reproos:
       command = "vm-harness boot --backend auto --source-image recipes/reproos-iso/.repro/output/install --kind iso --expect \"Linux version\" --timeout-sec 300",
       description = "Boot-test the newest ReproOS ISO"
     task "boot-image",
-      command = "vm-harness boot --backend auto --source-image recipes/reproos-image/.repro/output/install --kind qcow2 --keep",
+      command = "vm-harness boot --backend auto --source-image recipes/reproos-image/build/reproos-installed.qcow2 --kind qcow2 --keep",
       description = "Boot the newest installed ReproOS image in a VM"
+    task "test-image-health",
+      command = "bash tests/test-installed-image-health.sh",
+      description = "Boot the installed image and require the health sentinel"
+    task "test-unattended-install",
+      command = "bash tests/test-unattended-install.sh",
+      description = "Replay installer config, build an image, and health-test it"

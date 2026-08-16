@@ -1,0 +1,108 @@
+#!/bin/bash
+set -u
+
+failures=0
+status_dir=/var/lib/reproos
+status_file="$status_dir/health-status"
+mkdir -p "$status_dir"
+: > "$status_file"
+
+emit() {
+  printf '%s\n' "$1" | tee -a "$status_file"
+  if [[ -w /dev/ttyS0 ]]; then
+    printf '%s\n' "$1" > /dev/ttyS0
+  fi
+}
+
+pass() {
+  emit "REPROOS_HEALTH:OK:$1"
+}
+
+fail() {
+  emit "REPROOS_HEALTH:FAIL:$1"
+  failures=$((failures + 1))
+}
+
+for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
+  if [[ -s "/etc/repro/$artifact" ]]; then
+    pass "artifact:$artifact"
+  else
+    fail "artifact:$artifact"
+  fi
+done
+
+expected_hostname="$(sed -n 's/^hostname = "\([^"]*\)"/\1/p' /etc/repro/auto-config.toml 2>/dev/null | head -n1)"
+actual_hostname="$(cat /etc/hostname 2>/dev/null || true)"
+if [[ -n "$expected_hostname" && "$actual_hostname" == "$expected_hostname" ]]; then
+  pass "hostname:$actual_hostname"
+else
+  fail "hostname:expected=$expected_hostname:actual=$actual_hostname"
+fi
+
+expected_user="$(sed -n '/^\[user\]$/,/^\[/s/^name = "\([^"]*\)"/\1/p' /etc/repro/auto-config.toml 2>/dev/null | head -n1)"
+if [[ -n "$expected_user" ]] && grep -q "^${expected_user}:x:1000:1000:" /etc/passwd; then
+  pass "user:$expected_user"
+else
+  fail "user:$expected_user"
+fi
+
+if touch "$status_dir/root-write-check" && rm -f "$status_dir/root-write-check"; then
+  pass "root-filesystem:writable"
+else
+  fail "root-filesystem:read-only"
+fi
+
+if systemctl is-active --quiet graphical.target; then
+  pass "target:graphical"
+else
+  fail "target:graphical"
+fi
+
+if systemctl is-active --quiet sddm.service; then
+  pass "service:sddm"
+else
+  fail "service:sddm"
+fi
+
+if systemctl is-active --quiet seatd.service; then
+  pass "service:seatd"
+else
+  fail "service:seatd"
+fi
+
+if [[ -s /usr/share/wayland-sessions/sway.desktop ]]; then
+  pass "session:sway-desktop-entry"
+else
+  fail "session:sway-desktop-entry"
+fi
+
+session_ready=0
+for _ in $(seq 1 90); do
+  if pgrep -x sway >/dev/null 2>&1; then
+    session_ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$session_ready" == 1 ]]; then
+  pass "session:sway-running"
+else
+  fail "session:sway-running"
+fi
+
+mapfile -t failed_units < <(
+  systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
+)
+if [[ ${#failed_units[@]} -eq 0 ]]; then
+  pass "systemd:no-failed-units"
+else
+  fail "systemd:failed-units=${failed_units[*]}"
+fi
+
+if [[ "$failures" -eq 0 ]]; then
+  emit "REPROOS_HEALTH:PASS"
+  exit 0
+fi
+
+emit "REPROOS_HEALTH:FAILED:$failures"
+exit 1

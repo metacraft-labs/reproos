@@ -220,8 +220,21 @@ trap cleanup EXIT
 
 # ---------------------------------------------------------------
 # TOML parsing.  Without a TOML library we use a small awk-based
-# extractor.  Schema is intentionally simple and validated below.
+# extractor for the already-normalized values. The installer owns
+# schema validation and emits the canonical bundle consumed below.
 # ---------------------------------------------------------------
+INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer}"
+if [ ! -x "$INSTALLER_BIN" ]; then
+  echo "[build-reproos-image] installer config emitter missing: $INSTALLER_BIN" >&2
+  exit 65
+fi
+CONFIG_BUNDLE_DIR="$WORK/configuration"
+rm -rf "$CONFIG_BUNDLE_DIR"
+echo "[build-reproos-image] validating config and emitting canonical artifacts"
+"$INSTALLER_BIN" --config "$REPRO_AUTO_CONFIG" \
+  --emit-artifacts "$CONFIG_BUNDLE_DIR" \
+  || { echo "[build-reproos-image] installer config validation failed" >&2; exit 66; }
+
 toml_get() {
   # toml_get <file> <section> <key>
   # Returns the value for [section] key on stdout, or empty if not
@@ -253,7 +266,7 @@ toml_get() {
   ' "$1"
 }
 
-CFG="$REPRO_AUTO_CONFIG"
+CFG="$CONFIG_BUNDLE_DIR/auto-config.toml"
 
 HOSTNAME_VAL="$(toml_get "$CFG" "" "hostname")"
 USER_NAME="$(toml_get "$CFG" "user" "name")"
@@ -591,10 +604,20 @@ done
 
 # ---------------------------------------------------------------
 # Phase 9: write etc/repro/{system,hardware}.nim from TOML.
-# Skipped for v1; install-root already wrote a baseline copy from
-# /etc/repro/ in the source tree.  Future M9.R.50.x will render
-# DSL-shaped system.nim from auto-config.toml.
+# The validated installer emitter is the single renderer for both
+# interactive and unattended paths. Copy the complete replay bundle
+# into the installed root after install-root has mirrored the stage.
 # ---------------------------------------------------------------
+echo "[build-reproos-image] Phase 9: install canonical configuration bundle"
+"$SUDO" mkdir -p "$MNT_DIR/etc/repro"
+for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
+  if [ ! -s "$CONFIG_BUNDLE_DIR/$artifact" ]; then
+    echo "[build-reproos-image] missing generated artifact: $artifact" >&2
+    exit 71
+  fi
+  "$SUDO" cp "$CONFIG_BUNDLE_DIR/$artifact" "$MNT_DIR/etc/repro/$artifact"
+  "$SUDO" chmod 0644 "$MNT_DIR/etc/repro/$artifact"
+done
 
 # ---------------------------------------------------------------
 # Phase 10: write /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow
@@ -1704,6 +1727,36 @@ SEATD_UNIT_EOF
   ln -sfn /etc/systemd/system/seatd.service \\
     '$MNT_DIR/etc/systemd/system/graphical.target.wants/seatd.service'
 " || { echo "[build-reproos-image] Phase 10.9 seatd install failed" >&2; exit 75; }
+
+# ---------------------------------------------------------------
+# Phase 10.10: install the post-boot acceptance check. Its serial
+# sentinel is the VM harness contract for an installed, graphical,
+# replayable system rather than merely a kernel-booted image.
+# ---------------------------------------------------------------
+echo "[build-reproos-image] Phase 10.10: install post-boot health gate"
+"$SUDO" bash -c "
+  set -euo pipefail
+  install -m 0755 '$SCRIPT_DIR_SELF/reproos-health-check' \
+    '$MNT_DIR/usr/local/sbin/reproos-health-check'
+  cat > '$MNT_DIR/etc/systemd/system/reproos-health-check.service' <<'HEALTH_UNIT_EOF'
+[Unit]
+Description=ReproOS post-installation acceptance check
+After=graphical.target sddm.service seatd.service
+Wants=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-health-check
+TimeoutStartSec=180
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+HEALTH_UNIT_EOF
+  mkdir -p '$MNT_DIR/etc/systemd/system/graphical.target.wants'
+  ln -sfn /etc/systemd/system/reproos-health-check.service \
+    '$MNT_DIR/etc/systemd/system/graphical.target.wants/reproos-health-check.service'
+" || { echo "[build-reproos-image] Phase 10.10 health gate install failed" >&2; exit 76; }
 
 echo "[build-reproos-image] phase summary:"
 echo "  staged tree:   $STAGE_DIR ($(du -sh "$STAGE_DIR" 2>/dev/null | awk '{print $1}'))"

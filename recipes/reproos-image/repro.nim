@@ -472,7 +472,9 @@ package reproosImage:
       extraInputs = @[
         "scripts/build-reproos-image.sh",
         "scripts/repro-sway-diag",
+        "scripts/reproos-health-check",
         "../../tests/fixtures/auto-config-minimal.toml",
+        "../../apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer",
         # Reuse the iso recipe's staging + relocation scripts; both
         # are content-stable and the engine refingerprints when
         # they change.

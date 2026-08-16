@@ -19,7 +19,7 @@ ComboBox {
     indicator: Label {
         x: control.width - width - 14
         y: (control.height - height) / 2
-        text: "v"
+        text: "\u2304"
         color: Theme.muted
         font.pixelSize: 12
     }

@@ -57,14 +57,16 @@ before judging aesthetics. Any view missing a required element rates at most
 
 ### deSelect
 
-- Sway is shown as the included source-built desktop.
+- Sway is shown as the included source-built desktop without a fake choice
+  control when no alternative desktop is available.
 - The screen does not claim unavailable desktop sessions can be installed.
 
 ### activities
 
-- Curated activity choices are scan-friendly and have stable selection states.
-- The default and selected activities are distinguishable without relying only
-  on color.
+- The included base desktop package profile is clearly identified without a
+  fake choice control when no alternative package profile is available.
+- Unavailable profiles are described briefly but remain hidden; no disabled or
+  nonfunctional choices should appear.
 
 ### summary
 
@@ -103,6 +105,11 @@ before judging aesthetics. Any view missing a required element rates at most
 
 ## Regression Workflow
 
+Use `repro preview-installer` to walk the complete wizard as a regular,
+non-destructive desktop app. Use `--screen ID`, `--size WIDTHxHEIGHT`, and
+`--no-build` with `tools/run-installer-preview.sh` for focused iteration. This
+is the primary human design loop; it never requires a VM.
+
 Run `repro test-installer-visuals` after changing installer QML. The task
 recaptures all 30 view/size combinations and compares them with the reviewed
 goldens through GuiAssert. After completing a visual review, accept an intended
@@ -112,4 +119,6 @@ new complete set, and commit the QML and goldens together.
 For a booted Hyper-V integration check, open the VM in Virtual Machine
 Connection, capture it with `tools/capture-hyperv-vm.ps1`, then run
 `tests/test-installer-vm-frame.sh FRAME.png`. This verifies the real console
-contains the expected welcome controls through GuiAssert OCR.
+only as a final integration gate after local screenshot reviews converge; VM
+booting is not part of each visual iteration. The gate confirms the expected
+welcome controls through GuiAssert OCR.

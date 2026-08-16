@@ -85,7 +85,7 @@ ApplicationWindow {
         spacing: 0
 
         Rectangle {
-            Layout.preferredWidth: window.width < 1040 ? 208 : 236
+            Layout.preferredWidth: window.width < 1040 ? 190 : 228
             Layout.fillHeight: true
             color: Theme.sidebar
 
@@ -202,29 +202,21 @@ ApplicationWindow {
 
                 Item { Layout.fillHeight: true }
 
-                Rectangle {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 54
-                    radius: 6
-                    color: Theme.surface
-                    border.width: 1
-                    border.color: Theme.border
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        spacing: 1
-                        Label {
-                            text: qsTr("SOURCE BUILD")
-                            color: Theme.accent
-                            font.pixelSize: 10
-                            font.weight: Font.DemiBold
-                        }
-                        Label {
-                            text: qsTr("Configuration stays editable")
-                            color: Theme.muted
-                            font.pixelSize: 11
-                        }
+                    spacing: 2
+                    Label {
+                        text: qsTr("SOURCE BUILD")
+                        color: Theme.accent
+                        font.pixelSize: 10
+                        font.weight: Font.DemiBold
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Editable configuration")
+                        color: Theme.muted
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
                     }
                 }
             }
@@ -242,8 +234,8 @@ ApplicationWindow {
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 36
-                    anchors.rightMargin: 36
+                    anchors.leftMargin: window.width < 1040 ? 28 : 36
+                    anchors.rightMargin: window.width < 1040 ? 28 : 36
 
                     Label {
                         Layout.fillWidth: true
@@ -292,8 +284,8 @@ ApplicationWindow {
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 36
-                    anchors.rightMargin: 36
+                    anchors.leftMargin: window.width < 1040 ? 28 : 36
+                    anchors.rightMargin: window.width < 1040 ? 28 : 36
                     spacing: 12
 
                     AppButton {

@@ -4,6 +4,7 @@
         <file>qml/components/qmldir</file>
         <file>qml/components/Theme.qml</file>
         <file>qml/components/InstallerPage.qml</file>
+        <file>qml/components/IncludedSummary.qml</file>
         <file>qml/components/AppButton.qml</file>
         <file>qml/components/AppTextField.qml</file>
         <file>qml/components/AppComboBox.qml</file>

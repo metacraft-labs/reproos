@@ -2,7 +2,7 @@
 # M9.R.51 - Boot-from-disk init for reproos-image build-artifact qcow2s.
 #
 # Simpler sibling of initramfs/init (the live-boot squashfs pivot).
-# Parses `root=UUID=<uuid>` from /proc/cmdline, mounts that ext4
+# Parses `root=UUID=<uuid>` (or LABEL/PARTUUID/device) from /proc/cmdline, mounts that ext4
 # partition at /newroot, switches root into it, execs /sbin/init.
 #
 # Designed for the BUSYBOX-only userspace that build-initramfs.sh
@@ -11,7 +11,7 @@
 
 set -e
 
-INIT_VERSION='M9.R.51'
+INIT_VERSION='M9.R.51-label-root'
 
 log() {
   echo "[disk-init] $*" >/dev/kmsg 2>/dev/null || echo "[disk-init] $*"
@@ -99,32 +99,30 @@ if [ -n "$DISK_DEBUG" ]; then
   trap 'rescue "post-debug-shell trap"' EXIT
 fi
 
-# Resolve root spec to a device node.
-#   UUID=xxx        -> /dev/disk/by-uuid/xxx
-#   LABEL=xxx       -> /dev/disk/by-label/xxx
-#   PARTUUID=xxx    -> /dev/disk/by-partuuid/xxx
-#   /dev/xxx        -> as-is
+# Resolve stable filesystem identifiers by scanning the block devices. The
+# initramfs has devtmpfs but no udev daemon, so /dev/disk/by-* symlinks are not
+# guaranteed to exist. BusyBox findfs uses blkid directly and works on QEMU,
+# Hyper-V, and physical disk naming alike.
 resolve_root() {
   case "$ROOT_SPEC" in
-    UUID=*)     echo "/dev/disk/by-uuid/${ROOT_SPEC#UUID=}" ;;
-    LABEL=*)    echo "/dev/disk/by-label/${ROOT_SPEC#LABEL=}" ;;
-    PARTUUID=*) echo "/dev/disk/by-partuuid/${ROOT_SPEC#PARTUUID=}" ;;
+    UUID=*|LABEL=*|PARTUUID=*) findfs "$ROOT_SPEC" 2>/dev/null || true ;;
     *)          echo "$ROOT_SPEC" ;;
   esac
 }
 
-ROOT_DEV="$(resolve_root)"
-
-# Wait for the root device to appear.  Busybox mdev/udev may take
-# a few beats to symlink /dev/disk/by-uuid/*.
+# Wait for the root device to appear. Re-resolve stable identifiers on every
+# iteration because the disk may be attached after the first scan.
+ROOT_DEV=''
 attempt=0
-while [ ! -e "$ROOT_DEV" ]; do
+while :; do
+  ROOT_DEV="$(resolve_root)"
+  if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
+    break
+  fi
   attempt=$((attempt + 1))
   if [ "$attempt" -ge 30 ]; then
-    log "root device $ROOT_DEV never appeared; available:"
+    log "root device $ROOT_SPEC never appeared; last resolution: ${ROOT_DEV:-<none>}; available:"
     ls /sys/class/block/ >/dev/kmsg 2>/dev/null || ls /sys/class/block/
-    log "/dev/disk/by-uuid/:"
-    ls /dev/disk/by-uuid/ >/dev/kmsg 2>/dev/null || ls /dev/disk/by-uuid/ 2>/dev/null
     rescue "root device not found"
   fi
   sleep 1

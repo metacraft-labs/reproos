@@ -1,175 +1,333 @@
-// M9.R.18.4 -- top-level wizard chrome. Per ReproOS-Installer-PRD.md
-// Sec 3.1 the wizard is an 8-screen StackView with a persistent
-// progress header + Back / Next buttons. This file owns:
-//   * The ApplicationWindow + colour palette
-//   * The progress strip (1 of 8 ... 8 of 8)
-//   * The StackView the per-screen .qml files push/pop
-//   * The Back / Next bar at the bottom
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-import "screens" as Screens
+import "components"
 
 ApplicationWindow {
     id: window
     visible: true
-    width: 960
-    height: 720
-    minimumWidth: 720
-    minimumHeight: 540
+    width: 1180
+    height: 760
+    minimumWidth: 900
+    minimumHeight: 640
     title: qsTr("ReproOS Installer")
+    color: Theme.canvas
 
-    // PRD Sec 3.1 doesn't pin a colour scheme; this is the M9.R.18 v0.1
-    // placeholder. M9.R.19 polish replaces with proper Material 3 dark
-    // tokens.
-    palette.window: "#1a1a22"
-    palette.windowText: "#e6e6f0"
-    palette.button: "#2c2c3a"
-    palette.buttonText: "#e6e6f0"
-    palette.highlight: "#5a82c8"
-    palette.highlightedText: "#ffffff"
-    palette.text: "#e6e6f0"
-    palette.base: "#0f0f17"
+    palette.window: Theme.canvas
+    palette.windowText: Theme.text
+    palette.button: Theme.surfaceRaised
+    palette.buttonText: Theme.text
+    palette.highlight: Theme.accent
+    palette.highlightedText: Theme.accentText
+    palette.text: Theme.text
+    palette.base: Theme.input
 
-    // Screen names in display order. Each entry maps to a file under
-    // qml/screens/. The StackView is initialised with the first; Back /
-    // Next push or pop the rest as the user navigates.
-    // M9.R.23.1 -- ten-screen flow (was nine). Disk inserts at position 5
-    // between Users and DeSelect: PRD Sec 3.1 lists target-disk + layout
-    // preset as a top-level wizard step, but M9.R.18.4 v0.1 stubbed it
-    // out. M9.R.23 wires the screen + the underlying install() driver.
     readonly property var screens: [
-        { id: "welcome",     file: "Welcome.qml",     title: qsTr("Welcome") },
-        { id: "locale",      file: "Locale.qml",      title: qsTr("Language and Timezone") },
-        { id: "keyboard",    file: "Keyboard.qml",    title: qsTr("Keyboard Layout") },
-        { id: "users",       file: "Users.qml",       title: qsTr("User Account") },
-        { id: "disk",        file: "Disk.qml",        title: qsTr("Target Disk") },
-        { id: "deSelect",    file: "DeSelect.qml",    title: qsTr("Desktop Environment") },
-        { id: "activities",  file: "Activities.qml",  title: qsTr("Activities") },
-        { id: "summary",     file: "Summary.qml",     title: qsTr("Review") },
-        { id: "install",     file: "Install.qml",     title: qsTr("Install") },
-        { id: "finished",    file: "Finished.qml",    title: qsTr("Finished") },
+        { id: "welcome", file: "Welcome.qml", title: qsTr("Welcome") },
+        { id: "locale", file: "Locale.qml", title: qsTr("Region") },
+        { id: "keyboard", file: "Keyboard.qml", title: qsTr("Keyboard") },
+        { id: "users", file: "Users.qml", title: qsTr("Account") },
+        { id: "disk", file: "Disk.qml", title: qsTr("Storage") },
+        { id: "deSelect", file: "DeSelect.qml", title: qsTr("Desktop") },
+        { id: "activities", file: "Activities.qml", title: qsTr("Profile") },
+        { id: "summary", file: "Summary.qml", title: qsTr("Review") },
+        { id: "install", file: "Install.qml", title: qsTr("Install") },
+        { id: "finished", file: "Finished.qml", title: qsTr("Complete") }
     ]
 
-    // 0-based index into screens[]; drives the StackView depth + the
-    // progress header text.
     property int currentScreenIndex: 0
 
     function gotoScreenIndex(idx) {
-        if (idx < 0 || idx >= screens.length) return;
+        if (idx < 0 || idx >= screens.length)
+            return;
         currentScreenIndex = idx;
         stack.clear();
         stack.push(Qt.resolvedUrl("screens/" + screens[idx].file));
     }
 
     function nextScreen() {
-        if (currentScreenIndex < screens.length - 1) {
+        if (currentScreenIndex < screens.length - 1)
             gotoScreenIndex(currentScreenIndex + 1);
-        }
     }
 
     function prevScreen() {
-        if (currentScreenIndex > 0) {
+        if (currentScreenIndex > 0)
             gotoScreenIndex(currentScreenIndex - 1);
-        }
     }
 
-    Component.onCompleted: gotoScreenIndex(0)
+    function canContinue() {
+        if (currentScreenIndex === 4) {
+            return installerState.targetDevice.length > 0
+                && installerState.wipeAcknowledged
+                && installerState.diskoPreset === "simple";
+        }
+        if (currentScreenIndex === 8)
+            return installerState.installProgress >= 1.0;
+        return true;
+    }
 
-    ColumnLayout {
+    Component.onCompleted: {
+        var requestedIndex = 0;
+        if (typeof startupScreenId !== "undefined" && startupScreenId.length > 0) {
+            for (var i = 0; i < screens.length; ++i) {
+                if (screens[i].id === startupScreenId) {
+                    requestedIndex = i;
+                    break;
+                }
+            }
+        }
+        gotoScreenIndex(requestedIndex);
+    }
+
+    RowLayout {
         anchors.fill: parent
         spacing: 0
 
-        // Header: title + progress.
         Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 64
-            color: "#13131c"
+            Layout.preferredWidth: window.width < 1040 ? 208 : 236
+            Layout.fillHeight: true
+            color: Theme.sidebar
 
-            RowLayout {
+            ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 24
-                anchors.rightMargin: 24
-                spacing: 12
+                anchors.margins: 24
+                spacing: 0
 
-                Label {
-                    text: window.screens[window.currentScreenIndex].title
-                    color: "#e6e6f0"
-                    font.pixelSize: 22
-                    font.weight: Font.Medium
+                RowLayout {
                     Layout.fillWidth: true
+                    spacing: 12
+
+                    Rectangle {
+                        Layout.preferredWidth: 34
+                        Layout.preferredHeight: 34
+                        radius: 6
+                        color: Theme.accent
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "R"
+                            color: Theme.accentText
+                            font.pixelSize: 18
+                            font.weight: Font.DemiBold
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: 0
+                        Label {
+                            text: "ReproOS"
+                            color: Theme.text
+                            font.pixelSize: 20
+                            font.weight: Font.DemiBold
+                        }
+                        Label {
+                            text: qsTr("INSTALLER")
+                            color: Theme.muted
+                            font.pixelSize: 10
+                            font.letterSpacing: 0
+                        }
+                    }
                 }
 
                 Label {
-                    text: qsTr("Step %1 of %2")
-                        .arg(window.currentScreenIndex + 1)
-                        .arg(window.screens.length)
-                    color: "#8a8aa3"
-                    font.pixelSize: 14
+                    Layout.topMargin: 32
+                    Layout.bottomMargin: 10
+                    text: qsTr("SETUP PROGRESS")
+                    color: Theme.subtle
+                    font.pixelSize: 10
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Repeater {
+                        model: window.screens
+
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 42
+                            radius: 5
+                            color: index === window.currentScreenIndex
+                                ? Theme.surfaceRaised : "transparent"
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 8
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.preferredWidth: 22
+                                    Layout.preferredHeight: 22
+                                    radius: 11
+                                    color: index < window.currentScreenIndex
+                                        ? Theme.accent
+                                        : index === window.currentScreenIndex
+                                            ? Theme.accentSoft : "transparent"
+                                    border.width: index >= window.currentScreenIndex ? 1 : 0
+                                    border.color: index === window.currentScreenIndex
+                                        ? Theme.accent : Theme.border
+
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: index < window.currentScreenIndex ? "ok" : String(index + 1)
+                                        color: index < window.currentScreenIndex
+                                            ? Theme.accentText
+                                            : index === window.currentScreenIndex
+                                                ? Theme.accent : Theme.subtle
+                                        font.pixelSize: index < window.currentScreenIndex ? 8 : 11
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: modelData.title
+                                    color: index === window.currentScreenIndex
+                                        ? Theme.text : Theme.muted
+                                    font.pixelSize: 13
+                                    font.weight: index === window.currentScreenIndex
+                                        ? Font.DemiBold : Font.Normal
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Item { Layout.fillHeight: true }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 54
+                    radius: 6
+                    color: Theme.surface
+                    border.width: 1
+                    border.color: Theme.border
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 1
+                        Label {
+                            text: qsTr("SOURCE BUILD")
+                            color: Theme.accent
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                        }
+                        Label {
+                            text: qsTr("Configuration stays editable")
+                            color: Theme.muted
+                            font.pixelSize: 11
+                        }
+                    }
                 }
             }
         }
 
-        // Progress strip.
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 4
-            color: "#0a0a14"
-            Rectangle {
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: parent.width * (window.currentScreenIndex + 1) / window.screens.length
-                color: "#5a82c8"
-                Behavior on width { NumberAnimation { duration: 200 } }
-            }
-        }
-
-        // Per-screen content.
-        StackView {
-            id: stack
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            background: Rectangle { color: "#1a1a22" }
-        }
+            spacing: 0
 
-        // Footer: Back / Next.
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 72
-            color: "#13131c"
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 68
+                color: Theme.canvas
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 24
-                anchors.rightMargin: 24
-                spacing: 12
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 36
+                    anchors.rightMargin: 36
 
-                Button {
-                    text: qsTr("Back")
-                    enabled: window.currentScreenIndex > 0
-                        && window.currentScreenIndex < window.screens.length - 2
-                    onClicked: window.prevScreen()
+                    Label {
+                        Layout.fillWidth: true
+                        text: window.screens[window.currentScreenIndex].title
+                        color: Theme.text
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                    }
+                    Label {
+                        text: qsTr("%1 / %2")
+                            .arg(window.currentScreenIndex + 1)
+                            .arg(window.screens.length)
+                        color: Theme.muted
+                        font.pixelSize: 12
+                    }
                 }
 
-                Item { Layout.fillWidth: true }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: Theme.border
+                }
+            }
 
-                Button {
-                    text: window.currentScreenIndex === window.screens.length - 3
-                        ? qsTr("Install")
-                        : window.currentScreenIndex === window.screens.length - 1
-                            ? qsTr("Reboot")
-                            : qsTr("Next")
-                    highlighted: true
-                    enabled: window.currentScreenIndex < window.screens.length - 1
-                        || window.currentScreenIndex === window.screens.length - 1
-                    onClicked: {
-                        if (window.currentScreenIndex === window.screens.length - 1) {
-                            Qt.quit();
-                        } else {
-                            window.nextScreen();
+            StackView {
+                id: stack
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                background: Rectangle { color: Theme.canvas }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 76
+                color: Theme.canvas
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 1
+                    color: Theme.border
+                }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 36
+                    anchors.rightMargin: 36
+                    spacing: 12
+
+                    AppButton {
+                        text: qsTr("Back")
+                        enabled: window.currentScreenIndex > 0
+                            && window.currentScreenIndex < 9
+                            && !installerState.installRunning
+                        onClicked: window.prevScreen()
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Label {
+                        visible: window.currentScreenIndex === 4
+                            && !window.canContinue()
+                        text: qsTr("Select a disk and acknowledge the wipe")
+                        color: Theme.warning
+                        font.pixelSize: 11
+                    }
+
+                    AppButton {
+                        primary: true
+                        text: window.currentScreenIndex === 7
+                            ? qsTr("Continue to install")
+                            : window.currentScreenIndex === 8
+                                ? qsTr("Continue")
+                                : window.currentScreenIndex === 9
+                                    ? qsTr("Reboot") : qsTr("Continue")
+                        enabled: window.canContinue()
+                        onClicked: {
+                            if (window.currentScreenIndex === 9)
+                                Qt.quit();
+                            else
+                                window.nextScreen();
                         }
                     }
                 }

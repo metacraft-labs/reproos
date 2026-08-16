@@ -1,6 +1,13 @@
 <RCC>
     <qresource prefix="/">
         <file>qml/main.qml</file>
+        <file>qml/components/qmldir</file>
+        <file>qml/components/Theme.qml</file>
+        <file>qml/components/InstallerPage.qml</file>
+        <file>qml/components/AppButton.qml</file>
+        <file>qml/components/AppTextField.qml</file>
+        <file>qml/components/AppComboBox.qml</file>
+        <file>qml/components/ChoiceCard.qml</file>
         <file>qml/screens/Welcome.qml</file>
         <file>qml/screens/Locale.qml</file>
         <file>qml/screens/Keyboard.qml</file>

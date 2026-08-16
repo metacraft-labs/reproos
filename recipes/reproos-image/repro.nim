@@ -84,6 +84,7 @@ const reproosImageRuntimeTools = @[
   "grub-mkconfig",
   # Tree-sync into the mount point.
   "rsync",
+  "patchelf",
   # Kernel module management for the nbd module load/unload.
   "modprobe",
   "rmmod",
@@ -246,7 +247,7 @@ package reproosImage:
 
   devEnv:
     task "boot-vm",
-      command = "vm-harness boot --backend auto --source-image .repro/output/install --kind qcow2 --keep",
+      command = "vm-harness boot --backend auto --source-image build/reproos-installed.qcow2 --kind qcow2 --keep",
       description = "Boot the newest built ReproOS image in a transient VM"
 
   uses:
@@ -407,6 +408,7 @@ package reproosImage:
     "grub-install"
     "grub-mkconfig"
     "rsync"
+    "patchelf"
     "modprobe"
     "rmmod"
     "lsmod"
@@ -472,7 +474,9 @@ package reproosImage:
       extraInputs = @[
         "scripts/build-reproos-image.sh",
         "scripts/repro-sway-diag",
+        "scripts/reproos-health-check",
         "../../tests/fixtures/auto-config-minimal.toml",
+        "../../apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer",
         # Reuse the iso recipe's staging + relocation scripts; both
         # are content-stable and the engine refingerprints when
         # they change.
@@ -480,6 +484,8 @@ package reproosImage:
         "../reproos-iso/scripts/relocate-nix-to-repro.sh",
         "../reproos-iso/scripts/normalize-source-runtime.sh",
         "../reproos-iso/scripts/build-base-rootfs.sh",
+        "../reproos-iso/scripts/build-initramfs.sh",
+        "../reproos-iso/initramfs/init-disk",
       ],
       extraOutputs = @[
         "build/reproos-installed.qcow2",

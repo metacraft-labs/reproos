@@ -1,0 +1,34 @@
+# ReproOS unattended installation configuration
+schema_version = 1
+hostname = "reproos-smoke"
+
+[regional]
+locale = "en_US.UTF-8"
+timezone = "UTC"
+keymap = "us"
+
+[user]
+name = "repro"
+full_name = "Repro Test User"
+password_hash = "$6$reproosMvpD1$rrZAqlA3J4u9SLnxnaWWMcQAgVTXMplGNjmnt7yfZP3SyxEv.kE8Va8VbPVD0WBmlLhRrPYz3wO/U5O7Q1mvJ/"
+groups = ["wheel", "audio", "video", "networkmanager"]
+shell = "/bin/bash"
+
+[disk]
+size_gb = 8
+
+[disk.layout]
+type = "uefi-ext4"
+esp_size_mib = 512
+
+[de]
+default = "sway"
+
+[network]
+ipv4 = "dhcp"
+
+[activities]
+enabled = []
+
+[install]
+target_device = "/dev/vda"

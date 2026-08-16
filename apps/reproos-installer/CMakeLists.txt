@@ -53,6 +53,13 @@ qt_add_resources(reproos-installer "qml-resources"
     PREFIX "/"
     FILES
         qml/main.qml
+        qml/components/qmldir
+        qml/components/Theme.qml
+        qml/components/InstallerPage.qml
+        qml/components/AppButton.qml
+        qml/components/AppTextField.qml
+        qml/components/AppComboBox.qml
+        qml/components/ChoiceCard.qml
         qml/screens/Welcome.qml
         qml/screens/Locale.qml
         qml/screens/Keyboard.qml

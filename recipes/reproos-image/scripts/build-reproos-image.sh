@@ -62,6 +62,7 @@ OUT_QCOW2="$1"
 REPO_ROOT="$(cd ../.. && pwd)"
 REPROBUILD_PACKAGES_ROOT="${REPROBUILD_PACKAGES_ROOT:-$REPO_ROOT/../reprobuild-packages}"
 SOURCE_RECIPES_ROOT="${REPRO_FROM_SOURCE_ROOT:-$REPROBUILD_PACKAGES_ROOT/packages/source}"
+TARGET_SOURCE_RECIPES_ROOT="/opt/repro/reprobuild-packages/packages/source"
 RECIPE_DIR="$(pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "$0")" && pwd)"
 ISO_SCRIPTS_DIR="$REPO_ROOT/recipes/reproos-iso/scripts"
@@ -143,7 +144,7 @@ HOST_SYNC_BIN="$(resolve_host_tool sync)"
 # defence-in-depth loop catches any resolver bypass (e.g. direct
 # invocation of build-reproos-image.sh outside the repro build
 # harness) with the same clear diagnostic.
-for tool in qemu-img qemu-nbd parted partprobe sgdisk mkfs.ext4 mkfs.vfat rsync grub-install grub-mkconfig modprobe mountpoint; do
+for tool in qemu-img qemu-nbd parted partprobe sgdisk mkfs.ext4 mkfs.vfat rsync grub-install grub-mkconfig modprobe mountpoint patchelf; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "[build-reproos-image] required tool missing: $tool" >&2
     exit 65
@@ -157,6 +158,7 @@ QEMU_IMG_BIN="$(command -v qemu-img)"
 QEMU_NBD_BIN="$(command -v qemu-nbd)"
 PARTPROBE_BIN="$(command -v partprobe)"
 MODPROBE_BIN="$(command -v modprobe)"
+PATCHELF_BIN="$(command -v patchelf)"
 
 # Locate the `repro` binary.  Probe order:
 #   1. $REPRO_BIN env (caller override).
@@ -220,8 +222,21 @@ trap cleanup EXIT
 
 # ---------------------------------------------------------------
 # TOML parsing.  Without a TOML library we use a small awk-based
-# extractor.  Schema is intentionally simple and validated below.
+# extractor for the already-normalized values. The installer owns
+# schema validation and emits the canonical bundle consumed below.
 # ---------------------------------------------------------------
+INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer}"
+if [ ! -x "$INSTALLER_BIN" ]; then
+  echo "[build-reproos-image] installer config emitter missing: $INSTALLER_BIN" >&2
+  exit 65
+fi
+CONFIG_BUNDLE_DIR="$WORK/configuration"
+rm -rf "$CONFIG_BUNDLE_DIR"
+echo "[build-reproos-image] validating config and emitting canonical artifacts"
+"$INSTALLER_BIN" --config "$REPRO_AUTO_CONFIG" \
+  --emit-artifacts "$CONFIG_BUNDLE_DIR" \
+  || { echo "[build-reproos-image] installer config validation failed" >&2; exit 66; }
+
 toml_get() {
   # toml_get <file> <section> <key>
   # Returns the value for [section] key on stdout, or empty if not
@@ -253,7 +268,7 @@ toml_get() {
   ' "$1"
 }
 
-CFG="$REPRO_AUTO_CONFIG"
+CFG="$CONFIG_BUNDLE_DIR/auto-config.toml"
 
 HOSTNAME_VAL="$(toml_get "$CFG" "" "hostname")"
 USER_NAME="$(toml_get "$CFG" "user" "name")"
@@ -302,11 +317,21 @@ echo "[build-reproos-image] staging rootfs at $STAGE_DIR"
 # ~5 min cold.  Reuse a healthy existing stage when the marker file
 # is present (set REPRO_FORCE_RESTAGE=1 to bypass).
 STAGE_MARKER="$STAGE_DIR/.repro-stage-complete"
+STAGE_INPUT_MARKER="$STAGE_DIR/.repro-stage-input-id"
 STAGE_STALE=0
-for stage_input in \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/build-base-rootfs.sh" \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/stage-de-rootfs.sh" \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/relocate-nix-to-repro.sh"; do
+STAGE_EXTERNAL_INPUTS=(
+  "$REPO_ROOT/recipes/reproos-iso/scripts/build-base-rootfs.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/stage-de-rootfs.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/relocate-nix-to-repro.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/normalize-source-runtime.sh"
+  "$INSTALLER_BIN"
+  "$REPRO_BIN"
+)
+STAGE_INPUT_ID="$(sha256sum "${STAGE_EXTERNAL_INPUTS[@]}" | sha256sum | awk '{print $1}')"
+if [ "$(cat "$STAGE_INPUT_MARKER" 2>/dev/null || true)" != "$STAGE_INPUT_ID" ]; then
+  STAGE_STALE=1
+fi
+for stage_input in "${STAGE_EXTERNAL_INPUTS[@]}"; do
   if [ -f "$STAGE_MARKER" ] && [ "$stage_input" -nt "$STAGE_MARKER" ]; then
     STAGE_STALE=1
     break
@@ -330,6 +355,7 @@ if [ "${REPRO_FORCE_RESTAGE:-0}" = "1" ] || \
     bash scripts/stage-de-rootfs.sh "$STAGE_DIR"
   ) || { echo "[build-reproos-image] stage-de-rootfs.sh failed" >&2; exit 67; }
   touch "$STAGE_MARKER"
+  printf '%s\n' "$STAGE_INPUT_ID" > "$STAGE_INPUT_MARKER"
 else
   echo "[build-reproos-image] stage cache HIT (use REPRO_FORCE_RESTAGE=1 to bypass)"
 fi
@@ -358,7 +384,9 @@ if [ ! -s "$SOURCE_KERNEL" ] || [ ! -x "$SOURCE_BUSYBOX" ]; then
 fi
 SOURCE_KERNEL_SHA256="$(sha256sum "$SOURCE_KERNEL" | awk '{print $1}')"
 SOURCE_BUSYBOX_SHA256="$(sha256sum "$SOURCE_BUSYBOX" | awk '{print $1}')"
-BOOT_INPUT_ID="$SOURCE_KERNEL_RELEASE-${SOURCE_KERNEL_SHA256:0:16}-${SOURCE_BUSYBOX_SHA256:0:16}"
+DISK_INIT_SOURCE="$REPO_ROOT/recipes/reproos-iso/initramfs/init-disk"
+DISK_INIT_SHA256="$(sha256sum "$DISK_INIT_SOURCE" | awk '{print $1}')"
+BOOT_INPUT_ID="$SOURCE_KERNEL_RELEASE-${SOURCE_KERNEL_SHA256:0:16}-${SOURCE_BUSYBOX_SHA256:0:16}-${DISK_INIT_SHA256:0:16}"
 # M9.R.51: generate a boot-from-disk initramfs (init-disk variant of
 # the live-init) instead of reusing the ISO's live-boot initrd (which
 # probes for /live/filesystem.squashfs and drops to rescue on an
@@ -573,28 +601,36 @@ echo "[build-reproos-image] repro infra install-root --target $MNT_DIR --source 
   --hostname "$HOSTNAME_VAL" \
   || { echo "[build-reproos-image] install-root failed" >&2; exit 70; }
 
-# M9.R.51: rewrite build-time NBD device paths to boot-time virtio
-# paths.  install-root's renderInstalledGrubCfg + renderFstab bake
+# M9.R.51: rewrite build-time NBD device paths to stable filesystem
+# labels. install-root's renderInstalledGrubCfg + renderFstab bake
 # $NBD_DEV (e.g. /dev/nbd0p2) into grub.cfg's root= and fstab's
-# device columns.  At boot, the disk appears as /dev/vda under
-# QEMU virtio.  Substitute NBD -> VDA post-render.  A future
-# milestone will move this into the render functions themselves
-# (parameterize via env or emit LABEL=/UUID= from mkfs.ext4 -L).
+# device columns. Device names differ between QEMU, Hyper-V, and
+# physical systems, while the filesystem labels are part of the
+# declared disk layout and remain stable.
 NBD_BASE="$(basename "$NBD_DEV")"       # e.g. nbd0
-BOOT_DEV_BASE="vda"
-echo "[build-reproos-image] rewriting $NBD_BASE -> $BOOT_DEV_BASE in grub.cfg + fstab"
+echo "[build-reproos-image] rewriting $NBD_BASE partitions to filesystem labels in grub.cfg + fstab"
 for f in "$MNT_DIR/boot/grub/grub.cfg" "$MNT_DIR/etc/fstab"; do
   if [ -f "$f" ]; then
-    "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p([0-9]+)|/dev/${BOOT_DEV_BASE}\\1|g; s|/dev/${NBD_BASE}|/dev/${BOOT_DEV_BASE}|g" "$f"
+    "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$f"
   fi
 done
 
 # ---------------------------------------------------------------
 # Phase 9: write etc/repro/{system,hardware}.nim from TOML.
-# Skipped for v1; install-root already wrote a baseline copy from
-# /etc/repro/ in the source tree.  Future M9.R.50.x will render
-# DSL-shaped system.nim from auto-config.toml.
+# The validated installer emitter is the single renderer for both
+# interactive and unattended paths. Copy the complete replay bundle
+# into the installed root after install-root has mirrored the stage.
 # ---------------------------------------------------------------
+echo "[build-reproos-image] Phase 9: install canonical configuration bundle"
+"$SUDO" mkdir -p "$MNT_DIR/etc/repro"
+for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
+  if [ ! -s "$CONFIG_BUNDLE_DIR/$artifact" ]; then
+    echo "[build-reproos-image] missing generated artifact: $artifact" >&2
+    exit 71
+  fi
+  "$SUDO" cp "$CONFIG_BUNDLE_DIR/$artifact" "$MNT_DIR/etc/repro/$artifact"
+  "$SUDO" chmod 0644 "$MNT_DIR/etc/repro/$artifact"
+done
 
 # ---------------------------------------------------------------
 # Phase 10: write /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow
@@ -856,6 +892,10 @@ SDDM_EOF
 # dbus-daemon's RUNPATH and completes the load).  The daemon
 # succeeds after the warning; the warning is a v2 cleanup.
 # ---------------------------------------------------------------
+
+# Everything from this point writes target-side links. Use the canonical
+# in-image mirror location, independent of the host checkout path.
+SOURCE_RECIPES_ROOT="$TARGET_SOURCE_RECIPES_ROOT"
 
 echo "[build-reproos-image] Phase 10.6: wire dbus RuntimeDirectory + strip gdm.conf + shadow-link libexec helper + replace ExecStart"
 
@@ -1333,11 +1373,11 @@ SWAY_CONFIG_EOF
   # configuration path is /usr/etc/fonts rather than Debian's /etc/fonts.
   # Keep both locations available to source and distribution consumers.
   mkdir -p '$MNT_DIR/usr/etc' '$MNT_DIR/etc'
-  if [ ! -e '$MNT_DIR/usr/etc/fonts' ]; then
+  if [ ! -e '$MNT_DIR/usr/etc/fonts' ] && [ ! -L '$MNT_DIR/usr/etc/fonts' ]; then
     ln -s '$SOURCE_RECIPES_ROOT/fontconfig/.repro/output/install/usr/etc/fonts' \
       '$MNT_DIR/usr/etc/fonts'
   fi
-  if [ ! -e '$MNT_DIR/etc/fonts' ]; then
+  if [ ! -e '$MNT_DIR/etc/fonts' ] && [ ! -L '$MNT_DIR/etc/fonts' ]; then
     ln -s '$SOURCE_RECIPES_ROOT/fontconfig/.repro/output/install/usr/etc/fonts' \
       '$MNT_DIR/etc/fonts'
   fi
@@ -1593,12 +1633,13 @@ echo "[build-reproos-image] Phase 10.9: install + enable seatd system service (l
   # and-suspenders: force-link them here in case the recipe layout
   # changes.
   LIBSEAT_INSTALL='$SOURCE_RECIPES_ROOT/libseat/.repro/output/install/usr/bin'
-  if [ -x \"\$LIBSEAT_INSTALL/seatd\" ]; then
+  LIBSEAT_INSTALL_HOST='$MNT_DIR$SOURCE_RECIPES_ROOT/libseat/.repro/output/install/usr/bin'
+  if [ -x \"\$LIBSEAT_INSTALL_HOST/seatd\" ]; then
     ln -sfn \"\$LIBSEAT_INSTALL/seatd\" '$MNT_DIR/usr/bin/seatd'
   else
     echo '[build-reproos-image] warning: seatd binary not at expected install-mirror path' >&2
   fi
-  if [ -x \"\$LIBSEAT_INSTALL/seatd-launch\" ]; then
+  if [ -x \"\$LIBSEAT_INSTALL_HOST/seatd-launch\" ]; then
     ln -sfn \"\$LIBSEAT_INSTALL/seatd-launch\" '$MNT_DIR/usr/bin/seatd-launch'
   fi
 
@@ -1615,7 +1656,7 @@ echo "[build-reproos-image] Phase 10.9: install + enable seatd system service (l
   # reproducible build path; M9.R.68 clean-rebuild regressed it.
   # This phase lands the fix inside build-reproos-image.sh so
   # every future clean rebuild patches the RPATH deterministically.
-  PATCHELF=\$(command -v patchelf 2>/dev/null || true)
+  PATCHELF='$PATCHELF_BIN'
   if [ -n \"\$PATCHELF\" ]; then
     LIBSEAT_INSTALL_ROOT='$MNT_DIR$SOURCE_RECIPES_ROOT/libseat/.repro/output/install'
     for target in \\
@@ -1704,6 +1745,36 @@ SEATD_UNIT_EOF
   ln -sfn /etc/systemd/system/seatd.service \\
     '$MNT_DIR/etc/systemd/system/graphical.target.wants/seatd.service'
 " || { echo "[build-reproos-image] Phase 10.9 seatd install failed" >&2; exit 75; }
+
+# ---------------------------------------------------------------
+# Phase 10.10: install the post-boot acceptance check. Its serial
+# sentinel is the VM harness contract for an installed, graphical,
+# replayable system rather than merely a kernel-booted image.
+# ---------------------------------------------------------------
+echo "[build-reproos-image] Phase 10.10: install post-boot health gate"
+"$SUDO" bash -c "
+  set -euo pipefail
+  install -m 0755 '$SCRIPT_DIR_SELF/reproos-health-check' \
+    '$MNT_DIR/usr/local/sbin/reproos-health-check'
+  cat > '$MNT_DIR/etc/systemd/system/reproos-health-check.service' <<'HEALTH_UNIT_EOF'
+[Unit]
+Description=ReproOS post-installation acceptance check
+After=graphical.target sddm.service seatd.service
+Wants=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-health-check
+TimeoutStartSec=180
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+HEALTH_UNIT_EOF
+  mkdir -p '$MNT_DIR/etc/systemd/system/graphical.target.wants'
+  ln -sfn /etc/systemd/system/reproos-health-check.service \
+    '$MNT_DIR/etc/systemd/system/graphical.target.wants/reproos-health-check.service'
+" || { echo "[build-reproos-image] Phase 10.10 health gate install failed" >&2; exit 76; }
 
 echo "[build-reproos-image] phase summary:"
 echo "  staged tree:   $STAGE_DIR ($(du -sh "$STAGE_DIR" 2>/dev/null | awk '{print $1}'))"

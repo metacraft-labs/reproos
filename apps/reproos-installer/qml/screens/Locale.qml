@@ -1,96 +1,62 @@
-// M9.R.18.6 -- Locale screen. Per ReproOS-Installer-PRD.md Sec 3.1
-// screen 3 the user picks timezone (IANA name) + locale (en_US.UTF-8
-// shape). v0.1 ships a curated subset; M9.R.19 broadens it via the
-// /usr/share/reproos-installer/locale-data.toml the PRD Sec 7.2 step 3
-// pins.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-Item {
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 32
-        spacing: 18
+import "../components"
 
-        Label {
-            text: qsTr("Pick your language and timezone")
-            font.pixelSize: 18
-            color: "#e6e6f0"
-        }
+InstallerPage {
+    eyebrow: qsTr("System identity")
+    title: qsTr("Region and machine name")
+    description: qsTr("These settings are written to system.nim and activated consistently in the live session and installed system.")
 
-        Label {
-            text: qsTr("These choices land in system.nim and are activated by `repro infra apply` at first boot.")
-            font.pixelSize: 13
-            color: "#8a8aa3"
-            wrapMode: Text.WordWrap
+    GridLayout {
+        Layout.fillWidth: true
+        Layout.maximumWidth: 650
+        columns: 2
+        rowSpacing: 16
+        columnSpacing: 24
+
+        Label { text: qsTr("System locale"); color: Theme.muted; font.pixelSize: 12 }
+        AppComboBox {
+            id: localeCombo
             Layout.fillWidth: true
+            model: ["en_US.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8", "it_IT.UTF-8", "pt_BR.UTF-8", "ja_JP.UTF-8", "zh_CN.UTF-8", "bg_BG.UTF-8"]
+            Component.onCompleted: {
+                var idx = model.indexOf(installerState.locale);
+                if (idx >= 0) currentIndex = idx;
+            }
+            onCurrentTextChanged: installerState.locale = currentText
         }
 
-        GridLayout {
-            columns: 2
-            rowSpacing: 14
-            columnSpacing: 16
-            Layout.topMargin: 16
-
-            Label { text: qsTr("System locale:"); color: "#e6e6f0"; font.pixelSize: 14 }
-            ComboBox {
-                id: localeCombo
-                Layout.preferredWidth: 280
-                model: [
-                    "en_US.UTF-8",
-                    "en_GB.UTF-8",
-                    "de_DE.UTF-8",
-                    "fr_FR.UTF-8",
-                    "es_ES.UTF-8",
-                    "it_IT.UTF-8",
-                    "pt_BR.UTF-8",
-                    "ja_JP.UTF-8",
-                    "zh_CN.UTF-8",
-                    "bg_BG.UTF-8",
-                ]
-                Component.onCompleted: {
-                    var idx = model.indexOf(installerState.locale);
-                    if (idx >= 0) currentIndex = idx;
-                }
-                onCurrentTextChanged: installerState.locale = currentText
+        Label { text: qsTr("Timezone"); color: Theme.muted; font.pixelSize: 12 }
+        AppComboBox {
+            id: timezoneCombo
+            Layout.fillWidth: true
+            model: ["Europe/Sofia", "Europe/Berlin", "Europe/London", "Europe/Paris", "Europe/Madrid", "America/New_York", "America/Los_Angeles", "America/Chicago", "Asia/Tokyo", "Asia/Shanghai", "Australia/Sydney", "UTC"]
+            Component.onCompleted: {
+                var idx = model.indexOf(installerState.timezone);
+                if (idx >= 0) currentIndex = idx;
             }
-
-            Label { text: qsTr("Timezone:"); color: "#e6e6f0"; font.pixelSize: 14 }
-            ComboBox {
-                id: tzCombo
-                Layout.preferredWidth: 280
-                model: [
-                    "Europe/Sofia",
-                    "Europe/Berlin",
-                    "Europe/London",
-                    "Europe/Paris",
-                    "Europe/Madrid",
-                    "America/New_York",
-                    "America/Los_Angeles",
-                    "America/Chicago",
-                    "Asia/Tokyo",
-                    "Asia/Shanghai",
-                    "Australia/Sydney",
-                    "UTC",
-                ]
-                Component.onCompleted: {
-                    var idx = model.indexOf(installerState.timezone);
-                    if (idx >= 0) currentIndex = idx;
-                }
-                onCurrentTextChanged: installerState.timezone = currentText
-            }
-
-            Label { text: qsTr("Hostname:"); color: "#e6e6f0"; font.pixelSize: 14 }
-            TextField {
-                Layout.preferredWidth: 280
-                text: installerState.hostname
-                placeholderText: "reproos"
-                onTextChanged: installerState.hostname = text
-            }
+            onCurrentTextChanged: installerState.timezone = currentText
         }
 
-        Item { Layout.fillHeight: true }
+        Label { text: qsTr("Machine name"); color: Theme.muted; font.pixelSize: 12 }
+        AppTextField {
+            Layout.fillWidth: true
+            text: installerState.hostname
+            placeholderText: "reproos"
+            onTextChanged: installerState.hostname = text
+        }
     }
+
+    Label {
+        Layout.maximumWidth: 650
+        Layout.fillWidth: true
+        text: qsTr("The machine name identifies this installation in logs, shells, and local networking. Use lowercase letters, numbers, and hyphens.")
+        color: Theme.subtle
+        font.pixelSize: 11
+        wrapMode: Text.WordWrap
+    }
+
+    Item { Layout.fillHeight: true }
 }

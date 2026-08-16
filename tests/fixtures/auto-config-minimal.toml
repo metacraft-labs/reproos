@@ -1,24 +1,17 @@
-# M9.R.50.3 -- minimal auto-config fixture for recipes/reproos-image.
-#
-# Spec: reprobuild-specs/ReproOS-Image-Recipe.md (M9.R.50.1) section 3.
-#
-# This is the smoke-fixture: the bare minimum the recipe needs to
-# produce a bootable qcow2.  Real installs (driven by the wizard
-# emitting a TOML) will have more fields; the recipe applies sane
-# defaults for any field omitted here.
-#
-# Password hash is the M9.R.46 fixture value ("reproos" hashed
-# with mkpasswd -m sha512crypt -S reproosMvpD1) -- same hash the
-# reproos-mvp-config.nim uses for the root account, so the smoke
-# fixture stays consistent across the campaign.
-
+# Canonical fixture emitted by the installer and consumed by the image recipe.
+schema_version = 1
 hostname = "reproos-smoke"
+
+[regional]
+locale = "en_US.UTF-8"
+timezone = "UTC"
+keymap = "us"
 
 [user]
 name = "repro"
-# `mkpasswd -m sha512crypt -S reproosMvpD1 reproos`
+full_name = "Repro Test User"
 password_hash = "$6$reproosMvpD1$rrZAqlA3J4u9SLnxnaWWMcQAgVTXMplGNjmnt7yfZP3SyxEv.kE8Va8VbPVD0WBmlLhRrPYz3wO/U5O7Q1mvJ/"
-groups = ["wheel", "audio", "video"]
+groups = ["wheel", "audio", "video", "networkmanager"]
 shell = "/bin/bash"
 
 [disk]
@@ -36,3 +29,6 @@ ipv4 = "dhcp"
 
 [activities]
 enabled = []
+
+[install]
+target_device = "/dev/vda"

@@ -33,6 +33,7 @@ export PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/
 cd '$linuxRepo'
 exec bash tools/run-installer-preview.sh --screen '$Screen' --size '$Size'$noBuildArg
 "@
+$command = $command.Replace("`r`n", "`n")
 
 Write-Host "Launching ReproOS installer preview from $repoRoot"
 & wsl.exe -d $Distro -u root -- bash -lc $command

@@ -133,6 +133,24 @@ int main(int argc, char *argv[]) {
     const bool previewMode = parser.isSet(previewOpt);
     state.setDryRun(parser.isSet(dryRunOpt) || previewMode);
 
+    if (parser.isSet(screenshotOpt) || previewMode) {
+        // Stable, non-destructive defaults keep every visual state meaningful
+        // without probing the host. An explicit --config is loaded afterward
+        // so interactive preview can inspect real generated configurations.
+        state.setHostname("repro-workstation");
+        state.setUsername("repro");
+        state.setFullName("Repro User");
+        state.setPassword("visual-fixture");
+        state.setDesktopKind("sway");
+        state.setTargetDevice("/dev/vda");
+        state.setAvailableDisks({
+            "vda 64G VirtIO_System_Disk Red_Hat",
+            "sdb 16G ReproOS_Install_Media Metacraft"
+        });
+        state.setWipeAcknowledged(true);
+        state.setActiveActivities({});
+    }
+
     if (parser.isSet(configOpt)) {
         QString configError;
         if (!state.loadAutoConfig(parser.value(configOpt), &configError)) {
@@ -153,23 +171,6 @@ int main(int argc, char *argv[]) {
                           << QFileInfo(parser.value(emitArtifactsOpt))
                                  .absoluteFilePath();
         return 0;
-    }
-
-    if (parser.isSet(screenshotOpt) || previewMode) {
-        // Stable, non-destructive fixture data keeps every visual state
-        // meaningful without probing the host or touching a disk.
-        state.setHostname("repro-workstation");
-        state.setUsername("repro");
-        state.setFullName("Repro User");
-        state.setPassword("visual-fixture");
-        state.setDesktopKind("sway");
-        state.setTargetDevice("/dev/vda");
-        state.setAvailableDisks({
-            "vda 64G VirtIO_System_Disk Red_Hat",
-            "sdb 16G ReproOS_Install_Media Metacraft"
-        });
-        state.setWipeAcknowledged(true);
-        state.setActiveActivities({});
     }
 
     if (parser.isSet(automatedOpt)) {

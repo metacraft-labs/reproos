@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output="$repo_root/build/test-installer-preview/summary.png"
+config_output="$(mktemp -d)"
+trap 'rm -rf "$config_output"' EXIT
 
 # shellcheck source=tools/installer-dev-runtime.sh
 source "$repo_root/tools/installer-dev-runtime.sh"
@@ -16,6 +18,17 @@ reproos_require_installer
 "$REPROOS_INSTALLER_BIN" \
   --preview \
   --automated "$repo_root/tests/fixtures/auto-config-minimal.toml"
+
+# Explicit configuration must override the preview fixtures. Emitting the
+# canonical artifacts exercises the interactive --config startup path without
+# requiring a display server.
+"$REPROOS_INSTALLER_BIN" \
+  --preview \
+  --config "$repo_root/tests/fixtures/auto-config-minimal.toml" \
+  --emit-artifacts "$config_output"
+cmp \
+  "$config_output/auto-config.toml" \
+  "$repo_root/tests/golden/installer-artifacts/auto-config.toml"
 
 rm -f "$output"
 QT_QPA_PLATFORM=offscreen \

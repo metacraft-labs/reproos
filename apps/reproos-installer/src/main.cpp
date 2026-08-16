@@ -99,9 +99,7 @@ int main(int argc, char *argv[]) {
             "sdb 16G ReproOS_Install_Media Metacraft"
         });
         state.setWipeAcknowledged(true);
-        state.setActiveActivities({
-            "daily-computing", "development", "system-tools"
-        });
+        state.setActiveActivities({});
     }
 
     if (parser.isSet(automatedOpt)) {

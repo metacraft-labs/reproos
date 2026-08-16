@@ -136,8 +136,30 @@ if (-not $buildIsoSource.Contains('-p "home/live m 0700 1000 1002"')) {
 
 $installerQml = Get-Content -LiteralPath (
     Join-Path $root 'apps/reproos-installer/qml/main.qml') -Raw
-if (-not $installerQml.Contains(
-    'background: Rectangle { color: "#1a1a22" }')) {
-    throw 'Installer screen stack does not provide a readable dark background.'
+foreach ($requiredInstallerSurface in @(
+    'import "components"',
+    'color: Theme.canvas',
+    'id: "deSelect"',
+    'id: "finished"')) {
+    if (-not $installerQml.Contains($requiredInstallerSurface)) {
+        throw "Installer chrome is missing: $requiredInstallerSurface"
+    }
+}
+
+$desktopScreen = Get-Content -LiteralPath (
+    Join-Path $root 'apps/reproos-installer/qml/screens/DeSelect.qml') -Raw
+if (-not $desktopScreen.Contains('title: "Sway"')) {
+    throw 'Installer does not expose the source-built Sway desktop.'
+}
+foreach ($unavailableDesktop in @('KDE Plasma', 'GNOME', 'Hyprland')) {
+    if ($desktopScreen.Contains($unavailableDesktop)) {
+        throw "Installer advertises unavailable desktop: $unavailableDesktop"
+    }
+}
+
+$activitiesScreen = Get-Content -LiteralPath (
+    Join-Path $root 'apps/reproos-installer/qml/screens/Activities.qml') -Raw
+if (-not $activitiesScreen.Contains('installerState.activeActivities = []')) {
+    throw 'Installer activity screen does not preserve the validated base profile.'
 }
 Write-Host "Validated $($isoDependencies.Count) source packages in both bootable targets."

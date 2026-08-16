@@ -1,129 +1,61 @@
-// M9.R.18.9 -- DE-select screen. Per ReproOS-Installer-PRD.md Sec 3.1
-// screen 7 the user picks a single desktop environment. PRD Sec 9 Q5
-// recommends single-select for v1; multi-DE is a v2 advanced toggle.
-//
-// The four cards mirror the from-source-recipe coverage already
-// shipping in the live ISO (M9.R.16/17): KDE Plasma + GNOME + Sway,
-// plus Hyprland which the multi-de grub.cfg already pre-selects as
-// the default cmdline entry.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-Item {
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 32
-        spacing: 18
+import "../components"
 
-        Label {
-            text: qsTr("Choose your desktop environment")
-            font.pixelSize: 18
-            color: "#e6e6f0"
-        }
+InstallerPage {
+    eyebrow: qsTr("Graphical session")
+    title: qsTr("Desktop profile")
+    description: qsTr("This image includes one desktop whose complete runtime closure is built from source and validated in the boot test.")
 
-        Label {
-            text: qsTr("ReproOS supports all four out of the box. You can switch DEs post-install by editing system.nim.")
-            font.pixelSize: 13
-            color: "#8a8aa3"
-            wrapMode: Text.WordWrap
-            Layout.fillWidth: true
-        }
-
-        GridLayout {
-            columns: 2
-            rowSpacing: 16
-            columnSpacing: 16
-            Layout.topMargin: 16
-            Layout.fillWidth: true
-
-            DeCard {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 140
-                cardId: "plasma"
-                title: qsTr("KDE Plasma")
-                description: qsTr("Feature-rich Qt-based desktop. Familiar to Windows/macOS users; SDDM greeter.")
-                selected: installerState.desktopKind === "plasma"
-                onClicked: installerState.desktopKind = "plasma"
-            }
-
-            DeCard {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 140
-                cardId: "gnome"
-                title: qsTr("GNOME")
-                description: qsTr("Workflow-focused GTK desktop. Touch-friendly; opinionated defaults; GDM greeter.")
-                selected: installerState.desktopKind === "gnome"
-                onClicked: installerState.desktopKind = "gnome"
-            }
-
-            DeCard {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 140
-                cardId: "sway"
-                title: qsTr("Sway")
-                description: qsTr("Tiling Wayland compositor; keyboard-driven; i3-compatible config. Minimal resource footprint.")
-                selected: installerState.desktopKind === "sway"
-                onClicked: installerState.desktopKind = "sway"
-            }
-
-            DeCard {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 140
-                cardId: "hyprland"
-                title: qsTr("Hyprland")
-                description: qsTr("Dynamic tiling Wayland compositor; eye-candy + animations; power-user audience.")
-                selected: installerState.desktopKind === "hyprland"
-                onClicked: installerState.desktopKind = "hyprland"
-            }
-        }
-
-        Item { Layout.fillHeight: true }
+    ChoiceCard {
+        Layout.fillWidth: true
+        Layout.maximumWidth: 760
+        Layout.preferredHeight: 112
+        title: "Sway"
+        description: qsTr("A focused Wayland desktop with keyboard-driven tiling, predictable resource use, and an i3-compatible configuration.")
+        meta: qsTr("INCLUDED")
+        selected: true
+        onChosen: installerState.desktopKind = "sway"
     }
 
-    // Inline component for the four DE cards. Each is a clickable rect
-    // with title + description; the selected one gets a coloured border.
-    component DeCard : Rectangle {
-        id: card
-        property string cardId
-        property string title
-        property string description
-        property bool selected: false
-        signal clicked()
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.maximumWidth: 760
+        spacing: 28
+        Label {
+            text: qsTr("Wayland native")
+            color: Theme.accent
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+        }
+        Label { text: qsTr("Source-built wlroots"); color: Theme.muted; font.pixelSize: 12 }
+        Label { text: qsTr("SDDM login"); color: Theme.muted; font.pixelSize: 12 }
+    }
 
-        color: selected ? "#1c2840" : "#2c2c3a"
-        border.color: selected ? "#5a82c8" : "#3c3c4a"
-        border.width: 2
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.maximumWidth: 760
+        Layout.preferredHeight: 66
+        Layout.topMargin: 8
         radius: 6
-
-        ColumnLayout {
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.border
+        Label {
             anchors.fill: parent
-            anchors.margins: 16
-            spacing: 6
-
-            Label {
-                text: card.title
-                color: "#e6e6f0"
-                font.pixelSize: 16
-                font.weight: Font.Medium
-            }
-
-            Label {
-                text: card.description
-                color: "#b8b8d0"
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-
-            Item { Layout.fillHeight: true }
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: card.clicked()
+            anchors.margins: 14
+            text: qsTr("Additional desktop profiles will appear here only after their complete source package closure and installed-session health checks are available.")
+            color: Theme.muted
+            font.pixelSize: 12
+            lineHeight: 1.2
+            wrapMode: Text.WordWrap
+            verticalAlignment: Text.AlignVCenter
         }
     }
+
+    Item { Layout.fillHeight: true }
+
+    Component.onCompleted: installerState.desktopKind = "sway"
 }

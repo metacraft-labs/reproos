@@ -197,9 +197,10 @@ private:
     QString m_fullName = "Alice Example";
     QString m_password;
     bool m_isAdmin = true;
-    QString m_desktopKind = "plasma";
-    // PRD Sec 4.2 pre-checks Daily Computing + System Tools.
-    QStringList m_activeActivities = {"daily-computing", "system-tools"};
+    QString m_desktopKind = "sway";
+    // Activity modules stay absent until their source package closures
+    // are present in the installed image and covered by health tests.
+    QStringList m_activeActivities;
     QString m_activitiesTomlPath;
     bool m_dryRun = false;
 

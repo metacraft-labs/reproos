@@ -317,11 +317,21 @@ echo "[build-reproos-image] staging rootfs at $STAGE_DIR"
 # ~5 min cold.  Reuse a healthy existing stage when the marker file
 # is present (set REPRO_FORCE_RESTAGE=1 to bypass).
 STAGE_MARKER="$STAGE_DIR/.repro-stage-complete"
+STAGE_INPUT_MARKER="$STAGE_DIR/.repro-stage-input-id"
 STAGE_STALE=0
-for stage_input in \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/build-base-rootfs.sh" \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/stage-de-rootfs.sh" \
-  "$REPO_ROOT/recipes/reproos-iso/scripts/relocate-nix-to-repro.sh"; do
+STAGE_EXTERNAL_INPUTS=(
+  "$REPO_ROOT/recipes/reproos-iso/scripts/build-base-rootfs.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/stage-de-rootfs.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/relocate-nix-to-repro.sh"
+  "$REPO_ROOT/recipes/reproos-iso/scripts/normalize-source-runtime.sh"
+  "$INSTALLER_BIN"
+  "$REPRO_BIN"
+)
+STAGE_INPUT_ID="$(sha256sum "${STAGE_EXTERNAL_INPUTS[@]}" | sha256sum | awk '{print $1}')"
+if [ "$(cat "$STAGE_INPUT_MARKER" 2>/dev/null || true)" != "$STAGE_INPUT_ID" ]; then
+  STAGE_STALE=1
+fi
+for stage_input in "${STAGE_EXTERNAL_INPUTS[@]}"; do
   if [ -f "$STAGE_MARKER" ] && [ "$stage_input" -nt "$STAGE_MARKER" ]; then
     STAGE_STALE=1
     break
@@ -345,6 +355,7 @@ if [ "${REPRO_FORCE_RESTAGE:-0}" = "1" ] || \
     bash scripts/stage-de-rootfs.sh "$STAGE_DIR"
   ) || { echo "[build-reproos-image] stage-de-rootfs.sh failed" >&2; exit 67; }
   touch "$STAGE_MARKER"
+  printf '%s\n' "$STAGE_INPUT_ID" > "$STAGE_INPUT_MARKER"
 else
   echo "[build-reproos-image] stage cache HIT (use REPRO_FORCE_RESTAGE=1 to bypass)"
 fi

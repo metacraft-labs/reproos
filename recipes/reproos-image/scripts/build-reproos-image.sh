@@ -62,6 +62,7 @@ OUT_QCOW2="$1"
 REPO_ROOT="$(cd ../.. && pwd)"
 REPROBUILD_PACKAGES_ROOT="${REPROBUILD_PACKAGES_ROOT:-$REPO_ROOT/../reprobuild-packages}"
 SOURCE_RECIPES_ROOT="${REPRO_FROM_SOURCE_ROOT:-$REPROBUILD_PACKAGES_ROOT/packages/source}"
+TARGET_SOURCE_RECIPES_ROOT="/opt/repro/reprobuild-packages/packages/source"
 RECIPE_DIR="$(pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "$0")" && pwd)"
 ISO_SCRIPTS_DIR="$REPO_ROOT/recipes/reproos-iso/scripts"
@@ -880,6 +881,10 @@ SDDM_EOF
 # succeeds after the warning; the warning is a v2 cleanup.
 # ---------------------------------------------------------------
 
+# Everything from this point writes target-side links. Use the canonical
+# in-image mirror location, independent of the host checkout path.
+SOURCE_RECIPES_ROOT="$TARGET_SOURCE_RECIPES_ROOT"
+
 echo "[build-reproos-image] Phase 10.6: wire dbus RuntimeDirectory + strip gdm.conf + shadow-link libexec helper + replace ExecStart"
 
 "$SUDO" bash -c "
@@ -1356,11 +1361,11 @@ SWAY_CONFIG_EOF
   # configuration path is /usr/etc/fonts rather than Debian's /etc/fonts.
   # Keep both locations available to source and distribution consumers.
   mkdir -p '$MNT_DIR/usr/etc' '$MNT_DIR/etc'
-  if [ ! -e '$MNT_DIR/usr/etc/fonts' ]; then
+  if [ ! -e '$MNT_DIR/usr/etc/fonts' ] && [ ! -L '$MNT_DIR/usr/etc/fonts' ]; then
     ln -s '$SOURCE_RECIPES_ROOT/fontconfig/.repro/output/install/usr/etc/fonts' \
       '$MNT_DIR/usr/etc/fonts'
   fi
-  if [ ! -e '$MNT_DIR/etc/fonts' ]; then
+  if [ ! -e '$MNT_DIR/etc/fonts' ] && [ ! -L '$MNT_DIR/etc/fonts' ]; then
     ln -s '$SOURCE_RECIPES_ROOT/fontconfig/.repro/output/install/usr/etc/fonts' \
       '$MNT_DIR/etc/fonts'
   fi
@@ -1616,12 +1621,13 @@ echo "[build-reproos-image] Phase 10.9: install + enable seatd system service (l
   # and-suspenders: force-link them here in case the recipe layout
   # changes.
   LIBSEAT_INSTALL='$SOURCE_RECIPES_ROOT/libseat/.repro/output/install/usr/bin'
-  if [ -x \"\$LIBSEAT_INSTALL/seatd\" ]; then
+  LIBSEAT_INSTALL_HOST='$MNT_DIR$SOURCE_RECIPES_ROOT/libseat/.repro/output/install/usr/bin'
+  if [ -x \"\$LIBSEAT_INSTALL_HOST/seatd\" ]; then
     ln -sfn \"\$LIBSEAT_INSTALL/seatd\" '$MNT_DIR/usr/bin/seatd'
   else
     echo '[build-reproos-image] warning: seatd binary not at expected install-mirror path' >&2
   fi
-  if [ -x \"\$LIBSEAT_INSTALL/seatd-launch\" ]; then
+  if [ -x \"\$LIBSEAT_INSTALL_HOST/seatd-launch\" ]; then
     ln -sfn \"\$LIBSEAT_INSTALL/seatd-launch\" '$MNT_DIR/usr/bin/seatd-launch'
   fi
 

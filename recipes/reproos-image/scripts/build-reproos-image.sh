@@ -144,7 +144,7 @@ HOST_SYNC_BIN="$(resolve_host_tool sync)"
 # defence-in-depth loop catches any resolver bypass (e.g. direct
 # invocation of build-reproos-image.sh outside the repro build
 # harness) with the same clear diagnostic.
-for tool in qemu-img qemu-nbd parted partprobe sgdisk mkfs.ext4 mkfs.vfat rsync grub-install grub-mkconfig modprobe mountpoint; do
+for tool in qemu-img qemu-nbd parted partprobe sgdisk mkfs.ext4 mkfs.vfat rsync grub-install grub-mkconfig modprobe mountpoint patchelf; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "[build-reproos-image] required tool missing: $tool" >&2
     exit 65
@@ -158,6 +158,7 @@ QEMU_IMG_BIN="$(command -v qemu-img)"
 QEMU_NBD_BIN="$(command -v qemu-nbd)"
 PARTPROBE_BIN="$(command -v partprobe)"
 MODPROBE_BIN="$(command -v modprobe)"
+PATCHELF_BIN="$(command -v patchelf)"
 
 # Locate the `repro` binary.  Probe order:
 #   1. $REPRO_BIN env (caller override).
@@ -1644,7 +1645,7 @@ echo "[build-reproos-image] Phase 10.9: install + enable seatd system service (l
   # reproducible build path; M9.R.68 clean-rebuild regressed it.
   # This phase lands the fix inside build-reproos-image.sh so
   # every future clean rebuild patches the RPATH deterministically.
-  PATCHELF=\$(command -v patchelf 2>/dev/null || true)
+  PATCHELF='$PATCHELF_BIN'
   if [ -n \"\$PATCHELF\" ]; then
     LIBSEAT_INSTALL_ROOT='$MNT_DIR$SOURCE_RECIPES_ROOT/libseat/.repro/output/install'
     for target in \\

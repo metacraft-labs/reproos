@@ -1281,7 +1281,8 @@ Type=Application
 DesktopNames=sway
 EOF
 
-cat > "$STAGE_DIR/usr/share/wayland-sessions/plasma.desktop" <<EOF
+if [ -x "$STAGE_DIR/usr/bin/startplasma-wayland" ]; then
+  cat > "$STAGE_DIR/usr/share/wayland-sessions/plasma.desktop" <<EOF
 [Desktop Entry]
 Name=Plasma (Wayland)
 Comment=Plasma by KDE
@@ -1290,8 +1291,10 @@ TryExec=/usr/bin/startplasma-wayland
 Type=Application
 DesktopNames=KDE
 EOF
+fi
 
-cat > "$STAGE_DIR/usr/share/wayland-sessions/gnome.desktop" <<EOF
+if [ -x "$STAGE_DIR/usr/bin/gnome-session" ]; then
+  cat > "$STAGE_DIR/usr/share/wayland-sessions/gnome.desktop" <<EOF
 [Desktop Entry]
 Name=GNOME
 Comment=This session logs you into GNOME (Wayland)
@@ -1299,6 +1302,7 @@ Exec=/usr/bin/gnome-session
 Type=Application
 DesktopNames=GNOME
 EOF
+fi
 
 # M9.R.18.14 -- ReproOS Installer session.
 cat > "$STAGE_DIR/usr/share/wayland-sessions/reproos-installer.desktop" <<EOF

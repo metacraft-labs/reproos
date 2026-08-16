@@ -108,7 +108,7 @@ ln -s /proc/mounts "$ROOTFS_DIR/etc/mtab"
 ln -s /run "$ROOTFS_DIR/var/run"
 ln -s /run/lock "$ROOTFS_DIR/var/lock"
 ln -s /etc/machine-id "$ROOTFS_DIR/var/lib/dbus/machine-id"
-ln -s /usr/share/zoneinfo/UTC "$ROOTFS_DIR/etc/localtime"
+ln -s /usr/share/zoneinfo/Etc/UTC "$ROOTFS_DIR/etc/localtime"
 ln -s ../../etc/os-release "$ROOTFS_DIR/usr/lib/os-release"
 
 cat > "$ROOTFS_DIR/etc/os-release" <<'EOF'

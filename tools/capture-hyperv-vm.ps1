@@ -19,6 +19,8 @@ public static class ReproOsWindowCapture {
   public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")]
   public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
+  [DllImport("user32.dll")]
+  public static extern bool ShowWindow(IntPtr hWnd, int command);
 }
 '@
 Add-Type -AssemblyName System.Drawing
@@ -29,6 +31,12 @@ $process = Get-Process vmconnect -ErrorAction SilentlyContinue |
 if (-not $process) {
   throw "No open Virtual Machine Connection window found for $VmName"
 }
+
+# VMConnect clips the guest framebuffer when its client area is smaller than
+# the fixed boot resolution. Maximize it before capture so the installer
+# footer is present in the integration frame.
+[void][ReproOsWindowCapture]::ShowWindow($process.MainWindowHandle, 3)
+Start-Sleep -Milliseconds 750
 
 $rect = New-Object ReproOsWindowCapture+RECT
 if (-not [ReproOsWindowCapture]::GetWindowRect(

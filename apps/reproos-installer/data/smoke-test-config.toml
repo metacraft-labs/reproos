@@ -1,36 +1,34 @@
-# M9.R.23.5 — minimal smoke-test config for the --automated installer
-# entry point. Used by the M9.R.23.5 smoke harness:
-#
-#   REPRO_DISK_DRY_RUN=1 QT_QPA_PLATFORM=offscreen \
-#     reproos-installer --automated /path/to/smoke-test-config.toml
-#
-# Under REPRO_DISK_DRY_RUN=1 the install() driver logs "would do X" for
-# every destructive operation + returns success without spawning the
-# underlying CLI commands. This is the dev-host smoke; a real install
-# requires Hyper-V / QEMU with a writable target disk (M9.R.24).
-#
-# Format: key = "value" (one per line). The parser strips surrounding
-# double quotes + skips blank lines + # comments. No nested tables.
+# Canonical smoke configuration for --automated and --emit-artifacts.
+schema_version = 1
+hostname = "reproos-smoke"
 
-hostname = "smoke-host"
+[regional]
 locale = "en_US.UTF-8"
 timezone = "UTC"
 keymap = "us"
 
-username = "smoke-user"
-fullName = "Smoke Tester"
-password = "smoke-pass-changeme"
-isAdmin = "true"
+[user]
+name = "repro"
+full_name = "Repro Test User"
+password_hash = "$6$reproosMvpD1$rrZAqlA3J4u9SLnxnaWWMcQAgVTXMplGNjmnt7yfZP3SyxEv.kE8Va8VbPVD0WBmlLhRrPYz3wO/U5O7Q1mvJ/"
+groups = ["wheel", "audio", "video", "networkmanager"]
+shell = "/bin/bash"
 
-# Disk preset: simple → GPT + ESP(vfat /boot) + ext4(/).
-diskoPreset = "simple"
-targetDevice = "/dev/sda"
-diskPassphrase = ""
+[disk]
+size_gb = 8
 
-# Desktop environment selection; the rendered system.nim imports
-# modules/de/<desktopKind>.nim.
-desktopKind = "plasma"
+[disk.layout]
+type = "uefi-ext4"
+esp_size_mib = 512
 
-# Wizard acks the wipe automatically in --automated mode (the operator
-# wrote the config file by hand, so they already opted in).
-wipeAcknowledged = "true"
+[de]
+default = "sway"
+
+[network]
+ipv4 = "dhcp"
+
+[activities]
+enabled = []
+
+[install]
+target_device = "/dev/vda"

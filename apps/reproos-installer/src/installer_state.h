@@ -129,6 +129,18 @@ public:
     // M9.R.24.2 -- pre-computed JSON form of the disko spec.
     // Lets the installer's apply path bypass `nim r` in the live ISO.
     Q_INVOKABLE QString renderDiskoJson(const QString &id = QString("INSTALL")) const;
+    // Canonical unattended input consumed by recipes/reproos-image.
+    // The wizard and the image recipe share this file as their replay
+    // boundary; no plaintext password is written.
+    Q_INVOKABLE QString renderAutoConfigToml();
+    Q_INVOKABLE QString renderHomeNim() const;
+
+    // Load the supported auto-config TOML schema without starting an
+    // install, then emit every durable configuration artifact to a
+    // directory. These are the CLI/test seams for unattended installs.
+    bool loadAutoConfig(const QString &configPath, QString *error = nullptr);
+    bool writeConfigurationArtifacts(const QString &directory,
+                                     QString *error = nullptr);
     // Toggle an activity on/off. Bound to each activity-card checkbox.
     Q_INVOKABLE void toggleActivity(const QString &name);
     Q_INVOKABLE bool hasActivity(const QString &name) const;
@@ -157,7 +169,8 @@ public:
 
     // Helper hooks used by install() + the tests. Public so a test
     // harness can mock them in.
-    void writeFileAtomic(const QString &path, const QString &text);
+    bool writeFileAtomic(const QString &path, const QString &text,
+                         QString *error = nullptr);
 
 signals:
     void hostnameChanged();
@@ -196,6 +209,8 @@ private:
     QString m_username = "alice";
     QString m_fullName = "Alice Example";
     QString m_password;
+    QString m_passwordHash;
+    QString m_userShell = "/bin/bash";
     bool m_isAdmin = true;
     QString m_desktopKind = "sway";
     // Activity modules stay absent until their source package closures
@@ -211,6 +226,9 @@ private:
     QString m_diskPassphrase;
     bool m_wipeAcknowledged = false;
     QStringList m_availableDisks;
+    int m_diskSizeGb = 8;
+    int m_espSizeMib = 512;
+    QString m_networkIpv4 = "dhcp";
 
     // M9.R.23 install runtime.
     QString m_installLog;
@@ -241,4 +259,6 @@ private:
     // step is logged but skipped. Used by the tests + the
     // --automated smoke harness.
     bool dryRunDestructive() const;
+
+    QString ensurePasswordHash(QString *error);
 };

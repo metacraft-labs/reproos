@@ -25,15 +25,31 @@
 #include <QtQml/QQmlContext>
 #include <QtQuick/QQuickWindow>
 
+#include <memory>
+
 #include "installer_state.h"
 
 int main(int argc, char *argv[]) {
-    QGuiApplication::setApplicationName("ReproOS Installer");
-    QGuiApplication::setApplicationVersion("0.1.0");
-    QGuiApplication::setOrganizationName("ReproOS");
-    QGuiApplication::setOrganizationDomain("reproos.org");
+    QCoreApplication::setApplicationName("ReproOS Installer");
+    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setOrganizationName("ReproOS");
+    QCoreApplication::setOrganizationDomain("reproos.org");
 
-    QGuiApplication app(argc, argv);
+    bool coreOnly = false;
+    for (int i = 1; i < argc; ++i) {
+        const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument == "--emit-artifacts" ||
+            argument.startsWith("--emit-artifacts=") ||
+            argument == "--automated" ||
+            argument.startsWith("--automated=")) {
+            coreOnly = true;
+        }
+    }
+    std::unique_ptr<QCoreApplication> application;
+    if (coreOnly)
+        application = std::make_unique<QCoreApplication>(argc, argv);
+    else
+        application = std::make_unique<QGuiApplication>(argc, argv);
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
@@ -54,10 +70,18 @@ int main(int argc, char *argv[]) {
     QCommandLineOption automatedOpt(
         "automated",
         "Skip the wizard + run install() directly using CONFIG_TOML as "
-        "the source of truth. The TOML is read with a minimal key=value "
-        "parser (no nested tables). Smoke harness + first-boot kiosk "
-        "use this path.",
+        "the source of truth. Smoke harness + first-boot kiosk use this "
+        "path.",
         "config-toml");
+    QCommandLineOption configOpt(
+        "config",
+        "Load CONFIG_TOML into the installer without starting an install.",
+        "config-toml");
+    QCommandLineOption emitArtifactsOpt(
+        "emit-artifacts",
+        "Write auto-config.toml, system.nim, hardware.nim, disko.json, "
+        "and home.nim to DIRECTORY, then exit.",
+        "directory");
     QCommandLineOption screenshotOpt(
         "screenshot",
         "Capture the selected wizard screen to OUTPUT_PNG and exit. "
@@ -76,14 +100,38 @@ int main(int argc, char *argv[]) {
     parser.addOption(activitiesOpt);
     parser.addOption(dryRunOpt);
     parser.addOption(automatedOpt);
+    parser.addOption(configOpt);
+    parser.addOption(emitArtifactsOpt);
     parser.addOption(screenshotOpt);
     parser.addOption(visualScreenOpt);
     parser.addOption(windowSizeOpt);
-    parser.process(app);
+    parser.process(*application);
 
     InstallerState state;
     state.setActivitiesTomlPath(parser.value(activitiesOpt));
     state.setDryRun(parser.isSet(dryRunOpt));
+
+    if (parser.isSet(configOpt)) {
+        QString configError;
+        if (!state.loadAutoConfig(parser.value(configOpt), &configError)) {
+            qCritical().noquote() << "configuration rejected:" << configError;
+            return 2;
+        }
+    }
+
+    if (parser.isSet(emitArtifactsOpt)) {
+        QString artifactError;
+        if (!state.writeConfigurationArtifacts(
+                parser.value(emitArtifactsOpt), &artifactError)) {
+            qCritical().noquote() << "artifact emission failed:"
+                                  << artifactError;
+            return 3;
+        }
+        qInfo().noquote() << "configuration artifacts written to"
+                          << QFileInfo(parser.value(emitArtifactsOpt))
+                                 .absoluteFilePath();
+        return 0;
+    }
 
     if (parser.isSet(screenshotOpt)) {
         // Stable, non-destructive fixture data keeps every visual state
@@ -118,7 +166,8 @@ int main(int argc, char *argv[]) {
         "visualCaptureMode", parser.isSet(screenshotOpt));
 
     const QUrl url(QStringLiteral("qrc:/qml/main.qml"));
-    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
+        application.get(),
         [url](QObject *obj, const QUrl &objUrl) {
             if (!obj && url == objUrl) {
                 QGuiApplication::exit(-1);
@@ -154,17 +203,18 @@ int main(int argc, char *argv[]) {
         const QString output = QFileInfo(
             parser.value(screenshotOpt)).absoluteFilePath();
         QDir().mkpath(QFileInfo(output).absolutePath());
-        QTimer::singleShot(700, &app, [window, output, &app]() {
+        QTimer::singleShot(700, application.get(),
+            [window, output, app = application.get()]() {
             const QImage image = window->grabWindow();
             if (image.isNull() || !image.save(output, "PNG")) {
                 qCritical() << "failed to capture wizard screenshot" << output;
-                app.exit(3);
+                app->exit(3);
                 return;
             }
             qInfo().noquote() << "captured" << output << image.size();
-            app.exit(0);
+            app->exit(0);
         });
     }
 
-    return app.exec();
+    return application->exec();
 }

@@ -100,3 +100,11 @@ before judging aesthetics. Any view missing a required element rates at most
 - Start with `Expected elements: present` or list what is missing.
 - Give specific findings with locations.
 - End with the two highest-priority fixes and a 1-10 rating.
+
+## Regression Workflow
+
+Run `repro test-installer-visuals` after changing installer QML. The task
+recaptures all 20 view/size combinations and compares them with the reviewed
+goldens through GuiAssert. After completing a visual review, accept an intended
+change with `bash tests/test-installer-visuals.sh --update-goldens`, inspect the
+new complete set, and commit the QML and goldens together.

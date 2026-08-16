@@ -10,6 +10,9 @@ package reproos:
     task "installer-screenshots",
       command = "bash tools/capture-installer-screens.sh",
       description = "Capture every installer screen at the visual-review sizes"
+    task "test-installer-visuals",
+      command = "bash tests/test-installer-visuals.sh",
+      description = "Capture all installer screens and compare GuiAssert goldens"
     task "test-installer-artifacts",
       command = "bash tests/test-installer-artifacts.sh",
       description = "Verify installer artifacts and unattended config replay"

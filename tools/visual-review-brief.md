@@ -105,16 +105,16 @@ before judging aesthetics. Any view missing a required element rates at most
 
 ## Regression Workflow
 
-Use `repro preview-installer` to walk the complete wizard as a regular,
-non-destructive desktop app. Use `--screen ID`, `--size WIDTHxHEIGHT`, and
-`--no-build` with `tools/run-installer-preview.sh` for focused iteration. This
-is the primary human design loop; it never requires a VM.
+Use `repro run installer` to walk the complete wizard as a regular,
+non-destructive desktop app. Pass `--screen ID` and `--size WIDTHxHEIGHT` after
+`--` for focused iteration. This is the primary human design loop; it never
+requires a VM.
 
-Run `repro test-installer-visuals` after changing installer QML. The task
-recaptures all 30 view/size combinations and compares them with the reviewed
-goldens through GuiAssert. After completing a visual review, accept an intended
-change with `bash tests/test-installer-visuals.sh --update-goldens`, inspect the
-new complete set, and commit the QML and goldens together.
+Run `repro run installer-screenshots` to capture all reviewed view/size
+combinations. Run `repro build test-installer-visuals` after changing installer
+QML to compare them with the GuiAssert goldens. After completing a visual
+review, accept an intended change with `repro run installer-accept-goldens`,
+inspect the complete set, and commit the QML and goldens together.
 
 For a booted Hyper-V integration check, open the VM in Virtual Machine
 Connection, capture it with `tools/capture-hyperv-vm.ps1`, then run

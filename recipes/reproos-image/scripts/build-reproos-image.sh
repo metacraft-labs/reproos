@@ -90,12 +90,9 @@ echo "[build-reproos-image] config: $REPRO_AUTO_CONFIG"
 #   * /run/wrappers/bin/sudo  -- NixOS (security.sudo.enable = true)
 #   * /usr/local/bin/sudo     -- rare source-install override
 #
-# Every other tool the script invokes is declared in the recipe's
-# runtimeDeps: block (recipes/reproos-image/repro.nim) and resolved
-# via M9.N Batch B path-mode probing at build-plan time -- if a tool
-# goes missing from the dev shell PATH, the resolver raises a
-# structured "tool-resolution failed" diagnostic BEFORE the script
-# fires.
+# Every other tool the script invokes is declared in
+# recipes/reproos-image/package.nim. Reprobuild resolves those executable
+# identities before starting this action.
 SUDO=""
 for cand in /usr/bin/sudo /run/wrappers/bin/sudo /usr/local/bin/sudo; do
   if [ -u "$cand" ] || [ -x "$cand" ]; then
@@ -225,7 +222,7 @@ trap cleanup EXIT
 # extractor for the already-normalized values. The installer owns
 # schema validation and emits the canonical bundle consumed below.
 # ---------------------------------------------------------------
-INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer}"
+INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer}"
 if [ ! -x "$INSTALLER_BIN" ]; then
   echo "[build-reproos-image] installer config emitter missing: $INSTALLER_BIN" >&2
   exit 65

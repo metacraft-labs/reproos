@@ -2,17 +2,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer}"
+installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/build/reproos-installer/out/usr/bin/reproos-installer}"
 fixture="$repo_root/tests/fixtures/auto-config-minimal.toml"
 golden="$repo_root/tests/golden/installer-artifacts"
 
 if [[ ! -x "$installer_bin" ]]; then
-  repro_bin="${REPRO_BIN:-repro}"
-  "$repro_bin" build "$repo_root/apps/reproos-installer" \
-    --tool-provisioning=from-source
-fi
-if [[ ! -x "$installer_bin" ]]; then
-  echo "installer binary missing after build: $installer_bin" >&2
+  echo "installer binary missing: $installer_bin" >&2
+  echo "run: repro build installer --tool-provisioning=from-source" >&2
   exit 1
 fi
 

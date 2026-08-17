@@ -1,69 +1,93 @@
 # ReproOS
 
-ReproOS is a bootable operating-system image composed with reprobuild from
-reusable source package recipes.
+ReproOS is a bootable operating system composed by Reprobuild from reusable,
+source-built packages. The repository root contains the canonical project graph.
+
+## Build Outputs
+
+Run builds from the repository root:
 
 ```console
-just build-iso
-just test-iso
+repro build installer
+repro build iso
+repro build image
+repro build
 ```
 
-`build-iso` builds `recipes/reproos-iso` with from-source provisioning. The ISO
-uses the kernel and modules from `reprobuild-packages/packages/source/kernel`,
-builds its initramfs from that kernel plus source-built BusyBox, and stages the
-same source package closure as the bootable QCOW2 target.
+`installer`, `iso`, and `image` are named outputs. The default target builds all
+three. The project defaults to `from-source` provisioning, so the explicit
+`--tool-provisioning=from-source` flag is only needed when overriding another
+environment setting.
 
-`boot-iso` leaves a VM running for interactive inspection. `test-iso` uses
-vm-harness to boot the newest ISO and requires a serial Linux kernel banner.
+## Tests
 
-## Installer design loop
-
-Installer design does not require a VM. Launch the real source-built Qt app as
-a regular desktop window:
+Validate the graph contract without building product artifacts:
 
 ```console
-just installer
-repro preview-installer
-bash tools/run-installer-preview.sh --screen users --size 1024x768 --no-build
-pwsh tools/run-installer-preview.ps1 -Screen users -Size 1024x768 -NoBuild
+repro lint
 ```
 
-`just installer` is the normal contributor entry point. It selects the native
-launcher for Windows or Linux, builds the installer from source, and opens it
-in preview mode. Preview mode seeds representative account and disk data and
-forces every installation command through the non-destructive simulation
-path. Back, Continue, and the simulated install can therefore be exercised
-across the complete wizard. Running the final simulated step writes
-`auto-config.toml`, `system.nim`, `hardware.nim`, `disko.json`, and `home.nim`
-under `/tmp/repro-installer-<pid>/configuration`; the exact paths appear in the
-install output.
-
-On Windows, the command uses WSLg and the Qt window appears on the Windows
-desktop. A VM boot is reserved for final ISO integration and font, compositor,
-and boot-environment acceptance. Use the launcher scripts directly when a
-specific starting screen, window size, existing config, or no-build run is
-needed.
-
-For automated visual review, `repro installer-screenshots` captures every
-named screen at wide, VM, and compact sizes without booting a VM. See
-`tools/visual-review-brief.md` for the agent review loop.
-
-The normal workspace layout places `reprobuild`, `reprobuild-packages`,
-`vm-harness`, and this repository side by side. Override the source catalog
-with `REPRO_FROM_SOURCE_ROOT` or `REPROBUILD_PACKAGES_ROOT` when needed.
-
-## Contributor commands
-
-Run these from the repository root:
+The complete product suite is the conventional `test` collection:
 
 ```console
-just check       # Validate that both bootable targets use the source catalog
-just installer   # Build and open the safe local installer workflow
-just build-iso   # Build the bootable ISO from source recipes
-just test-iso    # Boot the ISO and verify the serial kernel banner
-just boot-iso    # Leave the ISO running in a VM for interactive acceptance
+repro test
 ```
 
-Reusable package interfaces and recipes belong in the sibling
-`reprobuild-packages` repository. This repository owns the ReproOS image
-composition, installer, boot assets, and product-level tests.
+Focused targets are available while iterating:
+
+```console
+repro build test-installer-preview
+repro build test-installer-visuals
+repro build test-installer-artifacts
+repro build test-source-composition
+repro build test-iso
+repro build test-image-health
+repro build test-unattended-install
+```
+
+The unattended test compares the wizard's generated configuration with the
+reviewed fixture, applies it to the installed image build, and runs the boot
+health check.
+
+## Interactive Workflows
+
+Installer design does not require a VM. Launch the source-built Qt application
+as a regular, non-destructive desktop app:
+
+```console
+repro run installer
+repro run installer -- --screen users --size 1024x768
+repro run installer-screenshots
+repro run installer-accept-goldens
+```
+
+Preview mode exercises the complete wizard and simulates installation. The
+final step writes `auto-config.toml`, `system.nim`, `hardware.nim`, `disko.json`,
+and `home.nim` beneath a temporary configuration directory printed in the log.
+On Windows the launcher uses WSLg.
+
+VM workflows are reserved for integration and acceptance:
+
+```console
+repro run boot-iso
+repro run boot-image
+```
+
+`repro tasks` lists every interactive workflow. See
+`tools/visual-review-brief.md` for the screenshot review process.
+
+## Project Layout
+
+The root `repro.nim` composes focused package modules:
+
+- `apps/reproos-installer/package.nim` builds the Qt/QML installer.
+- `recipes/reproos-iso/package.nim` builds the live bootable ISO.
+- `recipes/reproos-image/package.nim` builds the installed QCOW2 image.
+- `repro/workflows.nim` defines tests and interactive run edges.
+
+Reusable package interfaces and source recipes live in the sibling
+`reprobuild-packages` repository. ReproOS owns product composition, installer
+sources, boot assets, and product-level tests. The normal workspace places
+`reprobuild`, `reprobuild-packages`, `vm-harness`, and this repository side by
+side. `REPRO_FROM_SOURCE_ROOT` and `REPROBUILD_PACKAGES_ROOT` can override that
+layout.

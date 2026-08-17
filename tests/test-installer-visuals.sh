@@ -23,7 +23,8 @@ if [[ "${GUIASSERT_DEV_SHELL:-0}" != 1 ]]; then
     env GUIASSERT_DEV_SHELL=1 bash "$0" "$@"
 fi
 
-bash "$repo_root/tools/capture-installer-screens.sh" --output "$current_dir"
+bash "$repo_root/tools/capture-installer-screens.sh" \
+  --output "$current_dir" --no-build
 
 if [[ "${1:-}" == --update-goldens ]]; then
   rm -rf "$golden_dir"

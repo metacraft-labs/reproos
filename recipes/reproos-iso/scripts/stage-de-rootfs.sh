@@ -395,7 +395,7 @@ extract_nix_prefixes_from_elf() {
   fi
   printf '%s\n' "$interp" | sed -nE 's|^(/nix/store/[^/]+)(/.*)?$|\1|p'
 }
-SOURCE_RUNTIME_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer}"
+SOURCE_RUNTIME_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer}"
 export ISO_SRC_MIRROR_ROOT SOURCE_RUNTIME_INSTALLER_BIN
 export -f extract_nix_prefixes_from_elf
 
@@ -2029,11 +2029,11 @@ fi
 
 REPROOS_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-}"
 if [ -z "$REPROOS_INSTALLER_BIN" ]; then
-  REPROOS_INSTALLER_BIN="$REPO_ROOT/apps/reproos-installer/.repro/output/install/usr/bin/reproos-installer"
+  REPROOS_INSTALLER_BIN="$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer"
 fi
 if [ ! -x "$REPROOS_INSTALLER_BIN" ]; then
   echo "[stage-de-rootfs] reproos-installer binary missing or not executable at $REPROOS_INSTALLER_BIN" >&2
-  echo "[stage-de-rootfs] build the recipe first: \`repro build apps/reproos-installer --tool-provisioning=from-source\`" >&2
+  echo "[stage-de-rootfs] build the installer first: \`repro build installer --tool-provisioning=from-source\`" >&2
   exit 66
 fi
 mkdir -p "$STAGE_DIR/usr/bin"
@@ -2047,7 +2047,7 @@ if [ -z "$REPRO_CLI_BIN" ]; then
 fi
 if [ ! -x "$REPRO_CLI_BIN" ]; then
   echo "[stage-de-rootfs] repro CLI binary missing or not executable at $REPRO_CLI_BIN" >&2
-  echo "[stage-de-rootfs] build it first: \`just build\` or run the bootstrap script" >&2
+  echo "[stage-de-rootfs] build the sibling reprobuild repository first: \`repro build\`" >&2
   exit 67
 fi
 cp "$REPRO_CLI_BIN" "$STAGE_DIR/usr/bin/repro"

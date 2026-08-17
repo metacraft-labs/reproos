@@ -8,7 +8,7 @@ vm_harness="${VM_HARNESS_BIN:-vm-harness}"
 
 if [[ ! -s "$image" ]]; then
   echo "installed image missing: $image" >&2
-  echo "run: repro build recipes/reproos-image --tool-provisioning=from-source" >&2
+  echo "run: repro build image --tool-provisioning=from-source" >&2
   exit 1
 fi
 

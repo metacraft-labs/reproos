@@ -1,22 +1,38 @@
 # ReproOS
 
-ReproOS is a product repository. Changes land on `dev`; `stable` remains the
-published release branch and default branch.
+ReproOS is a product repository. Changes land on `dev`; `stable` is the
+published release and default branch.
 
-The reusable package interfaces and source recipes live in the sibling
-`reprobuild-packages` repository. Do not copy package definitions into this
-repository. ReproOS owns only the image composition, installer, boot assets,
-and product-specific tests.
+Reusable package interfaces and source recipes belong in the sibling
+`reprobuild-packages` repository. ReproOS owns image composition, installer
+sources, boot assets, and product-specific tests.
 
-Use the repository's `just` commands from the repository root:
+Use Reprobuild as the only contributor command surface:
 
-- `just installer` builds and opens the real Qt installer in safe preview
-  mode. It generates the durable configuration artifacts and simulates every
-  installation phase without probing the host or modifying a disk.
-- `just check` validates the source package composition.
-- `just build-iso` builds the bootable ISO from the federated source catalog.
-- `just test-iso` boots the ISO through vm-harness and checks its serial output.
-- `just boot-iso` leaves a VM open for final interactive inspection.
+- `repro build installer`, `repro build iso`, and `repro build image` produce
+  the named artifacts from source.
+- `repro build` produces the default artifact collection.
+- `repro test` runs the complete product test collection; focused tests are
+  named `test-*` build targets.
+- `repro lint` enforces the project-graph structure and source-only package
+  closure before review.
+- `repro run installer` opens the safe local installer preview.
+- `repro run installer-screenshots` captures every reviewed installer view.
+- `repro run boot-iso` and `repro run boot-image` leave VMs open for manual
+  acceptance.
+- `repro tasks` lists interactive workflows.
 
-Use `just installer` for normal installer development. Reserve VM boots for
-final ISO, compositor, font, and boot-environment acceptance.
+Use the local installer run edge for routine design work. Reserve VM boots for
+final ISO, compositor, font, installation, and boot-environment acceptance.
+
+Keep `repro.nim` declarative and concise. Put focused graph-construction helpers
+in imported `package.nim` modules, expose stable action/output constants needed
+by consumers, declare all inputs and executable identities, and cover graph
+composition with structural tests.
+
+Use stable action IDs for every action. Shell actions must declare the files
+they invoke directly, attach executable identities for their tools, and either
+declare outputs or be explicitly non-cacheable. Keep dependency declarations
+literal until the DSL can extract computed lists; `repro lint` verifies that the
+ISO and image declarations remain duplicate-free and exactly match the canonical
+package set.

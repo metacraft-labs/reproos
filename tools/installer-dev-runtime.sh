@@ -10,8 +10,8 @@ reproos_installer_runtime_init() {
   local qpa_plugin_path=""
   local qt_package prefix plugins imports
 
-  REPROOS_INSTALLER_PROJECT="$repo_root/apps/reproos-installer"
-  REPROOS_INSTALLER_BIN="$REPROOS_INSTALLER_PROJECT/.repro/output/install/usr/bin/reproos-installer"
+  REPROOS_INSTALLER_PROJECT="$repo_root"
+  REPROOS_INSTALLER_BIN="$repo_root/build/reproos-installer/out/usr/bin/reproos-installer"
   REPROOS_SOURCE_ROOT="${REPRO_FROM_SOURCE_ROOT:-$repo_root/../reprobuild-packages/packages/source}"
 
   for qt_package in qt6-base qt6-declarative qt6-quickcontrols2 qt6-wayland qt6-tools; do
@@ -55,13 +55,16 @@ reproos_installer_runtime_init() {
 
 reproos_build_installer() {
   local repro_bin="${REPRO_BIN:-repro}"
-  "$repro_bin" build "$REPROOS_INSTALLER_PROJECT" --tool-provisioning=from-source
+  (
+    cd "$REPROOS_INSTALLER_PROJECT"
+    "$repro_bin" build installer --tool-provisioning=from-source
+  )
 }
 
 reproos_require_installer() {
   if [ ! -x "$REPROOS_INSTALLER_BIN" ]; then
     echo "installer binary missing: $REPROOS_INSTALLER_BIN" >&2
-    echo "run without --no-build or set REPRO_BIN" >&2
+    echo "run: repro build installer --tool-provisioning=from-source" >&2
     return 3
   fi
 }

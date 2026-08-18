@@ -221,7 +221,8 @@ if [ ! -x "$SOURCE_GLIBC_LOCALEDEF" ] || \
   exit 67
 fi
 mkdir -p "$STAGE_DIR/usr/lib/locale"
-"$SOURCE_GLIBC_LOADER_STAGED" \
+I18NPATH="$SOURCE_GLIBC_LOCALEDATA" \
+  "$SOURCE_GLIBC_LOADER_STAGED" \
   --library-path "$SOURCE_GLIBC_RUNTIME_DIR_STAGED" \
   "$SOURCE_GLIBC_LOCALEDEF" \
   --prefix="$STAGE_DIR" \

@@ -291,6 +291,7 @@ def main() -> None:
         "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         'if [ "$(id -u)" -eq 0 ] && [ "$(tty)" = "/dev/tty1" ]',
         "source glibc C.UTF-8 locale generation failed",
+        'I18NPATH="$SOURCE_GLIBC_LOCALEDATA"',
         'resolve_staged_image_path "/sbin/ldconfig"',
         '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
         '"$ISO_SRC_MIRROR_ROOT"/*) continue',

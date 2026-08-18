@@ -397,7 +397,8 @@ extract_nix_prefixes_from_elf() {
   printf '%s\n' "$interp" | sed -nE 's|^(/nix/store/[^/]+)(/.*)?$|\1|p'
 }
 SOURCE_RUNTIME_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer}"
-export ISO_SRC_MIRROR_ROOT SOURCE_RUNTIME_INSTALLER_BIN
+SOURCE_RUNTIME_REPRO_BIN="${REPRO_CLI_BIN:-${REPROBUILD_SRC:-$REPO_ROOT/../reprobuild}/build/bin/repro}"
+export ISO_SRC_MIRROR_ROOT SOURCE_RUNTIME_INSTALLER_BIN SOURCE_RUNTIME_REPRO_BIN
 export -f extract_nix_prefixes_from_elf
 
 # Walk the staged source mirror + the reproos-installer + repro CLI.
@@ -410,8 +411,8 @@ export -f extract_nix_prefixes_from_elf
   if [ -x "$SOURCE_RUNTIME_INSTALLER_BIN" ]; then
     echo "$SOURCE_RUNTIME_INSTALLER_BIN"
   fi
-  if [ -x "$REPO_ROOT/build/bin/repro" ]; then
-    echo "$REPO_ROOT/build/bin/repro"
+  if [ -x "$SOURCE_RUNTIME_REPRO_BIN" ]; then
+    echo "$SOURCE_RUNTIME_REPRO_BIN"
   fi
 } | while IFS= read -r elf; do
   # Cheap ELF-magic check before patchelf invocation.
@@ -2042,10 +2043,7 @@ cp "$REPROOS_INSTALLER_BIN" "$STAGE_DIR/usr/bin/reproos-installer"
 chmod +x "$STAGE_DIR/usr/bin/reproos-installer"
 echo "[stage-de-rootfs] overlayed reproos-installer binary (bytes=$(stat -c %s "$STAGE_DIR/usr/bin/reproos-installer"))"
 
-REPRO_CLI_BIN="${REPRO_CLI_BIN:-}"
-if [ -z "$REPRO_CLI_BIN" ]; then
-  REPRO_CLI_BIN="$REPO_ROOT/../reprobuild/build/bin/repro"
-fi
+REPRO_CLI_BIN="$SOURCE_RUNTIME_REPRO_BIN"
 if [ ! -x "$REPRO_CLI_BIN" ]; then
   echo "[stage-de-rootfs] repro CLI binary missing or not executable at $REPRO_CLI_BIN" >&2
   echo "[stage-de-rootfs] build the sibling reprobuild repository first: \`repro build\`" >&2

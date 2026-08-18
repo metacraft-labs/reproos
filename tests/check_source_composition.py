@@ -292,6 +292,7 @@ def main() -> None:
         'if [ "$(id -u)" -eq 0 ] && [ "$(tty)" = "/dev/tty1" ]',
         "source glibc C.UTF-8 locale generation failed",
         'I18NPATH="$SOURCE_GLIBC_LOCALEDATA"',
+        'SOURCE_RUNTIME_REPRO_BIN="${REPRO_CLI_BIN:-${REPROBUILD_SRC:-$REPO_ROOT/../reprobuild}/build/bin/repro}"',
         'resolve_staged_image_path "/sbin/ldconfig"',
         '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
         '"$ISO_SRC_MIRROR_ROOT"/*) continue',

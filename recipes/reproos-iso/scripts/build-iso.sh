@@ -497,6 +497,9 @@ fi
 
 "$GRUB_MKRESCUE_BIN" \
   "${GRUB_MKRESCUE_FLAGS[@]}" \
+  --fonts= \
+  --locales= \
+  --themes= \
   --compress=xz \
   --product-name='ReproOS' \
   --product-version='source-1' \

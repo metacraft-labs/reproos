@@ -29,6 +29,8 @@ package reproosIso:
   uses:
     "sh"
     "patchelf"
+    "xorriso"
+    "mtools"
 
   # The DSL currently extracts dependency declarations as string literals.
   # The graph-quality check keeps this block identical to the canonical set.
@@ -207,7 +209,8 @@ package reproosIso:
         "build/reproos.iso",
       ])
     appendRegisteredActionToolIdentityRefs(buildIsoAction.id,
-      @["bash", "patchelf"] & packageSets.ReproosGraphicalRootfsPackages)
+      @["bash", "patchelf", "xorriso", "mtools"] &
+        packageSets.ReproosGraphicalRootfsPackages)
     setRegisteredActionCwd(buildIsoAction.id, acwdCustom,
       "recipes/reproos-iso")
     discard target("iso", buildIsoAction)

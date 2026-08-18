@@ -139,6 +139,11 @@ def main() -> None:
         raise AssertionError("root repro.nim must remain a composition manifest")
     for path in [ISO_RECIPE, IMAGE_RECIPE, WORKFLOW_RECIPE]:
         require_shell_action_contracts(path)
+    require_contains(
+        ISO_RECIPE,
+        ['"xorriso"', '"mtools"'],
+        "ISO source authoring tool interface",
+    )
 
     obsolete = [
         ROOT / "Justfile",

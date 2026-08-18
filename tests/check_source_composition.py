@@ -322,11 +322,16 @@ def main() -> None:
         ],
         "source runtime normalization",
     )
-    require_contains(
-        ROOT / "recipes/reproos-iso/scripts/build-base-rootfs.sh",
-        ['chown -R 1000:1002 "$ROOTFS_DIR/home/live"'],
-        "base rootfs staging",
+    base_rootfs_content = source(
+        ROOT / "recipes/reproos-iso/scripts/build-base-rootfs.sh"
     )
+    if re.search(r"(^|\s)chown\s", base_rootfs_content):
+        raise AssertionError("base rootfs staging must remain unprivileged")
+    for ownership_flag in ["--numeric-owner", "--owner=0", "--group=0"]:
+        if ownership_flag not in base_rootfs_content:
+            raise AssertionError(
+                f"base rootfs staging is missing deterministic ownership: {ownership_flag}"
+            )
     require_contains(
         ROOT / "recipes/reproos-iso/scripts/build-iso.sh",
         ['-p "home/live m 0700 1000 1002"'],

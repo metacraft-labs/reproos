@@ -318,7 +318,6 @@ EOF
 cat > "$ROOTFS_DIR/home/live/.profile" <<'EOF'
 [ -r /etc/profile ] && . /etc/profile
 EOF
-chown -R 1000:1002 "$ROOTFS_DIR/home/live"
 
 cat > "$ROOTFS_DIR/etc/issue" <<'EOF'
 ReproOS \n \l

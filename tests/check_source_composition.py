@@ -141,7 +141,7 @@ def main() -> None:
         require_shell_action_contracts(path)
     require_contains(
         ISO_RECIPE,
-        ['"xorriso"', '"mtools"'],
+        ['"xorriso"', '"mtools"', '"squashfs-tools"'],
         "ISO source authoring tool interface",
     )
 

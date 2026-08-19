@@ -257,12 +257,14 @@ cp -a "$SOURCE_GLIBC_LOCALEDEF" "$localedef_runner"
   "$localedef_runner"
 I18NPATH="$SOURCE_GLIBC_LOCALEDATA" \
   "$localedef_runner" \
+  --no-archive \
   --prefix="$STAGE_DIR" \
   -i "$SOURCE_GLIBC_LOCALEDATA/locales/C" \
   -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" \
   C.UTF-8
 rm -f "$localedef_runner"
-if [ ! -s "$STAGE_DIR/usr/lib/locale/locale-archive" ]; then
+if [ ! -s "$STAGE_DIR/usr/lib/locale/C.utf8/LC_CTYPE" ] || \
+   [ ! -s "$STAGE_DIR/usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES" ]; then
   echo "[stage-de-rootfs] source glibc C.UTF-8 locale generation failed" >&2
   exit 67
 fi

@@ -4,7 +4,7 @@
 ## generated installer configuration to a QCOW2 device, and installs the boot
 ## loader. The resulting image is ready for VM boot and health testing.
 
-import std/strutils
+import std/[os, strutils]
 
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
@@ -230,6 +230,7 @@ package reproosImage:
     "tail"
 
   build:
+    let projectRoot = activeProviderProjectRoot()
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
     let buildImageCommand = @[
@@ -273,4 +274,7 @@ package reproosImage:
       reproosImageRuntimeTools & packageSets.ReproosGraphicalRootfsPackages)
     setRegisteredActionCwd(buildImageAction.id, acwdCustom,
       "recipes/reproos-image")
+    let imageBuildDirAbs = projectRoot / "recipes/reproos-image/build"
+    setRegisteredActionDependencyPolicy(buildImageAction.id,
+      automaticMonitorPolicy(@[imageBuildDirAbs]))
     discard target("image", buildImageAction)

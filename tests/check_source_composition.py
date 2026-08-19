@@ -278,6 +278,17 @@ def main() -> None:
         if value not in iso_content:
             raise AssertionError(f"ISO recipe is missing source-build input: {value}")
 
+    image_content = source(IMAGE_RECIPE)
+    for value in [
+        'let imageBuildDirAbs = projectRoot / "recipes/reproos-image/build"',
+        "setRegisteredActionDependencyPolicy(buildImageAction.id",
+        "automaticMonitorPolicy(@[imageBuildDirAbs])",
+    ]:
+        if value not in image_content:
+            raise AssertionError(
+                f"image recipe is missing output dependency exclusion: {value}"
+            )
+
     active_sources = [
         ISO_RECIPE,
         IMAGE_RECIPE,

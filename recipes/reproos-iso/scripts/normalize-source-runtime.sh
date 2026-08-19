@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -lt 3 ]; then
-  echo "usage: $0 STAGE_DIR SOURCE_MIRROR_ROOT SOURCE_GLIBC_LOADER [EXTRA_ELF ...]" >&2
+if [ "$#" -lt 4 ]; then
+  echo "usage: $0 STAGE_DIR SOURCE_MIRROR_ROOT SOURCE_GLIBC_LOADER SOURCE_GLIBC_VERSION [EXTRA_ELF ...]" >&2
   exit 64
 fi
 
 stage_dir="${1%/}"
 source_root="${2%/}"
 source_glibc_loader="$3"
-shift 3
+source_glibc_version="$4"
+shift 4
 extra_elfs=("$@")
 
 case "$source_root" in
@@ -33,9 +34,7 @@ if [ ! -x "$source_glibc_loader_staged" ] || \
   echo "[normalize-source-runtime] incomplete source glibc: $source_glibc_dir" >&2
   exit 65
 fi
-source_glibc_version="$("$source_glibc_loader_staged" --version 2>&1 | \
-  sed -nE 's/.*version ([0-9]+\.[0-9]+).*/\1/p' | head -n1)"
-if [ -z "$source_glibc_version" ]; then
+if [[ ! "$source_glibc_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
   echo "[normalize-source-runtime] could not determine source glibc version" >&2
   exit 65
 fi
@@ -182,6 +181,19 @@ is_compatible_bootstrap_glibc() {
   [ "$oldest_version" = "$bootstrap_version" ]
 }
 
+run_patchelf_mutation() {
+  local elf="$1"
+  local operation="$2"
+  shift 2
+  local diagnostic=""
+
+  if ! diagnostic="$("$patchelf_bin" "$@" "$elf" 2>&1)"; then
+    echo "[normalize-source-runtime] patchelf failed for ${elf#$stage_dir} ($operation)" >&2
+    [ -z "$diagnostic" ] || echo "$diagnostic" >&2
+    return 1
+  fi
+}
+
 while IFS= read -r elf; do
   is_elf "$elf" || continue
   interpreter="$("$patchelf_bin" --print-interpreter "$elf" 2>/dev/null || true)"
@@ -307,12 +319,14 @@ while IFS= read -r elf; do
   done < <("$patchelf_bin" --print-needed "$elf" 2>/dev/null || true)
 
   chmod u+w "$elf" 2>/dev/null || true
-  if [ -n "$old_interpreter" ]; then
+  if [ -n "$old_interpreter" ] && \
+     [ "$old_interpreter" != "$source_glibc_loader" ]; then
     if ! is_compatible_bootstrap_glibc "$old_interpreter"; then
       echo "[normalize-source-runtime] source glibc $source_glibc_version is older than $old_interpreter" >&2
       exit 75
     fi
-    "$patchelf_bin" --set-interpreter "$source_glibc_loader" "$elf"
+    run_patchelf_mutation "$elf" set-interpreter \
+      --set-interpreter "$source_glibc_loader"
     add_rpath "$source_glibc_dir"
   fi
 
@@ -320,10 +334,10 @@ while IFS= read -r elf; do
   if [ "${#new_rpaths[@]}" -gt 0 ]; then
     new_rpath="$(IFS=:; printf '%s' "${new_rpaths[*]}")"
   fi
-  if [ -n "$new_rpath" ]; then
-    "$patchelf_bin" --set-rpath "$new_rpath" "$elf"
-  else
-    "$patchelf_bin" --remove-rpath "$elf" 2>/dev/null || true
+  if [ -n "$new_rpath" ] && [ "$new_rpath" != "$old_rpath" ]; then
+    run_patchelf_mutation "$elf" set-rpath --set-rpath "$new_rpath"
+  elif [ -z "$new_rpath" ] && [ -n "$old_rpath" ]; then
+    run_patchelf_mutation "$elf" remove-rpath --remove-rpath
   fi
   normalized=$((normalized + 1))
   unset -f add_rpath

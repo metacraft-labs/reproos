@@ -186,13 +186,22 @@ if [ ! -e "$SOURCE_GLIBC_RUNTIME_DIR_STAGED/libc.so.6" ]; then
   echo "[stage-de-rootfs] source glibc loader has no matching libc.so.6" >&2
   exit 67
 fi
+SOURCE_GLIBC_LOADER_RUNNER="$(realpath -m "$SOURCE_GLIBC_LOADER_STAGED")"
+SOURCE_GLIBC_RUNTIME_DIR_RUNNER="$(realpath -m "$SOURCE_GLIBC_RUNTIME_DIR_STAGED")"
 SOURCE_GLIBC_LOADER="${SOURCE_GLIBC_LOADER_STAGED#$STAGE_DIR}"
 SOURCE_GLIBC_RUNTIME_DIR="${SOURCE_GLIBC_RUNTIME_DIR_STAGED#$STAGE_DIR}"
-SOURCE_GLIBC_VERSION="$("$SOURCE_GLIBC_LOADER_STAGED" --version 2>&1 | \
-  sed -nE 's/.*version ([0-9]+\.[0-9]+).*/\1/p' | head -n1)"
+SOURCE_GLIBC_VERSION="$(sed -nE \
+  's/^#define VERSION "([0-9]+\.[0-9]+)"/\1/p' \
+  "$SRC_RECIPES_ROOT/glibc/src/version.h" | head -n1)"
 if [ -z "$SOURCE_GLIBC_VERSION" ]; then
   echo "[stage-de-rootfs] could not determine source glibc version" >&2
   exit 67
+fi
+
+patchelf_bin="$(command -v patchelf || true)"
+if [ -z "$patchelf_bin" ]; then
+  echo "[stage-de-rootfs] patchelf not in PATH; cannot stage source ELFs" >&2
+  exit 70
 fi
 
 # Install the source glibc runtime at the conventional loader path as well as
@@ -221,14 +230,21 @@ if [ ! -x "$SOURCE_GLIBC_LOCALEDEF" ] || \
   exit 67
 fi
 mkdir -p "$STAGE_DIR/usr/lib/locale"
+localedef_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-localedef")"
+mkdir -p "$(dirname "$localedef_runner")"
+cp -a "$SOURCE_GLIBC_LOCALEDEF" "$localedef_runner"
+"$patchelf_bin" --set-interpreter "$SOURCE_GLIBC_LOADER_RUNNER" \
+  "$localedef_runner"
+"$patchelf_bin" --force-rpath \
+  --set-rpath "$SOURCE_GLIBC_RUNTIME_DIR_RUNNER" \
+  "$localedef_runner"
 I18NPATH="$SOURCE_GLIBC_LOCALEDATA" \
-  "$SOURCE_GLIBC_LOADER_STAGED" \
-  --library-path "$SOURCE_GLIBC_RUNTIME_DIR_STAGED" \
-  "$SOURCE_GLIBC_LOCALEDEF" \
+  "$localedef_runner" \
   --prefix="$STAGE_DIR" \
   -i "$SOURCE_GLIBC_LOCALEDATA/locales/C" \
   -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" \
   C.UTF-8
+rm -f "$localedef_runner"
 if [ ! -s "$STAGE_DIR/usr/lib/locale/locale-archive" ]; then
   echo "[stage-de-rootfs] source glibc C.UTF-8 locale generation failed" >&2
   exit 67
@@ -348,13 +364,6 @@ echo "[stage-de-rootfs] overlaid etc/ subtrees from $etc_overlay_count from-sour
 
 # Discover candidate ELFs (from the staged mirror + the reproos-
 # installer + repro CLI binaries we overlay later in this script).
-patchelf_bin="$(command -v patchelf || true)"
-if [ -z "$patchelf_bin" ]; then
-  echo "[stage-de-rootfs] patchelf not in PATH; cannot compute nix-store closure" >&2
-  echo "[stage-de-rootfs] expected nix-shell to provision patchelf via the bootstrap-linux-smoke.sh" >&2
-  exit 70
-fi
-
 # Collect nix-store prefixes from every ELF's RPATH + PT_INTERP.
 # Using a temporary file as a poor-man's set; sort -u dedup at end.
 nix_prefixes_file="$(mktemp -t reproos-iso-nix-prefixes-XXXXXX)"
@@ -812,8 +821,9 @@ link_base_recipe_binaries() {
   # the live environment and acceptance tooling expect as a normal command.
   if [ "$recipe" = "busybox" ]; then
     local busybox_src="$install_usr/bin/busybox"
-    if [ ! -x "$busybox_src" ] || \
-       ! "$busybox_src" --list | grep -qx hostname; then
+    local busybox_hostname="$install_usr/bin/hostname"
+    if [ ! -x "$busybox_src" ] || [ ! -L "$busybox_hostname" ] || \
+       [ "$(readlink "$busybox_hostname")" != "busybox" ]; then
       echo "[stage-de-rootfs] required source BusyBox hostname applet missing" >&2
       return 1
     fi
@@ -2098,6 +2108,7 @@ echo "[stage-de-rootfs] mirrored $propagated_mirrored propagated runtime prefixe
 echo "[stage-de-rootfs] normalizing source-only runtime closure"
 bash "$SCRIPT_DIR_SELF/normalize-source-runtime.sh" \
   "$STAGE_DIR" "$ISO_SRC_MIRROR_ROOT" "$SOURCE_GLIBC_LOADER" \
+  "$SOURCE_GLIBC_VERSION" \
   "$STAGE_DIR/usr/bin/reproos-installer" "$STAGE_DIR/usr/bin/repro"
 
 # libclingo is loaded by name at runtime and therefore is not visible to the
@@ -2255,16 +2266,30 @@ if resolve_staged_image_path "/sbin/ldconfig" >/dev/null && \
   # debootstrap + Arch's pacstrap both use.
   ldconfig_log="$STAGE_DIR/tmp/reproos-ldconfig.log"
   mkdir -p "$(dirname "$ldconfig_log")"
-  # Run through the staged source loader so image-owned /opt RPATHs never
-  # resolve against the build host while retaining ldconfig's unprivileged -r.
-  if ! "$STAGE_DIR$SOURCE_GLIBC_LOADER" \
-      --library-path "$STAGE_DIR$SOURCE_GLIBC_RUNTIME_DIR" \
-      "$source_ldconfig" -r "$STAGE_DIR" >"$ldconfig_log" 2>&1; then
+  # Give the staging copy a host-resolvable source interpreter so the kernel
+  # executes ldconfig as the main image. Invoking ld.so as a command hides the
+  # target image from preload monitors and makes dependency evidence incomplete.
+  ldconfig_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-ldconfig")"
+  source_ldconfig_interpreter="$($patchelf_bin --print-interpreter \
+    "$source_ldconfig" 2>/dev/null || true)"
+  if [ -z "$source_ldconfig_interpreter" ]; then
+    echo "[stage-de-rootfs] source ldconfig must be dynamically linked for observable cache generation" >&2
+    exit 67
+  fi
+  cp -a "$source_ldconfig" "$ldconfig_runner"
+  "$patchelf_bin" --set-interpreter "$SOURCE_GLIBC_LOADER_RUNNER" \
+    "$ldconfig_runner"
+  "$patchelf_bin" --force-rpath \
+    --set-rpath "$SOURCE_GLIBC_RUNTIME_DIR_RUNNER" \
+    "$ldconfig_runner"
+  if ! "$ldconfig_runner" -r "$STAGE_DIR" >"$ldconfig_log" 2>&1; then
     cat "$ldconfig_log" >&2
+    rm -f "$ldconfig_runner"
     rm -f "$ldconfig_log"
     echo "[stage-de-rootfs] source ldconfig failed" >&2
     exit 1
   fi
+  rm -f "$ldconfig_runner"
   grep -vE 'is not a symbolic link|file format not recognized' \
     "$ldconfig_log" || true
   rm -f "$ldconfig_log"

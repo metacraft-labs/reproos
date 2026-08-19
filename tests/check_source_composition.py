@@ -14,6 +14,10 @@ ISO_RECIPE = ROOT / "recipes/reproos-iso/package.nim"
 IMAGE_RECIPE = ROOT / "recipes/reproos-image/package.nim"
 WORKFLOW_RECIPE = ROOT / "repro/workflows.nim"
 PACKAGE_SETS = ROOT / "repro/package_sets.nim"
+STAGE_ROOTFS_SCRIPT = ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh"
+NORMALIZE_RUNTIME_SCRIPT = (
+    ROOT / "recipes/reproos-iso/scripts/normalize-source-runtime.sh"
+)
 CONTRIBUTOR_GUIDE = ROOT / "AGENTS.md"
 README = ROOT / "README.md"
 
@@ -259,7 +263,7 @@ def main() -> None:
     active_sources = [
         ISO_RECIPE,
         IMAGE_RECIPE,
-        ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+        STAGE_ROOTFS_SCRIPT,
         ROOT / "recipes/reproos-iso/scripts/build-initramfs.sh",
         ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
     ]
@@ -306,15 +310,34 @@ def main() -> None:
         'if [ "$(id -u)" -eq 0 ] && [ "$(tty)" = "/dev/tty1" ]',
         "source glibc C.UTF-8 locale generation failed",
         'I18NPATH="$SOURCE_GLIBC_LOCALEDATA"',
+        '"$SRC_RECIPES_ROOT/glibc/src/version.h"',
+        'localedef_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-localedef")"',
+        'SOURCE_GLIBC_LOADER_RUNNER="$(realpath -m "$SOURCE_GLIBC_LOADER_STAGED")"',
+        'SOURCE_GLIBC_RUNTIME_DIR_RUNNER="$(realpath -m "$SOURCE_GLIBC_RUNTIME_DIR_STAGED")"',
+        '"$patchelf_bin" --force-rpath',
+        '"$localedef_runner"',
         'SOURCE_RUNTIME_REPRO_BIN="${REPRO_CLI_BIN:-${REPROBUILD_SRC:-$REPO_ROOT/../reprobuild}/build/bin/repro}"',
         'resolve_staged_image_path "/sbin/ldconfig"',
+        'ldconfig_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-ldconfig")"',
+        "source ldconfig must be dynamically linked for observable cache generation",
+        '"$ldconfig_runner" -r "$STAGE_DIR"',
         '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
+        '"$SOURCE_GLIBC_VERSION"',
         '"$ISO_SRC_MIRROR_ROOT"/*) continue',
         'resolve_staged_image_path "$image_link"',
     ]
     for value in stage_requirements:
         if value not in stage_content:
             raise AssertionError(f"ISO staging is missing runtime surface: {value}")
+    for obsolete_invocation in [
+        '"$busybox_src" --list',
+        '"$SOURCE_GLIBC_LOADER_STAGED" --version',
+    ]:
+        if obsolete_invocation in stage_content:
+            raise AssertionError(
+                "ISO staging executes an image-owned validation helper: "
+                f"{obsolete_invocation}"
+            )
 
     for package in ["pam", "kbd"]:
         if re.search(
@@ -330,14 +353,23 @@ def main() -> None:
         raise AssertionError("source kbd runtime validation is missing")
 
     require_contains(
-        ROOT / "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
+        NORMALIZE_RUNTIME_SCRIPT,
         [
+            "SOURCE_GLIBC_VERSION [EXTRA_ELF ...]",
+            'source_glibc_version="$4"',
             "stage_path_is_executable",
             'staged_path="$stage_dir$link_target"',
             'if ! stage_path_is_executable "$target"',
+            'run_patchelf_mutation "$elf" set-interpreter',
+            '[ "$old_interpreter" != "$source_glibc_loader" ]',
+            "patchelf failed for ${elf#$stage_dir}",
         ],
         "source runtime normalization",
     )
+    if '"$source_glibc_loader_staged" --version' in source(
+        NORMALIZE_RUNTIME_SCRIPT
+    ):
+        raise AssertionError("runtime normalization executes the image-owned loader")
     base_rootfs_content = source(
         ROOT / "recipes/reproos-iso/scripts/build-base-rootfs.sh"
     )

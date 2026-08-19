@@ -44,6 +44,17 @@ def build_dependencies(path: Path) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group("body"))
 
 
+def uses_dependencies(path: Path) -> list[str]:
+    match = re.search(
+        r"^  uses:\r?\n(?P<body>.*?)(?=^  [A-Za-z][A-Za-z0-9]*:)",
+        source(path),
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"uses block missing in {path}")
+    return re.findall(r'"([^"]+)"', match.group("body"))
+
+
 def canonical_rootfs_packages() -> list[str]:
     match = re.search(
         r"ReproosGraphicalRootfsPackages\*\s*=\s*@\[(?P<body>.*?)^\]",
@@ -190,6 +201,13 @@ def main() -> None:
         raise AssertionError("buildDeps blocks differ from the canonical rootfs package set")
     if "reproos-installer" in iso_dependencies:
         raise AssertionError("the installer must be an action dependency, not a source package")
+
+    workflow_dependencies = uses_dependencies(WORKFLOW_RECIPE)
+    require_unique(workflow_dependencies, "workflow uses")
+    if "vm-harness" not in workflow_dependencies:
+        raise AssertionError(
+            "workflow uses must select the federated vm-harness producer"
+        )
 
     require_contains(
         WORKFLOW_RECIPE,

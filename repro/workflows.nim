@@ -20,7 +20,7 @@ package reproosWorkflows:
     "sh"
     "bash"
     "python3"
-    "vm_harness"
+    "vm-harness"
 
   build:
     let sourceComposition = shell(

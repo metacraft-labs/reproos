@@ -7,8 +7,8 @@
 # Pipeline:
 #
 #   1. Parse $REPRO_AUTO_CONFIG (TOML).
-#   2. Stage the Nix-style rootfs via stage-de-rootfs.sh (M9.R.25 +
-#      M9.R.46).
+#   2. Validate the cacheable staged rootfs and boot artifacts supplied by
+#      the Reprobuild graph.
 #   3. Render a disko JSON spec from the TOML's [disk] block.
 #   4. qemu-img create -f qcow2 reproos-installed.qcow2 <size>.
 #   5. sudo modprobe nbd; sudo qemu-nbd --connect=/dev/nbd0 <qcow2>.
@@ -24,7 +24,7 @@
 #
 # Input:
 #   $1 = absolute output path for the qcow2.
-#   REPRO_AUTO_CONFIG env (defaults handled by repro.nim).
+#   REPRO_AUTO_CONFIG, REPROOS_STAGED_ROOTFS and REPROOS_DISK_INITRD env.
 #   SOURCE_DATE_EPOCH / LC_ALL / TZ for reproducibility.
 #
 # Output:
@@ -65,7 +65,6 @@ SOURCE_RECIPES_ROOT="${REPRO_FROM_SOURCE_ROOT:-$REPROBUILD_PACKAGES_ROOT/package
 TARGET_SOURCE_RECIPES_ROOT="/opt/repro/reprobuild-packages/packages/source"
 RECIPE_DIR="$(pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "$0")" && pwd)"
-ISO_SCRIPTS_DIR="$REPO_ROOT/recipes/reproos-iso/scripts"
 
 # Resolve the config path relative to the recipe dir if it's not
 # absolute.
@@ -187,9 +186,13 @@ echo "[build-reproos-image] repro: $REPRO_BIN"
 # Working dir under the recipe's build dir; cleaned on exit.
 WORK="$RECIPE_DIR/build/work"
 mkdir -p "$WORK"
-STAGE_DIR="$WORK/stage"
+STAGE_DIR="${REPROOS_STAGED_ROOTFS:?REPROOS_STAGED_ROOTFS must be set}"
+case "$STAGE_DIR" in
+  /*) ;;
+  *) STAGE_DIR="$RECIPE_DIR/$STAGE_DIR" ;;
+esac
 MNT_DIR="$WORK/mnt"
-mkdir -p "$STAGE_DIR" "$MNT_DIR"
+mkdir -p "$MNT_DIR"
 
 # ---------------------------------------------------------------
 # Cleanup trap.  Best-effort: umount any mounted partitions,
@@ -305,114 +308,27 @@ esac
 echo "[build-reproos-image] hostname=$HOSTNAME_VAL user=$USER_NAME size_gb=$DISK_SIZE_GB layout=$DISK_TYPE de=$DE_DEFAULT"
 
 # ---------------------------------------------------------------
-# Phase 2: stage the Nix-style rootfs via stage-de-rootfs.sh.
-# We cd into the iso recipe dir because the script reads
-# "$(cd ../.. && pwd)" as REPO_ROOT.
+# Phase 2: validate the graph-provided rootfs and disk boot artifacts.
 # ---------------------------------------------------------------
-echo "[build-reproos-image] staging rootfs at $STAGE_DIR"
-# The stage-de-rootfs.sh + relocate-nix-to-repro.sh chain costs
-# ~5 min cold.  Reuse a healthy existing stage when the marker file
-# is present (set REPRO_FORCE_RESTAGE=1 to bypass).
-STAGE_MARKER="$STAGE_DIR/.repro-stage-complete"
-STAGE_INPUT_MARKER="$STAGE_DIR/.repro-stage-input-id"
-STAGE_STALE=0
-STAGE_EXTERNAL_INPUTS=(
-  "$REPO_ROOT/recipes/reproos-iso/scripts/build-base-rootfs.sh"
-  "$REPO_ROOT/recipes/reproos-iso/scripts/stage-de-rootfs.sh"
-  "$REPO_ROOT/recipes/reproos-iso/scripts/relocate-nix-to-repro.sh"
-  "$REPO_ROOT/recipes/reproos-iso/scripts/normalize-source-runtime.sh"
-  "$INSTALLER_BIN"
-  "$REPRO_BIN"
-)
-STAGE_INPUT_ID="$(sha256sum "${STAGE_EXTERNAL_INPUTS[@]}" | sha256sum | awk '{print $1}')"
-if [ "$(cat "$STAGE_INPUT_MARKER" 2>/dev/null || true)" != "$STAGE_INPUT_ID" ]; then
-  STAGE_STALE=1
-fi
-for stage_input in "${STAGE_EXTERNAL_INPUTS[@]}"; do
-  if [ -f "$STAGE_MARKER" ] && [ "$stage_input" -nt "$STAGE_MARKER" ]; then
-    STAGE_STALE=1
-    break
-  fi
-done
-if [ -f "$STAGE_MARKER" ] && \
-   find "$SOURCE_RECIPES_ROOT" \
-     -path '*/.repro/output/install/*' -newer "$STAGE_MARKER" \
-     -print -quit | grep -q .; then
-  STAGE_STALE=1
-fi
-if [ "${REPRO_FORCE_RESTAGE:-0}" = "1" ] || \
-   [ ! -f "$STAGE_MARKER" ] || [ "$STAGE_STALE" = "1" ]; then
-  if [ -d "$STAGE_DIR" ] && [ -n "$(ls -A "$STAGE_DIR" 2>/dev/null || true)" ]; then
-    chmod -R u+w "$STAGE_DIR" 2>/dev/null || true
-    rm -rf "$STAGE_DIR"
-    mkdir -p "$STAGE_DIR"
-  fi
-  (
-    cd "$REPO_ROOT/recipes/reproos-iso"
-    bash scripts/stage-de-rootfs.sh "$STAGE_DIR"
-  ) || { echo "[build-reproos-image] stage-de-rootfs.sh failed" >&2; exit 67; }
-  touch "$STAGE_MARKER"
-  printf '%s\n' "$STAGE_INPUT_ID" > "$STAGE_INPUT_MARKER"
-else
-  echo "[build-reproos-image] stage cache HIT (use REPRO_FORCE_RESTAGE=1 to bypass)"
-fi
-echo "[build-reproos-image] stage done; size: $(du -sh "$STAGE_DIR" | awk '{print $1}')"
-
-# ---------------------------------------------------------------
-# Phase 2.5: seed /boot in the staged tree with kernel + initrd.
-#
-# The stage-de-rootfs tree carries the source-built kernel payload and
-# modules under /usr/lib. For a build-time image we also need vmlinuz +
-# a boot-from-disk initramfs in the staged tree so install-root's
-# copyLiveKernelAndInitrd finds them in candidate path
-# "<source>/boot/vmlinuz" / "<source>/boot/initrd.img".
-#
-# The initramfs is generated from the same source kernel release and its
-# module tree. Keep the derived archive in this recipe's writable build
-# directory; host-global cache directories may be root-owned.
-SOURCE_KERNEL_ROOT="$SOURCE_RECIPES_ROOT/kernel/.repro/output/install"
-SOURCE_KERNEL_PAYLOAD="$SOURCE_KERNEL_ROOT/usr/lib/reproos-kernel"
-SOURCE_KERNEL_RELEASE="$(cat "$SOURCE_KERNEL_PAYLOAD/kernel.release")"
-SOURCE_KERNEL="$SOURCE_KERNEL_PAYLOAD/vmlinuz"
-SOURCE_BUSYBOX="$SOURCE_RECIPES_ROOT/busybox/.repro/output/install/usr/bin/busybox"
-if [ ! -s "$SOURCE_KERNEL" ] || [ ! -x "$SOURCE_BUSYBOX" ]; then
-  echo "[build-reproos-image] source kernel or BusyBox payload missing" >&2
+if [ ! -d "$STAGE_DIR/etc" ] || [ ! -d "$STAGE_DIR/usr" ]; then
+  echo "[build-reproos-image] staged rootfs is incomplete: $STAGE_DIR" >&2
   exit 67
 fi
-SOURCE_KERNEL_SHA256="$(sha256sum "$SOURCE_KERNEL" | awk '{print $1}')"
-SOURCE_BUSYBOX_SHA256="$(sha256sum "$SOURCE_BUSYBOX" | awk '{print $1}')"
-DISK_INIT_SOURCE="$REPO_ROOT/recipes/reproos-iso/initramfs/init-disk"
-DISK_INIT_SHA256="$(sha256sum "$DISK_INIT_SOURCE" | awk '{print $1}')"
-BOOT_INPUT_ID="$SOURCE_KERNEL_RELEASE-${SOURCE_KERNEL_SHA256:0:16}-${SOURCE_BUSYBOX_SHA256:0:16}-${DISK_INIT_SHA256:0:16}"
-# M9.R.51: generate a boot-from-disk initramfs (init-disk variant of
-# the live-init) instead of reusing the ISO's live-boot initrd (which
-# probes for /live/filesystem.squashfs and drops to rescue on an
-# installed disk).  We invoke reproos-iso/scripts/build-initramfs.sh
-# with REPRO_INITRAMFS_INIT=init-disk so the same busybox+modules
-# staging pipeline packs the boot-from-disk /init instead.
-DISK_INITRD_CACHE="${REPRO_DISK_INITRD_CACHE:-$RECIPE_DIR/build/initrd.img-disk-$BOOT_INPUT_ID}"
-STAGE_BOOT_MARKER="$STAGE_DIR/.repro-boot-seeded"
-if [ "$(cat "$STAGE_BOOT_MARKER" 2>/dev/null || true)" != "$BOOT_INPUT_ID" ] || \
-   [ ! -s "$STAGE_DIR/boot/vmlinuz" ] || \
-   [ ! -s "$STAGE_DIR/boot/initrd.img" ]; then
-  echo "[build-reproos-image] seeding $STAGE_DIR/boot with kernel + boot-from-disk initrd"
-  mkdir -p "$STAGE_DIR/boot"
-  cp "$SOURCE_KERNEL" "$STAGE_DIR/boot/vmlinuz"
-  echo "[build-reproos-image] vmlinuz: $(ls -la "$STAGE_DIR/boot/vmlinuz" | awk '{print $5}') bytes (from kernelSource)"
-  if [ ! -f "$DISK_INITRD_CACHE" ]; then
-    echo "[build-reproos-image] generating boot-from-disk initrd via build-initramfs.sh (REPRO_INITRAMFS_INIT=init-disk)"
-    mkdir -p "$(dirname "$DISK_INITRD_CACHE")"
-    REPRO_INITRAMFS_INIT=init-disk \
-      bash "$REPO_ROOT/recipes/reproos-iso/scripts/build-initramfs.sh" "$DISK_INITRD_CACHE"
-  else
-    echo "[build-reproos-image] boot-from-disk initrd cached: $DISK_INITRD_CACHE"
-  fi
-  cp "$DISK_INITRD_CACHE" "$STAGE_DIR/boot/initrd.img"
-  echo "[build-reproos-image] initrd.img (boot-from-disk): $(ls -la "$STAGE_DIR/boot/initrd.img" | awk '{print $5}') bytes"
-  printf '%s\n' "$BOOT_INPUT_ID" > "$STAGE_BOOT_MARKER"
-else
-  echo "[build-reproos-image] /boot already seeded (marker present)"
+SOURCE_KERNEL_ROOT="$SOURCE_RECIPES_ROOT/kernel/.repro/output/install"
+SOURCE_KERNEL_PAYLOAD="$SOURCE_KERNEL_ROOT/usr/lib/reproos-kernel"
+SOURCE_KERNEL="${REPROOS_KERNEL_IMAGE:-$SOURCE_KERNEL_PAYLOAD/vmlinuz}"
+DISK_INITRD="${REPROOS_DISK_INITRD:?REPROOS_DISK_INITRD must be set}"
+case "$DISK_INITRD" in
+  /*) ;;
+  *) DISK_INITRD="$RECIPE_DIR/$DISK_INITRD" ;;
+esac
+if [ ! -s "$SOURCE_KERNEL" ] || [ ! -s "$DISK_INITRD" ]; then
+  echo "[build-reproos-image] source kernel or disk initramfs missing" >&2
+  exit 67
 fi
+echo "[build-reproos-image] staged rootfs: $STAGE_DIR ($(du -sh "$STAGE_DIR" | awk '{print $1}'))"
+echo "[build-reproos-image] kernel: $SOURCE_KERNEL"
+echo "[build-reproos-image] disk initramfs: $DISK_INITRD"
 
 # ---------------------------------------------------------------
 # Phase 3: render a disko JSON for the uefi-ext4 preset.
@@ -596,6 +512,8 @@ echo "[build-reproos-image] repro infra install-root --target $MNT_DIR --source 
   --device "$NBD_DEV" \
   --disko "$DISKO_JSON" \
   --hostname "$HOSTNAME_VAL" \
+  --kernel "$SOURCE_KERNEL" \
+  --initrd "$DISK_INITRD" \
   || { echo "[build-reproos-image] install-root failed" >&2; exit 70; }
 
 # M9.R.51: rewrite build-time NBD device paths to stable filesystem

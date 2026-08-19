@@ -9,9 +9,13 @@ import std/[os, strutils]
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
 import "../../apps/reproos-installer/package" as installerPackage
+import "../reproos-iso/package" as isoPackage
 import "../../repro/package_sets" as packageSets
 
 const
+  ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"
+  ReproosDiskInitrdOutput* =
+    "recipes/reproos-image/build/reproos-disk-initramfs.img"
   ReproosImageBuildActionId* = "reproosImage.build_image"
   ReproosImageOutput* =
     "recipes/reproos-image/build/reproos-installed.qcow2"
@@ -231,6 +235,53 @@ package reproosImage:
 
   build:
     let projectRoot = activeProviderProjectRoot()
+    let reprobuildRoot = getEnv("REPROBUILD_SRC", "../reprobuild")
+    let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"
+
+    # The installed system needs a disk-root initramfs rather than the ISO's
+    # live-media initramfs. Build and cache it independently of privileged
+    # disk assembly.
+    let buildDiskInitrdCommand = @[
+      "set -euo pipefail;",
+      "WORKSPACE_ROOT=\"$(cd ../../.. && pwd)\";",
+      "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$WORKSPACE_ROOT/reprobuild-packages}\";",
+      "export REPROBUILD_PACKAGES_ROOT=\"$PACKAGES_ROOT\";",
+      "export REPRO_FROM_SOURCE_ROOT=\"$PACKAGES_ROOT/packages/source\";",
+      "export REPRO_KERNEL_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install\";",
+      "export REPRO_BUSYBOX_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/busybox/.repro/output/install\";",
+      "mkdir -p build;",
+      "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
+      "REPRO_INITRAMFS_INIT=init-disk",
+      "bash ../reproos-iso/scripts/build-initramfs.sh",
+      "build/reproos-disk-initramfs.img;",
+    ].join(" ")
+    let buildDiskInitrdAction = shell(
+      command = buildDiskInitrdCommand,
+      actionId = ReproosDiskInitrdActionId,
+      extraInputs = @[
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/kernel.release",
+        "../reprobuild-packages/packages/source/busybox/.repro/output/install/usr/bin/busybox",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      extraOutputs = @["build/reproos-disk-initramfs.img"])
+    appendRegisteredActionToolIdentityRefs(buildDiskInitrdAction.id, @[
+      "bash",
+      "busybox",
+      "coreutils",
+      "kernel",
+      "kmod",
+      "xz",
+      "zstd",
+    ])
+    setRegisteredActionCwd(buildDiskInitrdAction.id, acwdCustom,
+      "recipes/reproos-image")
+    let diskInitrdOutputAbs = projectRoot / ReproosDiskInitrdOutput
+    setRegisteredActionDependencyPolicy(buildDiskInitrdAction.id,
+      automaticMonitorPolicy(@[diskInitrdOutputAbs]))
+    discard target("disk-initramfs", buildDiskInitrdAction)
+
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
     let buildImageCommand = @[
@@ -242,6 +293,8 @@ package reproosImage:
       "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
       "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\"",
+      "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
+      "REPROOS_DISK_INITRD=\"$PWD/build/reproos-disk-initramfs.img\"",
       "REPRO_QCOW2_SEED=\"${REPRO_QCOW2_SEED:-deadbeefcafebabe}\"",
       "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
       "bash scripts/build-reproos-image.sh build/reproos-installed.qcow2",
@@ -250,24 +303,26 @@ package reproosImage:
     let buildImageAction = shell(
       command = buildImageCommand,
       actionId = ReproosImageBuildActionId,
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[
+        installerPackage.ReproosInstallerInstallActionId,
+        isoPackage.ReproosIsoRootfsActionId,
+        buildDiskInitrdAction.id,
+      ],
       extraInputs = @[
+        reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-image/scripts/reproos-health-check",
         "tests/fixtures/auto-config-minimal.toml",
         installerPackage.ReproosInstallerBinary,
-        # ISO and image builds share one source-package staging pipeline.
-        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
-        "recipes/reproos-iso/scripts/relocate-nix-to-repro.sh",
-        "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
-        "recipes/reproos-iso/scripts/build-base-rootfs.sh",
-        "recipes/reproos-iso/scripts/build-initramfs.sh",
-        "recipes/reproos-iso/initramfs/init-disk",
+        isoPackage.ReproosIsoRootfsOutput,
+        ReproosDiskInitrdOutput,
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
       ],
       extraOutputs = @[
         "build/reproos-installed.qcow2",
-      ])
+      ],
+      cacheable = false)
     # The opaque shell driver receives the exact executable profiles declared
     # above, plus all staged package outputs.
     appendRegisteredActionToolIdentityRefs(buildImageAction.id,

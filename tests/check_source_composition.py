@@ -280,6 +280,13 @@ def main() -> None:
 
     image_content = source(IMAGE_RECIPE)
     for value in [
+        'import "../reproos-iso/package" as isoPackage',
+        'ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"',
+        'target("disk-initramfs", buildDiskInitrdAction)',
+        "isoPackage.ReproosIsoRootfsActionId",
+        "isoPackage.ReproosIsoRootfsOutput",
+        "ReproosDiskInitrdOutput",
+        "cacheable = false",
         'let imageBuildDirAbs = projectRoot / "recipes/reproos-image/build"',
         "setRegisteredActionDependencyPolicy(buildImageAction.id",
         "automaticMonitorPolicy(@[imageBuildDirAbs])",
@@ -288,6 +295,21 @@ def main() -> None:
             raise AssertionError(
                 f"image recipe is missing output dependency exclusion: {value}"
             )
+
+    image_script = source(
+        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"
+    )
+    for value in [
+        "REPROOS_STAGED_ROOTFS",
+        "REPROOS_DISK_INITRD",
+        '--kernel "$SOURCE_KERNEL"',
+        '--initrd "$DISK_INITRD"',
+    ]:
+        if value not in image_script:
+            raise AssertionError(f"image driver is missing graph input: {value}")
+    for legacy in ["REPRO_FORCE_RESTAGE", "stage-de-rootfs.sh \"$STAGE_DIR\""]:
+        if legacy in image_script:
+            raise AssertionError(f"image driver retains private stage cache: {legacy}")
 
     active_sources = [
         ISO_RECIPE,

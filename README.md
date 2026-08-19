@@ -22,6 +22,16 @@ image. The project defaults to `from-source` provisioning, so the explicit
 `--tool-provisioning=from-source` flag is only needed when overriding another
 environment setting.
 
+The `rootfs` output must be materialized on a case-sensitive filesystem because
+Linux package trees can contain names that differ only by case. In WSL, prefer a
+checkout in the Linux filesystem. For a checkout on NTFS, empty
+`recipes/reproos-iso/build` and enable its per-directory case-sensitivity flag
+before the first build:
+
+```console
+fsutil.exe file setCaseSensitiveInfo recipes\reproos-iso\build enable
+```
+
 ## Tests
 
 Validate the graph contract without building product artifacts:

@@ -330,6 +330,8 @@ def main() -> None:
     stage_path = active_sources[2]
     stage_content = source(stage_path)
     stage_requirements = [
+        "stage filesystem is case-insensitive",
+        'case_probe_lower_inode="$(stat -c %i "$case_probe_dir/lower")"',
         'ln -sfn "$modprobe_target" "$STAGE_DIR/usr/sbin/modprobe"',
         'ln -sfn "$busybox_target" "$STAGE_DIR/usr/bin/hostname"',
         "required source BusyBox hostname applet missing",

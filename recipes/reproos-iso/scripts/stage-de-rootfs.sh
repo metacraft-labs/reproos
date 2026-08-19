@@ -65,6 +65,23 @@ if [ "$#" -ne 1 ]; then
 fi
 STAGE_DIR="$1"
 
+# A Linux rootfs can contain paths that differ only by case. Ncurses terminfo,
+# for example, has both `a/` and `A/` buckets. Detect an incompatible host
+# filesystem before spending minutes copying the source package closure.
+case_probe_dir="$STAGE_DIR/.repro-case-sensitivity-probe"
+rm -rf "$case_probe_dir"
+mkdir -p "$case_probe_dir"
+: >"$case_probe_dir/lower"
+: >"$case_probe_dir/LOWER"
+case_probe_lower_inode="$(stat -c %i "$case_probe_dir/lower")"
+case_probe_upper_inode="$(stat -c %i "$case_probe_dir/LOWER")"
+rm -rf "$case_probe_dir"
+if [ "$case_probe_lower_inode" = "$case_probe_upper_inode" ]; then
+  echo "[stage-de-rootfs] stage filesystem is case-insensitive: $STAGE_DIR" >&2
+  echo "[stage-de-rootfs] use a Linux filesystem or enable per-directory case sensitivity before building" >&2
+  exit 73
+fi
+
 # The engine sets cwd to the recipe dir; the repo root is two levels up.
 REPO_ROOT="$(cd ../.. && pwd)"
 REPROBUILD_PACKAGES_ROOT="${REPROBUILD_PACKAGES_ROOT:-$REPO_ROOT/../reprobuild-packages}"

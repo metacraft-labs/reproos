@@ -118,7 +118,7 @@ inspect the complete set, and commit the QML and goldens together.
 
 For a booted Hyper-V integration check, open the VM in Virtual Machine
 Connection, capture it with `tools/capture-hyperv-vm.ps1`, then run
-`tests/test-installer-vm-frame.sh FRAME.png`. This verifies the real console
+`repro run installer-vm-frame -- FRAME.png`. This verifies the real console
 only as a final integration gate after local screenshot reviews converge; VM
 booting is not part of each visual iteration. The gate confirms the expected
 welcome controls through GuiAssert OCR.

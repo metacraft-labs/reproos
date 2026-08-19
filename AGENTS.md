@@ -20,6 +20,8 @@ Use Reprobuild as the only contributor command surface:
   closure before review.
 - `repro run installer` opens the safe local installer preview.
 - `repro run installer-screenshots` captures every reviewed installer view.
+- `repro run installer-vm-frame -- FRAME.png` checks a captured VM console
+  through GuiAssert OCR.
 - `repro run boot-iso` and `repro run boot-image` leave VMs open for manual
   acceptance.
 - `repro tasks` lists interactive workflows.

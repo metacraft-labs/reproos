@@ -73,6 +73,7 @@ repro run installer
 repro run installer -- --screen users --size 1024x768
 repro run installer-screenshots
 repro run installer-accept-goldens
+repro run installer-vm-frame -- FRAME.png
 ```
 
 Preview mode exercises the complete wizard and simulates installation. The

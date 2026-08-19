@@ -104,6 +104,18 @@ package reproosWorkflows:
     run("installer-accept-goldens", build = testInstallerVisuals.id,
       args = @["--update-goldens"], owningPackage = "reproosWorkflows")
 
+    let inspectInstallerVmFrame = shell(
+      command = "bash tests/test-installer-vm-frame.sh \"$@\"",
+      args = @["reproos-installer-vm-frame"],
+      actionId = "reproos.inspect-installer-vm-frame",
+      extraInputs = @[
+        "tests/test-installer-vm-frame.sh",
+        "tests/test_installer_vm_frame.nim",
+      ],
+      cacheable = false).withToolIdentities(["bash"])
+    run("installer-vm-frame", build = inspectInstallerVmFrame.id,
+      owningPackage = "reproosWorkflows")
+
     let testInstallerArtifacts = shell(
       command = "bash tests/test-installer-artifacts.sh",
       actionId = "reproos.test-installer-artifacts",

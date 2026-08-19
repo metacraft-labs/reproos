@@ -454,9 +454,12 @@ sleep 2
 echo "[build-reproos-image] repro disk apply --device $NBD_DEV --confirm $DISKO_JSON"
 DISK_APPLY_PATH="$PATH"
 E2FSPROGS_SBIN="$SOURCE_RECIPES_ROOT/e2fsprogs/.repro/output/install/usr/sbin"
+REPRO_CLI_LD="$SOURCE_RECIPES_ROOT/clingo/.repro/output/install/usr/lib"
+REPRO_CLI_LD="$REPRO_CLI_LD:$SOURCE_RECIPES_ROOT/sqlite/.repro/output/install/usr/lib"
 DISK_APPLY_LD="$SOURCE_RECIPES_ROOT/e2fsprogs/.repro/output/install/usr/lib"
 DISK_APPLY_LD="$DISK_APPLY_LD:$SOURCE_RECIPES_ROOT/parted/.repro/output/install/usr/lib"
 DISK_APPLY_LD="$DISK_APPLY_LD:$SOURCE_RECIPES_ROOT/util-linux/.repro/output/install/usr/lib"
+DISK_APPLY_LD="$DISK_APPLY_LD:$REPRO_CLI_LD"
 DISK_APPLY_LD="$DISK_APPLY_LD:${LD_LIBRARY_PATH:-}"
 if [ -x "$E2FSPROGS_SBIN/mkfs.ext4" ]; then
   DISK_APPLY_PATH="$E2FSPROGS_SBIN:$DISK_APPLY_PATH"
@@ -506,7 +509,8 @@ MOUNTED_PATHS+=("$MNT_DIR/boot")
 # --hostname = from TOML
 # ---------------------------------------------------------------
 echo "[build-reproos-image] repro infra install-root --target $MNT_DIR --source $STAGE_DIR --device $NBD_DEV"
-"$SUDO" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$REPRO_BIN" infra install-root \
+"$SUDO" LD_LIBRARY_PATH="$REPRO_CLI_LD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  "$REPRO_BIN" infra install-root \
   --target "$MNT_DIR" \
   --source "$STAGE_DIR" \
   --device "$NBD_DEV" \

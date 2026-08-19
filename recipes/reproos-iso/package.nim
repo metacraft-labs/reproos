@@ -187,6 +187,7 @@ package reproosIso:
       command = stageRootfsCommand,
       actionId = ReproosIsoRootfsActionId,
       deps = @[installerPackage.ReproosInstallerInstallActionId],
+      actionCachePolicy = acfpHybrid,
       extraInputs = @[
         reproCliInput,
         "recipes/reproos-iso/scripts/stage-de-rootfs.sh",

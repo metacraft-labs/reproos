@@ -77,6 +77,10 @@ repro run boot-iso
 repro run boot-image
 ```
 
+These commands open the VM in `virt-viewer`. Closing the viewer reclaims the
+transient domain and its writable disk overlay; the ISO or QCOW2 build output is
+never modified.
+
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.
 

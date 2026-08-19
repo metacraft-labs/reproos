@@ -16,5 +16,8 @@ fi
   --backend auto \
   --source-image "$harness_image" \
   --kind qcow2 \
+  --generation 2 \
+  --graphics vnc \
+  --video virtio \
   --expect 'REPROOS_HEALTH:PASS' \
   --timeout-sec 300

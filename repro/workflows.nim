@@ -118,7 +118,9 @@ package reproosWorkflows:
 
     let bootIso = shell(
       command = "vm-harness boot --backend auto --source-image \"" &
-        isoPackage.ReproosIsoOutput & "\" --kind iso --keep \"$@\"",
+        isoPackage.ReproosIsoOutput &
+        "\" --kind iso --generation 2 --graphics vnc --video virtio " &
+        "--viewer \"$@\"",
       args = @["reproos-boot-iso"],
       actionId = "reproos.boot-iso",
       deps = @[isoPackage.ReproosIsoBuildActionId],
@@ -166,7 +168,9 @@ package reproosWorkflows:
 
     let bootImage = shell(
       command = "vm-harness boot --backend auto --source-image \"" &
-        imagePackage.ReproosImageOutput & "\" --kind qcow2 --keep \"$@\"",
+        imagePackage.ReproosImageOutput &
+        "\" --kind qcow2 --generation 2 --graphics vnc --video virtio " &
+        "--viewer \"$@\"",
       args = @["reproos-boot-image"],
       actionId = "reproos.boot-image",
       deps = @[imagePackage.ReproosImageBuildActionId],

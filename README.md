@@ -9,13 +9,16 @@ Run builds from the repository root:
 
 ```console
 repro build installer
+repro build rootfs
 repro build iso
 repro build image
 repro build
 ```
 
-`installer`, `iso`, and `image` are named outputs. The default target builds all
-three. The project defaults to `from-source` provisioning, so the explicit
+`installer`, `rootfs`, `iso`, and `image` are named outputs. `rootfs` stages the
+source-built graphical filesystem as an independently cacheable directory; the
+`iso` output consumes it. The default target builds the installer, ISO, and
+image. The project defaults to `from-source` provisioning, so the explicit
 `--tool-provisioning=from-source` flag is only needed when overriding another
 environment setting.
 

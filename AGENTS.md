@@ -9,7 +9,8 @@ sources, boot assets, and product-specific tests.
 
 Use Reprobuild as the only contributor command surface:
 
-- `repro build installer`, `repro build iso`, and `repro build image` produce
+- `repro build installer`, `repro build rootfs`, `repro build iso`, and
+  `repro build image` produce
   the named artifacts from source.
 - `repro build` produces the default artifact collection.
 - `repro test` runs the complete product test collection; focused tests are

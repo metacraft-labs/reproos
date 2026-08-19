@@ -243,6 +243,11 @@ def main() -> None:
         "reproos-initramfs.img",
         "REPRO_BUSYBOX_INSTALL_ROOT",
         "REPRO_LIVE_TARGET=graphical",
+        'ReproosIsoRootfsActionId* = "reproosIso.stage_rootfs"',
+        'extraOutputs = @["build/de-rootfs"]',
+        'deps = @[stageRootfsAction.id]',
+        'target("rootfs", stageRootfsAction)',
+        "reproCliInput",
     ]:
         if value not in iso_content:
             raise AssertionError(f"ISO recipe is missing source-build input: {value}")

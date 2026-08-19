@@ -12,7 +12,7 @@
 ## initramfs locally and stages the same source package closure as the QCOW2
 ## image target.
 
-import std/strutils
+import std/[os, strutils]
 
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
@@ -20,6 +20,8 @@ import "../../apps/reproos-installer/package" as installerPackage
 import "../../repro/package_sets" as packageSets
 
 const
+  ReproosIsoRootfsActionId* = "reproosIso.stage_rootfs"
+  ReproosIsoRootfsOutput* = "recipes/reproos-iso/build/de-rootfs"
   ReproosIsoBuildActionId* = "reproosIso.build_iso"
   ReproosIsoOutput* = "recipes/reproos-iso/build/reproos.iso"
 
@@ -156,26 +158,59 @@ package reproosIso:
     "libxcrypt"
 
   build:
-    # The driver owns deterministic rootfs staging, initramfs generation,
-    # grub-mkrescue, and the final checksum. The action declares every source
-    # input and pins timestamps, locale, and timezone.
-    let buildIsoCommand = @[
+    let reprobuildRoot = getEnv("REPROBUILD_SRC", "../reprobuild")
+    let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"
+
+    # Rootfs staging is the expensive package-composition step. Keep it as a
+    # directory output so Reprobuild can cache and restore it independently of
+    # the comparatively small initramfs and ISO authoring step.
+    let stageRootfsCommand = @[
       "set -euo pipefail;",
-      "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$(cd ../../.. && pwd)/reprobuild-packages}\";",
+      "WORKSPACE_ROOT=\"$(cd ../../.. && pwd)\";",
+      "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$WORKSPACE_ROOT/reprobuild-packages}\";",
+      "REPROBUILD_ROOT=\"${REPROBUILD_SRC:-$WORKSPACE_ROOT/reprobuild}\";",
       "export REPROBUILD_PACKAGES_ROOT=\"$PACKAGES_ROOT\";",
       "export REPRO_FROM_SOURCE_ROOT=\"$PACKAGES_ROOT/packages/source\";",
+      "export REPROBUILD_SRC=\"$REPROBUILD_ROOT\";",
+      "export REPRO_CLI_BIN=\"$REPROBUILD_ROOT/build/bin/repro\";",
       "export REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\";",
-      "export REPRO_KERNEL_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install\";",
-      "export REPRO_BUSYBOX_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/busybox/.repro/output/install\";",
       "export REPROOS_SOURCE_RECIPES=\"" &
         packageSets.ReproosGraphicalRootfsPackages.join(" ") & "\";",
-      # Install mirrors may contain read-only files. Make a stale staging tree
-      # writable before replacing it.
       "if [ -d build/de-rootfs ]; then chmod -R u+w build/de-rootfs 2>/dev/null || true; fi;",
       "rm -rf build/de-rootfs;",
-      "mkdir -p build/de-rootfs build;",
+      "mkdir -p build/de-rootfs;",
       "REPRO_LIVE_TARGET=graphical bash scripts/stage-de-rootfs.sh build/de-rootfs;",
+    ].join(" ")
+    let stageRootfsAction = shell(
+      command = stageRootfsCommand,
+      actionId = ReproosIsoRootfsActionId,
+      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      extraInputs = @[
+        reproCliInput,
+        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+        "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
+        "recipes/reproos-iso/scripts/build-base-rootfs.sh",
+        installerPackage.ReproosInstallerBinary,
+      ],
+      extraOutputs = @["build/de-rootfs"])
+    appendRegisteredActionToolIdentityRefs(stageRootfsAction.id,
+      @["bash", "patchelf"] & packageSets.ReproosGraphicalRootfsPackages)
+    setRegisteredActionCwd(stageRootfsAction.id, acwdCustom,
+      "recipes/reproos-iso")
+    discard target("rootfs", stageRootfsAction)
+
+    # ISO authoring consumes the cached rootfs plus the source-built boot and
+    # image tooling. Timestamps, locale, and timezone are pinned by the driver.
+    let buildIsoCommand = @[
+      "set -euo pipefail;",
+      "WORKSPACE_ROOT=\"$(cd ../../.. && pwd)\";",
+      "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$WORKSPACE_ROOT/reprobuild-packages}\";",
+      "export REPROBUILD_PACKAGES_ROOT=\"$PACKAGES_ROOT\";",
+      "export REPRO_FROM_SOURCE_ROOT=\"$PACKAGES_ROOT/packages/source\";",
+      "export REPRO_KERNEL_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install\";",
+      "export REPRO_BUSYBOX_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/busybox/.repro/output/install\";",
+      "mkdir -p build;",
       "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC " &
         "REPRO_DE_ROOTFS_DIR=\"$PWD/build/de-rootfs\" " &
         "REPRO_GRUB_VARIANT=multi-de " &
@@ -190,28 +225,36 @@ package reproosIso:
     let buildIsoAction = shell(
       command = buildIsoCommand,
       actionId = ReproosIsoBuildActionId,
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[stageRootfsAction.id],
       extraInputs = @[
+        ReproosIsoRootfsOutput,
         "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
         "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/kernel.release",
         "../reprobuild-packages/packages/source/busybox/.repro/output/install/usr/bin/busybox",
         "recipes/reproos-iso/scripts/build-iso.sh",
-        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
-        "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
-        # The live initramfs pivots into the staged SquashFS root.
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init",
-        # Source package install mirrors populate this rootfs skeleton.
-        "recipes/reproos-iso/scripts/build-base-rootfs.sh",
-        installerPackage.ReproosInstallerBinary,
       ],
       extraOutputs = @[
         "build/reproos-initramfs.img",
         "build/reproos.iso",
       ])
     appendRegisteredActionToolIdentityRefs(buildIsoAction.id,
-      @["bash", "patchelf", "xorriso", "mtools", "squashfs-tools"] &
-        packageSets.ReproosGraphicalRootfsPackages)
+      @[
+        "bash",
+        "busybox",
+        "coreutils",
+        "dosfstools",
+        "gawk",
+        "grub",
+        "kernel",
+        "kmod",
+        "mtools",
+        "squashfs-tools",
+        "xz",
+        "xorriso",
+        "zstd",
+      ])
     setRegisteredActionCwd(buildIsoAction.id, acwdCustom,
       "recipes/reproos-iso")
     discard target("iso", buildIsoAction)

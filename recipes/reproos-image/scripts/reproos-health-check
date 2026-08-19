@@ -132,6 +132,15 @@ else
   fail "systemd:failed-units=${failed_units[*]}"
 fi
 
+mapfile -t ordering_cycles < <(
+  journalctl -b --no-pager 2>/dev/null | grep 'Found ordering cycle' || true
+)
+if [[ ${#ordering_cycles[@]} -eq 0 ]]; then
+  pass "systemd:no-ordering-cycles"
+else
+  fail "systemd:ordering-cycles=${#ordering_cycles[@]}"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
   emit "REPROOS_HEALTH:PASS"
   exit 0

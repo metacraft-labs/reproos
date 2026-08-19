@@ -1570,11 +1570,11 @@ ExecStart=/bin/sh -c 'ps auxf > /var/log/m9r56_diag/ps.txt 2>&1'
 ExecStart=/bin/sh -c 'ls -laR /run/user > /var/log/m9r56_diag/run-user.txt 2>&1 || true'
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 M9R56_DIAG_EOF
-  mkdir -p '$MNT_DIR/etc/systemd/system/multi-user.target.wants'
+  mkdir -p '$MNT_DIR/etc/systemd/system/graphical.target.wants'
   ln -sfn /etc/systemd/system/m9r56-diag.service \
-    '$MNT_DIR/etc/systemd/system/multi-user.target.wants/m9r56-diag.service'
+    '$MNT_DIR/etc/systemd/system/graphical.target.wants/m9r56-diag.service'
 " || { echo "[build-reproos-image] Phase 10.8 sddm path shims + instrumentation failed" >&2; exit 74; }
 
 # ---------------------------------------------------------------

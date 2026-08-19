@@ -158,6 +158,7 @@ package reproosIso:
     "libxcrypt"
 
   build:
+    let projectRoot = activeProviderProjectRoot()
     let reprobuildRoot = getEnv("REPROBUILD_SRC", "../reprobuild")
     let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"
 
@@ -198,6 +199,9 @@ package reproosIso:
       @["bash", "patchelf"] & packageSets.ReproosGraphicalRootfsPackages)
     setRegisteredActionCwd(stageRootfsAction.id, acwdCustom,
       "recipes/reproos-iso")
+    let rootfsOutputAbs = projectRoot / ReproosIsoRootfsOutput
+    setRegisteredActionDependencyPolicy(stageRootfsAction.id,
+      automaticMonitorPolicy(@[rootfsOutputAbs]))
     discard target("rootfs", stageRootfsAction)
 
     # ISO authoring consumes the cached rootfs plus the source-built boot and
@@ -257,4 +261,9 @@ package reproosIso:
       ])
     setRegisteredActionCwd(buildIsoAction.id, acwdCustom,
       "recipes/reproos-iso")
+    let initramfsOutputAbs = projectRoot /
+      "recipes/reproos-iso/build/reproos-initramfs.img"
+    let isoOutputAbs = projectRoot / ReproosIsoOutput
+    setRegisteredActionDependencyPolicy(buildIsoAction.id,
+      automaticMonitorPolicy(@[initramfsOutputAbs, isoOutputAbs]))
     discard target("iso", buildIsoAction)

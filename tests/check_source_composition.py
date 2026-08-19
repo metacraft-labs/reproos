@@ -247,6 +247,10 @@ def main() -> None:
         'extraOutputs = @["build/de-rootfs"]',
         'deps = @[stageRootfsAction.id]',
         'target("rootfs", stageRootfsAction)',
+        "setRegisteredActionDependencyPolicy(stageRootfsAction.id",
+        "automaticMonitorPolicy(@[rootfsOutputAbs])",
+        "setRegisteredActionDependencyPolicy(buildIsoAction.id",
+        "automaticMonitorPolicy(@[initramfsOutputAbs, isoOutputAbs])",
         "reproCliInput",
     ]:
         if value not in iso_content:

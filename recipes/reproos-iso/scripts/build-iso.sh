@@ -78,22 +78,24 @@ WORK=$(mktemp -d -t reproos-iso-XXXXXX)
 # (e.g. an early-script abort) doesn't mask the original exit code.
 trap '{ chmod -R u+w "$WORK" 2>/dev/null || true; rm -rf "$WORK"; }' EXIT
 
-# Reproducibility workaround for Debian 12's mtools 4.0.32: its
+# Reproducibility workaround for FAT authoring tools that otherwise choose a
+# volume serial from wall-clock time. Debian 12's mtools 4.0.32
 # `mformat -C` seeds random() with `time(0)` (see init_random() in
 # mtools.h) BEFORE the SOURCE_DATE_EPOCH-aware path runs. The 4-byte
 # FAT volume serial in the embedded UEFI ESP image is therefore
-# wall-clock-randomised even when SOURCE_DATE_EPOCH is set. grub-
-# mkrescue invokes mformat without the `-N <serial>` flag.
+# wall-clock-randomised even when SOURCE_DATE_EPOCH is set. `mkfs.fat`
+# similarly needs both `--invariant` for FAT directory timestamps and an
+# explicit `-i <serial>` for images we author directly.
 #
 # Fix: drop a `mformat` shim into a private dir, prepend it on $PATH.
 # The shim forwards to /usr/bin/mformat with a deterministic `-N`
 # argument prepended, so grub-mkrescue's call resolves to it AND the
 # ESP image's volume serial becomes a pinned constant.
 #
-# Serial value: 32-bit hex constant. Anything stable would work;
+# Serial value: eight hexadecimal digits. Anything stable would work;
 # pinning a documented constant is what matters for the recipe.
 # 0xb007ed02 == "boot ed02" mnemonic; just an opaque 32-bit FAT vol id.
-REPRO_FAT_SERIAL='0xb007ed02'
+REPRO_FAT_SERIAL='b007ed02'
 # Locate the real mformat dynamically so the shim works on Nix-based
 # hosts (eli-wsl: /nix/store/.../mtools-*/bin/mformat) as well as
 # Debian (/usr/bin/mformat). Resolve via PATH but EXCLUDE any directory
@@ -111,7 +113,7 @@ cat > "$SHIM_DIR/mformat" <<EOF
 # to work around mtools 4.0.32's time-of-day-seeded FAT volume serial.
 # The literal '-N <hex>' is prepended so grub-mkrescue's invocation
 # becomes deterministic across rebuilds.
-exec ${REAL_MFORMAT} -N $REPRO_FAT_SERIAL "\$@"
+exec ${REAL_MFORMAT} -N 0x$REPRO_FAT_SERIAL "\$@"
 EOF
 chmod +x "$SHIM_DIR/mformat"
 export PATH="$SHIM_DIR:$PATH"
@@ -430,7 +432,8 @@ else
   rm -f "$WORK/boot/grub/efi.img"
   mkdir -p "$WORK/boot/grub"
   dd if=/dev/zero of="$WORK/boot/grub/efi.img" bs=1024 count="$esp_blocks" status=none
-  mkfs.fat -F 12 -n EFI "$WORK/boot/grub/efi.img"
+  mkfs.fat --invariant -F 12 -i "$REPRO_FAT_SERIAL" -n EFI \
+    "$WORK/boot/grub/efi.img"
   mmd -i "$WORK/boot/grub/efi.img" ::/EFI
   mmd -i "$WORK/boot/grub/efi.img" ::/EFI/BOOT
   mcopy -i "$WORK/boot/grub/efi.img" "$WORK/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI

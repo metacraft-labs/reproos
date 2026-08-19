@@ -135,6 +135,35 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["vm-harness"])
     discard target("test-iso", testIso)
 
+    let testIsoReproducibility = shell(
+      command = "bash tests/test-iso-reproducibility.sh",
+      actionId = "reproos.test-iso-reproducibility",
+      deps = @[isoPackage.ReproosIsoBuildActionId],
+      extraInputs = @[
+        "tests/test-iso-reproducibility.sh",
+        isoPackage.ReproosIsoRootfsOutput,
+        isoPackage.ReproosIsoOutput,
+        "recipes/reproos-iso/scripts/build-iso.sh",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash",
+        "busybox",
+        "coreutils",
+        "dosfstools",
+        "gawk",
+        "grub",
+        "kernel",
+        "kmod",
+        "mtools",
+        "squashfs-tools",
+        "xz",
+        "xorriso",
+        "zstd",
+      ])
+    discard target("test-iso-reproducibility", testIsoReproducibility)
+
     let bootImage = shell(
       command = "vm-harness boot --backend auto --source-image \"" &
         imagePackage.ReproosImageOutput & "\" --kind qcow2 --keep \"$@\"",
@@ -176,6 +205,7 @@ package reproosWorkflows:
       testInstallerPreview,
       testInstallerVisuals,
       testInstallerArtifacts,
+      testIsoReproducibility,
       testIso,
       testImageHealth,
       testUnattendedInstall,

@@ -14,7 +14,8 @@ Use Reprobuild as the only contributor command surface:
   the named artifacts from source.
 - `repro build` produces the default artifact collection.
 - `repro test` runs the complete product test collection; focused tests are
-  named `test-*` build targets.
+  named `test-*` build targets. Use `repro build test-iso-reproducibility`
+  after changing boot media authoring or source-runtime composition.
 - `repro lint` enforces the project-graph structure and source-only package
   closure before review.
 - `repro run installer` opens the safe local installer preview.

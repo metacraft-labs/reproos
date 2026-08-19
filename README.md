@@ -43,6 +43,7 @@ repro build test-installer-preview
 repro build test-installer-visuals
 repro build test-installer-artifacts
 repro build test-source-composition
+repro build test-iso-reproducibility
 repro build test-iso
 repro build test-image-health
 repro build test-unattended-install

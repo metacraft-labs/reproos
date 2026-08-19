@@ -14,6 +14,7 @@
 
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTimer>
@@ -223,6 +224,22 @@ int main(int argc, char *argv[]) {
         }
         window->setWidth(width);
         window->setHeight(height);
+    }
+
+    const QString readyFile = qEnvironmentVariable(
+        "REPROOS_INSTALLER_READY_FILE");
+    if (!readyFile.isEmpty()) {
+        QObject::connect(window, &QQuickWindow::frameSwapped,
+            application.get(), [readyFile]() {
+                QFile marker(readyFile);
+                if (!marker.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    qWarning() << "failed to publish installer readiness"
+                               << readyFile << marker.errorString();
+                    return;
+                }
+                marker.write("REPROOS_INSTALLER_FRAME_READY\n");
+                marker.close();
+            }, Qt::SingleShotConnection);
     }
 
     if (parser.isSet(screenshotOpt)) {

@@ -122,3 +122,8 @@ Connection, capture it with `tools/capture-hyperv-vm.ps1`, then run
 only as a final integration gate after local screenshot reviews converge; VM
 booting is not part of each visual iteration. The gate confirms the expected
 welcome controls through GuiAssert OCR.
+
+On a Linux host with libvirt, `repro run installer-vm-screenshot` performs the
+final gate directly: it waits for the installer's first rendered frame,
+captures the QEMU console, tears down the transient VM, and runs the same
+GuiAssert assertions.

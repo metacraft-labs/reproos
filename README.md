@@ -74,6 +74,7 @@ repro run installer -- --screen users --size 1024x768
 repro run installer-screenshots
 repro run installer-accept-goldens
 repro run installer-vm-frame -- FRAME.png
+repro run installer-vm-screenshot
 ```
 
 Preview mode exercises the complete wizard and simulates installation. The
@@ -88,9 +89,13 @@ repro run boot-iso
 repro run boot-image
 ```
 
-These commands open the VM in `virt-viewer`. Closing the viewer reclaims the
-transient domain and its writable disk overlay; the ISO or QCOW2 build output is
-never modified.
+`installer-vm-screenshot` builds the ISO, waits for the first rendered wizard
+frame, captures it from a self-cleaning libvirt VM, and runs the GuiAssert
+welcome-screen gate.
+
+`boot-iso` and `boot-image` open the VM in `virt-viewer`. Closing the viewer
+reclaims the transient domain and its writable disk overlay; the ISO or QCOW2
+build output is never modified.
 
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.

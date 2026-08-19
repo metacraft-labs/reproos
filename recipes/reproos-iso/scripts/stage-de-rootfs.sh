@@ -1408,6 +1408,9 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
 
+export REPROOS_INSTALLER_READY_FILE=/tmp/reproos-installer-frame-ready
+rm -f "$REPROOS_INSTALLER_READY_FILE"
+
 SWAY_INIT=$(mktemp -t reproos-installer-sway-init-XXXXXX.sh)
 cat > "$SWAY_INIT" <<'INIT'
 #!/bin/sh
@@ -1564,6 +1567,29 @@ EOF
 mkdir -p "$STAGE_DIR/etc/systemd/system/multi-user.target.wants"
 ln -sf /etc/systemd/system/reproos-installer-autorun.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-installer-autorun.service"
+
+# Relay the installer's first rendered frame to the serial console. VM tests
+# can synchronize on presentation instead of a boot-time sleep.
+cat > "$STAGE_DIR/etc/systemd/system/reproos-installer-frame-ready.service" <<'EOF'
+[Unit]
+Description=Publish ReproOS installer graphical readiness
+After=sddm.service
+Wants=sddm.service
+ConditionKernelCommandLine=repro.de=sway
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+ExecStart=/bin/sh -c 'while [ ! -s /tmp/reproos-installer-frame-ready ]; do sleep 0.1; done; cat /tmp/reproos-installer-frame-ready'
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target
+EOF
+mkdir -p "$STAGE_DIR/etc/systemd/system/graphical.target.wants"
+ln -sf /etc/systemd/system/reproos-installer-frame-ready.service \
+  "$STAGE_DIR/etc/systemd/system/graphical.target.wants/reproos-installer-frame-ready.service"
 
 # M9.R.36.1 — ``reproos-installer`` wrapper that sets a TARGETED
 # LD_LIBRARY_PATH for the installer's QProcess children.  Nim's

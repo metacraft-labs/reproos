@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output="$repo_root/build/test-installer-preview/summary.png"
 config_output="$(mktemp -d)"
-trap 'rm -rf "$config_output"' EXIT
+readiness_file="$(mktemp)"
+trap 'rm -rf "$config_output"; rm -f "$readiness_file"' EXIT
 
 # shellcheck source=tools/installer-dev-runtime.sh
 source "$repo_root/tools/installer-dev-runtime.sh"
@@ -33,6 +34,7 @@ cmp \
 rm -f "$output"
 QT_QPA_PLATFORM=offscreen \
 QT_QUICK_BACKEND=software \
+REPROOS_INSTALLER_READY_FILE="$readiness_file" \
   "$REPROOS_INSTALLER_BIN" \
     --preview \
     --visual-screen summary \
@@ -40,4 +42,5 @@ QT_QUICK_BACKEND=software \
     --screenshot "$output"
 
 test -s "$output"
+grep -qx 'REPROOS_INSTALLER_FRAME_READY' "$readiness_file"
 printf 'installer preview: PASS\nframe=%s\n' "$output"

@@ -116,6 +116,20 @@ package reproosWorkflows:
     run("installer-vm-frame", build = inspectInstallerVmFrame.id,
       owningPackage = "reproosWorkflows")
 
+    let captureInstallerVmScreenshot = shell(
+      command = "bash tests/test-installer-vm-screenshot.sh \"$@\"",
+      args = @["reproos-installer-vm-screenshot"],
+      actionId = "reproos.capture-installer-vm-screenshot",
+      deps = @[isoPackage.ReproosIsoBuildActionId],
+      extraInputs = @[
+        "tests/test-installer-vm-screenshot.sh",
+        "tests/test-installer-vm-frame.sh",
+        "tests/test_installer_vm_frame.nim",
+      ],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("installer-vm-screenshot", build = captureInstallerVmScreenshot.id,
+      owningPackage = "reproosWorkflows")
+
     let testInstallerArtifacts = shell(
       command = "bash tests/test-installer-artifacts.sh",
       actionId = "reproos.test-installer-artifacts",

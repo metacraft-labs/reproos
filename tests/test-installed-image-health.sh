@@ -6,6 +6,13 @@ image="${REPROOS_IMAGE:-$repo_root/recipes/reproos-image/build/reproos-installed
 harness_image="${REPROOS_HARNESS_IMAGE:-$image}"
 vm_harness="${VM_HARNESS_BIN:-vm-harness}"
 
+if [[ -z "${LIBVIRT_DEFAULT_URI:-}" &&
+      -S "/run/user/$UID/libvirt/libvirt-sock" &&
+      ! -S /run/libvirt/libvirt-sock &&
+      ! -S /run/libvirt/virtqemud-sock ]]; then
+  export LIBVIRT_DEFAULT_URI=qemu:///session
+fi
+
 if [[ ! -s "$image" ]]; then
   echo "installed image missing: $image" >&2
   echo "run: repro build image --tool-provisioning=from-source" >&2

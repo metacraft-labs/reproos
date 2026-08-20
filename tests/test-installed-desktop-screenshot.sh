@@ -33,7 +33,7 @@ rm -f "$output"
   --expect 'REPROOS_HEALTH:PASS' \
   --timeout-sec 300 \
   --screenshot "$output" \
-  --screenshot-delay-sec 3 \
+  --screenshot-delay-sec "${REPROOS_SCREENSHOT_DELAY_SEC:-20}" \
   --output-dir "$boot_output"
 
 test -s "$output"

@@ -200,6 +200,12 @@ def main() -> None:
         ],
         "pinned image assembly CLI",
     )
+
+    require_contains(
+        ROOT / "tests/test-installed-desktop-screenshot.sh",
+        ['--screenshot-delay-sec "${REPROOS_SCREENSHOT_DELAY_SEC:-20}"'],
+        "installed desktop graphical settle gate",
+    )
     installer_consumers = [
         WORKFLOW_RECIPE,
         ISO_RECIPE,

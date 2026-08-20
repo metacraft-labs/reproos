@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$repo_root/tests/fixtures/auto-config-minimal.toml"
-installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/build/reproos-installer/out/usr/bin/reproos-installer}"
+installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/.repro/output/install/usr/bin/reproos-installer}"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

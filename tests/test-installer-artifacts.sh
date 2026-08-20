@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/build/reproos-installer/out/usr/bin/reproos-installer}"
+installer_bin="${REPROOS_INSTALLER_BIN:-$repo_root/.repro/output/install/usr/bin/reproos-installer}"
 fixture="$repo_root/tests/fixtures/auto-config-minimal.toml"
 golden="$repo_root/tests/golden/installer-artifacts"
 

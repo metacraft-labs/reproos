@@ -11,7 +11,7 @@ reproos_installer_runtime_init() {
   local qt_package prefix plugins imports
 
   REPROOS_INSTALLER_PROJECT="$repo_root"
-  REPROOS_INSTALLER_BIN="$repo_root/build/reproos-installer/out/usr/bin/reproos-installer"
+  REPROOS_INSTALLER_BIN="$repo_root/.repro/output/install/usr/bin/reproos-installer"
   REPROOS_SOURCE_ROOT="${REPRO_FROM_SOURCE_ROOT:-$repo_root/../reprobuild-packages/packages/source}"
 
   for qt_package in qt6-base qt6-declarative qt6-quickcontrols2 qt6-wayland qt6-tools; do

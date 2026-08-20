@@ -225,7 +225,7 @@ trap cleanup EXIT
 # extractor for the already-normalized values. The installer owns
 # schema validation and emits the canonical bundle consumed below.
 # ---------------------------------------------------------------
-INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer}"
+INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/.repro/output/install/usr/bin/reproos-installer}"
 if [ ! -x "$INSTALLER_BIN" ]; then
   echo "[build-reproos-image] installer config emitter missing: $INSTALLER_BIN" >&2
   exit 65

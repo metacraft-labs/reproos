@@ -186,7 +186,7 @@ package reproosIso:
     let stageRootfsAction = shell(
       command = stageRootfsCommand,
       actionId = ReproosIsoRootfsActionId,
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       actionCachePolicy = acfpHybrid,
       extraInputs = @[
         reproCliInput,

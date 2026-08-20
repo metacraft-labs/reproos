@@ -182,6 +182,32 @@ def main() -> None:
         "root graph",
     )
 
+    require_contains(
+        INSTALLER_RECIPE,
+        [
+            'ReproosInstallerReadyActionId* = "install-mirror-reproosInstaller"',
+            '".repro/output/install/usr/bin/reproos-installer"',
+            "BuildActionDef(id: ReproosInstallerReadyActionId)",
+        ],
+        "finalized installer package contract",
+    )
+    installer_consumers = [
+        WORKFLOW_RECIPE,
+        ISO_RECIPE,
+        IMAGE_RECIPE,
+        ROOT / "tools/installer-dev-runtime.sh",
+        ROOT / "tests/test-installer-artifacts.sh",
+        ROOT / "tests/test-unattended-install.sh",
+        ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
+    ]
+    for path in installer_consumers:
+        content = source(path)
+        if "ReproosInstallerInstallActionId" in content:
+            raise AssertionError(f"installer consumer bypasses finalization: {path}")
+        if "build/reproos-installer/out/usr/bin/reproos-installer" in content:
+            raise AssertionError(f"installer consumer uses raw CMake output: {path}")
+
     for path in modules[1:]:
         content = source(path)
         if "devEnv:" in content:

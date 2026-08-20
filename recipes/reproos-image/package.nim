@@ -304,7 +304,7 @@ package reproosImage:
       command = buildImageCommand,
       actionId = ReproosImageBuildActionId,
       deps = @[
-        installerPackage.ReproosInstallerInstallActionId,
+        installerPackage.ReproosInstallerReadyActionId,
         isoPackage.ReproosIsoRootfsActionId,
         buildDiskInitrdAction.id,
       ],

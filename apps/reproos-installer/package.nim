@@ -8,9 +8,9 @@ import repro_dsl_stdlib/constructors
 import repro_dsl_stdlib/types/package_result
 
 const
-  ReproosInstallerInstallActionId* = "cmake-install-reproosInstaller"
+  ReproosInstallerReadyActionId* = "install-mirror-reproosInstaller"
   ReproosInstallerBinary* =
-    "build/reproos-installer/out/usr/bin/reproos-installer"
+    ".repro/output/install/usr/bin/reproos-installer"
 
 package reproosInstaller:
   defaultToolProvisioning "from-source"
@@ -52,7 +52,8 @@ package reproosInstaller:
         cacheVars = opts,
         allowSourceWrites = true)
       discard pkg.executable("reproos-installer")
-      discard target("installer", pkg.installEdge)
+      discard target("installer",
+        BuildActionDef(id: ReproosInstallerReadyActionId))
     finally:
       clearCurrentOwningPackageOverride()
 

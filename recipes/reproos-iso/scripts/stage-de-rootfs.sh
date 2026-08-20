@@ -424,7 +424,7 @@ extract_nix_prefixes_from_elf() {
   fi
   printf '%s\n' "$interp" | sed -nE 's|^(/nix/store/[^/]+)(/.*)?$|\1|p'
 }
-SOURCE_RUNTIME_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer}"
+SOURCE_RUNTIME_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-$REPO_ROOT/.repro/output/install/usr/bin/reproos-installer}"
 SOURCE_RUNTIME_REPRO_BIN="${REPRO_CLI_BIN:-${REPROBUILD_SRC:-$REPO_ROOT/../reprobuild}/build/bin/repro}"
 export ISO_SRC_MIRROR_ROOT SOURCE_RUNTIME_INSTALLER_BIN SOURCE_RUNTIME_REPRO_BIN
 export -f extract_nix_prefixes_from_elf
@@ -2086,7 +2086,7 @@ fi
 
 REPROOS_INSTALLER_BIN="${REPROOS_INSTALLER_BIN:-}"
 if [ -z "$REPROOS_INSTALLER_BIN" ]; then
-  REPROOS_INSTALLER_BIN="$REPO_ROOT/build/reproos-installer/out/usr/bin/reproos-installer"
+  REPROOS_INSTALLER_BIN="$REPO_ROOT/.repro/output/install/usr/bin/reproos-installer"
 fi
 if [ ! -x "$REPROOS_INSTALLER_BIN" ]; then
   echo "[stage-de-rootfs] reproos-installer binary missing or not executable at $REPROOS_INSTALLER_BIN" >&2

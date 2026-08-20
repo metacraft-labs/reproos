@@ -52,7 +52,7 @@ package reproosWorkflows:
       command = "bash tools/capture-installer-screens.sh --no-build \"$@\"",
       args = @["reproos-installer-screenshots"],
       actionId = "reproos.capture-installer-screens",
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       extraInputs = @[
         "tools/capture-installer-screens.sh",
         "tools/installer-dev-runtime.sh",
@@ -65,7 +65,7 @@ package reproosWorkflows:
       command = "bash tools/run-installer-preview.sh --no-build \"$@\"",
       args = @["reproos-installer-preview"],
       actionId = "reproos.preview-installer",
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       extraInputs = @[
         "tools/run-installer-preview.sh",
         "tools/installer-dev-runtime.sh",
@@ -77,7 +77,7 @@ package reproosWorkflows:
     let testInstallerPreview = shell(
       command = "bash tests/test-installer-preview.sh",
       actionId = "reproos.test-installer-preview",
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       extraInputs = @[
         "tests/test-installer-preview.sh",
         "tools/installer-dev-runtime.sh",
@@ -91,7 +91,7 @@ package reproosWorkflows:
       command = "bash tests/test-installer-visuals.sh \"$@\"",
       args = @["reproos-installer-visuals"],
       actionId = "reproos.test-installer-visuals",
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       extraInputs = @[
         "tests/test-installer-visuals.sh",
         "tests/test_installer_visuals.nim",
@@ -133,7 +133,7 @@ package reproosWorkflows:
     let testInstallerArtifacts = shell(
       command = "bash tests/test-installer-artifacts.sh",
       actionId = "reproos.test-installer-artifacts",
-      deps = @[installerPackage.ReproosInstallerInstallActionId],
+      deps = @[installerPackage.ReproosInstallerReadyActionId],
       extraInputs = @[
         "tests/test-installer-artifacts.sh",
         "tests/fixtures/auto-config-minimal.toml",
@@ -228,7 +228,7 @@ package reproosWorkflows:
       command = "bash tests/test-unattended-install.sh",
       actionId = "reproos.test-unattended-install",
       deps = @[
-        installerPackage.ReproosInstallerInstallActionId,
+        installerPackage.ReproosInstallerReadyActionId,
         imagePackage.ReproosImageBuildActionId,
       ],
       extraInputs = @[

@@ -296,6 +296,7 @@ package reproosImage:
       "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
       "REPROOS_DISK_INITRD=\"$PWD/build/reproos-disk-initramfs.img\"",
       "REPRO_QCOW2_SEED=\"${REPRO_QCOW2_SEED:-deadbeefcafebabe}\"",
+      "REPRO_BIN=\"" & reproCliInput & "\"",
       "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
       "bash scripts/build-reproos-image.sh build/reproos-installed.qcow2",
       ">build/reproos-image-build.log 2>&1",

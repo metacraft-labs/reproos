@@ -191,6 +191,15 @@ def main() -> None:
         ],
         "finalized installer package contract",
     )
+    require_contains(
+        IMAGE_RECIPE,
+        [
+            'let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"',
+            '"REPRO_BIN=\\\"" & reproCliInput & "\\\""',
+            "reproCliInput,",
+        ],
+        "pinned image assembly CLI",
+    )
     installer_consumers = [
         WORKFLOW_RECIPE,
         ISO_RECIPE,

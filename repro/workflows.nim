@@ -212,6 +212,18 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash", "vm-harness"])
     discard target("test-image-health", testImageHealth)
 
+    let testInstalledDesktop = shell(
+      command = "bash tests/test-installed-desktop-screenshot.sh",
+      actionId = "reproos.test-installed-desktop",
+      deps = @[imagePackage.ReproosImageBuildActionId],
+      extraInputs = @[
+        "tests/test-installed-desktop-screenshot.sh",
+        "tests/test-installed-desktop-frame.sh",
+        "tests/test_installed_desktop_frame.nim",
+      ],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    discard target("test-installed-desktop", testInstalledDesktop)
+
     let testUnattendedInstall = shell(
       command = "bash tests/test-unattended-install.sh",
       actionId = "reproos.test-unattended-install",
@@ -238,5 +250,6 @@ package reproosWorkflows:
       testIsoReproducibility,
       testIso,
       testImageHealth,
+      testInstalledDesktop,
       testUnattendedInstall,
     ])

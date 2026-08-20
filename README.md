@@ -56,12 +56,14 @@ repro build test-source-composition
 repro build test-iso-reproducibility
 repro build test-iso
 repro build test-image-health
+repro build test-installed-desktop
 repro build test-unattended-install
 ```
 
 The unattended test compares the wizard's generated configuration with the
 reviewed fixture, applies it to the installed image build, and runs the boot
-health check.
+health check. The installed-desktop gate captures the graphical session after
+that health marker and checks its readiness panel with GuiAssert.
 
 ## Interactive Workflows
 

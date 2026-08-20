@@ -1278,7 +1278,7 @@ PAM_OTHER_EOF
   cat > '$MNT_DIR/etc/sway/config' <<'SWAY_CONFIG_EOF'
 font pango:monospace 12
 swaybg_command -
-exec swaynag --message 'ReproOS is ready' --dismiss-button 'Running' --font 'DejaVu Sans 48' --message-padding 80 --button-padding 32 --border-bottom-size 6 --background ffffffff --border ffffffff --border-bottom 43a047ff --text 111111ff --button-background ffffffff --button-text 111111ff
+exec swaynag --message 'ReproOS is ready' --dismiss-button 'Ready' --font 'DejaVu Sans 18' --message-padding 28 --button-padding 14 --border-bottom-size 4 --background 20242aff --border 20242aff --border-bottom 43a047ff --text f5f7faff --button-background 343a40ff --button-text f5f7faff
 SWAY_CONFIG_EOF
 
   # systemd invokes module helpers through /sbin, while the from-source kmod

@@ -219,6 +219,7 @@ def main() -> None:
                 "test-installer-artifacts",
                 "test-iso",
                 "test-image-health",
+                "test-installed-desktop",
                 "test-unattended-install",
             ]],
             *[f'run("{name}"' for name in [
@@ -248,6 +249,9 @@ def main() -> None:
             "tests/test_installer_vm_frame.nim",
             "tests/test-installer-artifacts.sh",
             "tests/test-installed-image-health.sh",
+            "tests/test-installed-desktop-screenshot.sh",
+            "tests/test-installed-desktop-frame.sh",
+            "tests/test_installed_desktop_frame.nim",
             "tests/test-unattended-install.sh",
             "tests/fixtures/auto-config-minimal.toml",
         ],

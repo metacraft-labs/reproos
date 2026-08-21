@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Publish and verify the source package closure used by the ReproOS ISO."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CACHE_URL = "https://repro-cache.metacraft-labs.com"
+CACHE_KEY_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+
+
+class BackfillError(RuntimeError):
+    """A cache backfill prerequisite or command failed."""
+
+
+def run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def command_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> str:
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    return f"{' '.join(command)} exited {result.returncode}: {detail}"
+
+
+def resolve_repro(explicit: str) -> str:
+    candidates = [
+        explicit,
+        os.environ.get("REPROBUILD_REPRO", ""),
+        shutil.which("repro") or "",
+        str(ROOT.parent / "reprobuild" / "build" / "bin" / "repro"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate).resolve())
+    raise BackfillError(
+        "repro CLI not found; pass --repro or set REPROBUILD_REPRO"
+    )
+
+
+def resolve_packages_root(explicit: str) -> Path:
+    candidates = [
+        explicit,
+        os.environ.get("REPROBUILD_PACKAGES_ROOT", ""),
+        str(ROOT.parent / "reprobuild-packages"),
+    ]
+    for candidate in candidates:
+        path = Path(candidate).expanduser() if candidate else None
+        if path is not None and (path / "packages" / "source").is_dir():
+            return path.resolve()
+    raise BackfillError(
+        "reprobuild-packages checkout not found; pass --packages-root or set "
+        "REPROBUILD_PACKAGES_ROOT"
+    )
+
+
+def graph_actions(document: dict[str, Any]) -> list[dict[str, Any]]:
+    graph = document.get("graph", document)
+    actions = graph.get("actions", []) if isinstance(graph, dict) else []
+    if not isinstance(actions, list):
+        raise BackfillError("repro graph returned an invalid actions field")
+    return [action for action in actions if isinstance(action, dict)]
+
+
+def load_graph(
+    repro: str,
+    cwd: Path,
+    target: str,
+    env: dict[str, str],
+    timeout: int,
+) -> dict[str, Any]:
+    command = [repro, "graph"]
+    if target:
+        command.append(target)
+    command.extend(["--tool-provisioning=from-source", "--format=json"])
+    result = run_command(command, cwd=cwd, env=env, timeout=timeout)
+    if result.returncode != 0:
+        raise BackfillError(command_failure(command, result))
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise BackfillError(f"repro graph returned invalid JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise BackfillError("repro graph returned a non-object JSON document")
+    return document
+
+
+def discover_iso_packages(
+    repro: str,
+    packages_root: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> tuple[list[str], list[str]]:
+    graph = load_graph(repro, ROOT, "iso", env, timeout)
+    refs = sorted(
+        {
+            ref
+            for action in graph_actions(graph)
+            for ref in action.get("toolIdentityRefs", [])
+            if isinstance(ref, str) and ref
+        }
+    )
+    source_root = packages_root / "packages" / "source"
+    packages = [name for name in refs if (source_root / name / "repro.nim").is_file()]
+    ignored = [name for name in refs if name not in packages]
+    if not packages:
+        raise BackfillError("the source-only ISO graph contains no source package recipes")
+    return packages, ignored
+
+
+def package_cache_keys(
+    repro: str,
+    package_dir: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> list[str]:
+    graph = load_graph(repro, package_dir, "", env, timeout)
+    keys = sorted(
+        {
+            action.get("binaryCacheKey", "")
+            for action in graph_actions(graph)
+            if action.get("publishToBinaryCache") is True
+            and isinstance(action.get("binaryCacheKey"), str)
+            and CACHE_KEY_RE.fullmatch(action["binaryCacheKey"])
+        }
+    )
+    if not keys:
+        raise BackfillError(
+            f"{package_dir.name} has no materialized binary-cache publication action"
+        )
+    return keys
+
+
+def cache_lookup(
+    repro: str,
+    key: str,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> tuple[bool, str]:
+    command = [repro, "cache", "lookup", key]
+    result = run_command(command, cwd=cwd, env=env, timeout=timeout)
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    if result.returncode == 0 and re.search(rf"\bhit\s+{re.escape(key)}\b", output):
+        return True, ""
+    if result.returncode == 0:
+        return False, output or "cache lookup did not report a hit"
+    return False, command_failure(command, result)
+
+
+def publish_package(
+    repro: str,
+    package_dir: Path,
+    report_path: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> tuple[bool, str, list[str]]:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        repro,
+        "build",
+        "--daemon=off",
+        "--tool-provisioning=from-source",
+        "--publish-materialized",
+        "--publish-cache-hits",
+        f"--write-report={report_path}",
+        "--progress=line",
+        "--log=summary",
+        "--no-runquota",
+    ]
+    result = run_command(command, cwd=package_dir, env=env, timeout=timeout)
+    if result.returncode != 0:
+        return False, command_failure(command, result), []
+
+    reported_keys: set[str] = set()
+    if report_path.is_file():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            actions = report.get("actions", []) if isinstance(report, dict) else []
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                reason = action.get("reason", "")
+                if isinstance(reason, str):
+                    reported_keys.update(CACHE_KEY_RE.findall(reason))
+        except (OSError, json.JSONDecodeError) as error:
+            return False, f"unable to read build report {report_path}: {error}", []
+    return True, "", sorted(reported_keys)
+
+
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repro", default="", help="path to the repro CLI")
+    parser.add_argument(
+        "--packages-root",
+        default="",
+        help="path to the reprobuild-packages checkout",
+    )
+    parser.add_argument("--cache-url", default=DEFAULT_CACHE_URL)
+    parser.add_argument("--cache-scope", default="release")
+    parser.add_argument(
+        "--report",
+        default="build/evidence/reproos-cache-backfill-report.json",
+    )
+    parser.add_argument(
+        "--package",
+        action="append",
+        default=[],
+        help="limit work to a named package; may be repeated",
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="check the cache without publishing missing entries",
+    )
+    parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument("--graph-timeout-sec", type=int, default=900)
+    parser.add_argument("--build-timeout-sec", type=int, default=14400)
+    parser.add_argument("--lookup-timeout-sec", type=int, default=60)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    report_path = Path(args.report)
+    if not report_path.is_absolute():
+        report_path = ROOT / report_path
+
+    try:
+        repro = resolve_repro(args.repro)
+        packages_root = resolve_packages_root(args.packages_root)
+        env = os.environ.copy()
+        env.update(
+            {
+                "REPROBUILD_REPRO": repro,
+                "REPROBUILD_PACKAGES_ROOT": str(packages_root),
+                "REPRO_BINARY_CACHE_URL": args.cache_url,
+                "REPRO_BINARY_CACHE_SCOPE": args.cache_scope,
+                "REPRO_DAEMON": "off",
+                "REPROBUILD_NO_RUNQUOTA": "1",
+            }
+        )
+        packages, ignored_refs = discover_iso_packages(
+            repro, packages_root, env, args.graph_timeout_sec
+        )
+        if args.package:
+            requested = set(args.package)
+            unknown = sorted(requested.difference(packages))
+            if unknown:
+                raise BackfillError(
+                    "requested packages are not in the source-only ISO graph: "
+                    + ", ".join(unknown)
+                )
+            packages = [name for name in packages if name in requested]
+    except (BackfillError, OSError, subprocess.SubprocessError) as error:
+        print(f"cache backfill: {error}", file=sys.stderr)
+        return 1
+
+    report: dict[str, Any] = {
+        "schemaVersion": 1,
+        "target": "iso",
+        "cacheUrl": args.cache_url,
+        "cacheScope": args.cache_scope,
+        "verifyOnly": args.verify_only,
+        "reprobuildPackagesRoot": str(packages_root),
+        "ignoredToolIdentityRefs": ignored_refs,
+        "sourcePackageCount": len(packages),
+        "cacheEntryCount": 0,
+        "hitBeforeCount": 0,
+        "publishedPackageCount": 0,
+        "verifiedEntryCount": 0,
+        "complete": False,
+        "packages": [],
+    }
+    package_reports = report["packages"]
+    assert isinstance(package_reports, list)
+
+    for index, package in enumerate(packages, start=1):
+        print(f"[{index}/{len(packages)}] {package}", flush=True)
+        package_dir = packages_root / "packages" / "source" / package
+        item: dict[str, Any] = {
+            "package": package,
+            "cacheKeys": [],
+            "missingBefore": [],
+            "missingAfter": [],
+            "reportedPublicationKeys": [],
+            "status": "pending",
+            "elapsedSeconds": 0.0,
+            "error": "",
+        }
+        package_reports.append(item)
+        started = time.monotonic()
+        try:
+            keys = package_cache_keys(
+                repro, package_dir, env, args.graph_timeout_sec
+            )
+            item["cacheKeys"] = keys
+            report["cacheEntryCount"] += len(keys)
+
+            missing: list[str] = []
+            lookup_errors: list[str] = []
+            for key in keys:
+                hit, detail = cache_lookup(
+                    repro, key, package_dir, env, args.lookup_timeout_sec
+                )
+                if hit:
+                    report["hitBeforeCount"] += 1
+                else:
+                    missing.append(key)
+                    if detail:
+                        lookup_errors.append(detail)
+            item["missingBefore"] = missing
+
+            if missing and args.verify_only:
+                item["status"] = "missing"
+                item["missingAfter"] = missing
+                item["error"] = "; ".join(lookup_errors)
+            elif missing:
+                package_report = (
+                    report_path.parent / "cache-backfill-packages" / f"{package}.json"
+                )
+                ok, detail, reported_keys = publish_package(
+                    repro,
+                    package_dir,
+                    package_report,
+                    env,
+                    args.build_timeout_sec,
+                )
+                item["reportedPublicationKeys"] = reported_keys
+                if not ok:
+                    raise BackfillError(detail)
+                report["publishedPackageCount"] += 1
+
+                missing_after: list[str] = []
+                for key in keys:
+                    hit = False
+                    detail = ""
+                    for attempt in range(5):
+                        hit, detail = cache_lookup(
+                            repro, key, package_dir, env, args.lookup_timeout_sec
+                        )
+                        if hit:
+                            break
+                        if attempt < 4:
+                            time.sleep(1)
+                    if hit:
+                        report["verifiedEntryCount"] += 1
+                    else:
+                        missing_after.append(key)
+                        if detail:
+                            item["error"] = detail
+                item["missingAfter"] = missing_after
+                item["status"] = "published" if not missing_after else "failed"
+            else:
+                report["verifiedEntryCount"] += len(keys)
+                item["status"] = "hit"
+        except (BackfillError, OSError, subprocess.SubprocessError) as error:
+            item["status"] = "failed"
+            item["error"] = str(error)
+        finally:
+            item["elapsedSeconds"] = round(time.monotonic() - started, 3)
+            write_report(report_path, report)
+
+        if item["status"] in {"failed", "missing"} and args.fail_fast:
+            break
+
+    report["complete"] = (
+        len(package_reports) == len(packages)
+        and all(item["status"] in {"hit", "published"} for item in package_reports)
+        and report["verifiedEntryCount"] == report["cacheEntryCount"]
+    )
+    write_report(report_path, report)
+    print(
+        "cache backfill: "
+        f"{report['verifiedEntryCount']}/{report['cacheEntryCount']} entries verified "
+        f"across {len(package_reports)}/{len(packages)} packages; "
+        f"report: {report_path}",
+        flush=True,
+    )
+    return 0 if report["complete"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

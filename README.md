@@ -77,6 +77,7 @@ repro run installer-screenshots
 repro run installer-accept-goldens
 repro run installer-vm-frame -- FRAME.png
 repro run installer-vm-screenshot
+repro run cache-backfill -- --verify-only
 ```
 
 Preview mode exercises the complete wizard and simulates installation. The
@@ -94,6 +95,13 @@ repro run boot-image
 `installer-vm-screenshot` builds the ISO, waits for the first rendered wizard
 frame, captures it from a self-cleaning libvirt VM, and runs the GuiAssert
 welcome-screen gate.
+
+`cache-backfill` derives its package list and cache keys from the source-only
+ISO graph, publishes only missing materialized entries, and verifies every key
+against `https://repro-cache.metacraft-labs.com`. Publishing requires the
+authorized `REPRO_BINARY_CACHE_KEY_PATH` and `REPRO_BINARY_CACHE_CERT_PATH`
+environment variables. Use `-- --packages-root PATH` when the
+`reprobuild-packages` checkout is not the normal sibling directory.
 
 `boot-iso` and `boot-image` open the VM in `virt-viewer`. Closing the viewer
 reclaims the transient domain and its writable disk overlay; the ISO or QCOW2

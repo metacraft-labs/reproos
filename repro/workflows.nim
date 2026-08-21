@@ -142,6 +142,30 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-installer-artifacts", testInstallerArtifacts)
 
+    let cacheBackfill = shell(
+      command = "python3 tools/cache_reproos_packages.py \"$@\"",
+      args = @["reproos-cache-backfill"],
+      actionId = "reproos.cache-source-packages",
+      deps = @[sourceComposition.id],
+      extraInputs = @[
+        "tools/cache_reproos_packages.py",
+        "tests/check_source_composition.py",
+        "repro/package_sets.nim",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    run("cache-backfill", build = cacheBackfill.id,
+      owningPackage = "reproosWorkflows")
+
+    let testCacheBackfill = shell(
+      command = "python3 tests/test_cache_reproos_packages.py",
+      actionId = "reproos.test-cache-backfill",
+      extraInputs = @[
+        "tests/test_cache_reproos_packages.py",
+        "tools/cache_reproos_packages.py",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test-cache-backfill", testCacheBackfill)
+
     let bootIso = shell(
       command = "vm-harness boot --backend auto --source-image \"" &
         isoPackage.ReproosIsoOutput &
@@ -247,6 +271,7 @@ package reproosWorkflows:
       testInstallerPreview,
       testInstallerVisuals,
       testInstallerArtifacts,
+      testCacheBackfill,
       testIsoReproducibility,
       testIso,
       testImageHealth,

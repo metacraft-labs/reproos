@@ -25,6 +25,8 @@ Use Reprobuild as the only contributor command surface:
   through GuiAssert OCR.
 - `repro run installer-vm-screenshot` builds the ISO and performs a
   readiness-gated, self-cleaning VM capture plus GuiAssert check.
+- `repro run cache-backfill` publishes and verifies every source package used
+  by the ISO graph; use `-- --verify-only` for a read-only cache audit.
 - `repro run boot-iso` and `repro run boot-image` leave VMs open for manual
   acceptance.
 - `repro tasks` lists interactive workflows.

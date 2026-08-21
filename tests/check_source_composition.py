@@ -20,6 +20,7 @@ NORMALIZE_RUNTIME_SCRIPT = (
 )
 CONTRIBUTOR_GUIDE = ROOT / "AGENTS.md"
 README = ROOT / "README.md"
+INSTALLED_SSH_TEST = ROOT / "tests/test-installed-ssh.sh"
 
 
 def source(path: Path) -> str:
@@ -251,7 +252,7 @@ def main() -> None:
         )
 
     workflow_content = source(WORKFLOW_RECIPE)
-    if workflow_content.count("withHostVmRuntime(") != 8:
+    if workflow_content.count("withHostVmRuntime(") != 9:
         raise AssertionError(
             "all VM-backed workflows must select the available libvirt runtime"
         )
@@ -278,6 +279,7 @@ def main() -> None:
                 "test-iso",
                 "test-image-health",
                 "test-installed-desktop",
+                "test-installed-ssh",
                 "test-unattended-install",
             ]],
             *[f'run("{name}"' for name in [
@@ -288,6 +290,7 @@ def main() -> None:
                 "cache-backfill",
                 "boot-iso",
                 "boot-image",
+                "image-ssh",
             ]],
             'collect("lint"',
         ],
@@ -313,10 +316,22 @@ def main() -> None:
             "tests/test-installed-desktop-screenshot.sh",
             "tests/test-installed-desktop-frame.sh",
             "tests/test_installed_desktop_frame.nim",
+            "tests/test-installed-ssh.sh",
             "tests/test-unattended-install.sh",
             "tests/fixtures/auto-config-minimal.toml",
         ],
         "declared workflow inputs",
+    )
+
+    require_contains(
+        INSTALLED_SSH_TEST,
+        [
+            "--graphics vnc",
+            "--video virtio",
+            "--expect 'REPROOS_HEALTH:PASS'",
+            "--ssh-forward-port auto",
+        ],
+        "installed SSH graphical boot contract",
     )
 
     require_contains(
@@ -464,7 +479,7 @@ def main() -> None:
                 f"{obsolete_invocation}"
             )
 
-    for package in ["pam", "kbd"]:
+    for package in ["pam", "kbd", "openssh"]:
         if re.search(
             rf"BASE_USERSPACE_RECIPES=\(.*?^  {re.escape(package)}$.*?^\)",
             stage_content,
@@ -476,6 +491,16 @@ def main() -> None:
             raise AssertionError(f"source {package} is not in the bootable package closure")
     if "required source loadkeys binary missing" not in stage_content:
         raise AssertionError("source kbd runtime validation is missing")
+    for value in [
+        "required source OpenSSH runtime missing",
+        "reproos-network.service",
+        "ExecStartPre=/usr/bin/ssh-keygen -A",
+        "ExecStart=/usr/sbin/sshd -D -e",
+    ]:
+        if value not in stage_content and value not in image_script:
+            raise AssertionError(
+                f"installed SSH acceptance surface is missing: {value}"
+            )
 
     require_contains(
         NORMALIZE_RUNTIME_SCRIPT,

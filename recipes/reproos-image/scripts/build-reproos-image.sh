@@ -677,6 +677,160 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
 "$SUDO" bash -c "echo '$HOSTNAME_VAL' > '$MNT_DIR/etc/hostname'" || true
 
 # ---------------------------------------------------------------
+# Phase 10.4: configure source-built DHCP and OpenSSH. The image uses
+# BusyBox udhcpc for lease management and the OpenSSH installation
+# staged from reprobuild-packages; no distro networking or SSH package
+# is required at runtime.
+# ---------------------------------------------------------------
+echo "[build-reproos-image] Phase 10.4: configure DHCP + OpenSSH"
+
+UDHCPC_HOOK="$WORK/reproos-udhcpc-hook"
+NETWORK_RUNNER="$WORK/reproos-network"
+NETWORK_UNIT="$WORK/reproos-network.service"
+SSHD_CONFIG="$WORK/sshd_config"
+SSHD_UNIT="$WORK/sshd.service"
+
+cat > "$UDHCPC_HOOK" <<'UDHCPC_HOOK_EOF'
+#!/usr/bin/busybox sh
+set -eu
+
+case "${1:-}" in
+  deconfig)
+    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
+    /usr/bin/busybox ifconfig "$interface" 0.0.0.0 up
+    ;;
+  bound|renew)
+    /usr/bin/busybox ifconfig "$interface" "$ip" \
+      netmask "${subnet:-255.255.255.0}" up
+    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
+    for gateway in ${router:-}; do
+      /usr/bin/busybox route add default gw "$gateway" dev "$interface"
+      break
+    done
+    : > /etc/resolv.conf
+    for server in ${dns:-}; do
+      printf 'nameserver %s\n' "$server" >> /etc/resolv.conf
+    done
+    ;;
+esac
+UDHCPC_HOOK_EOF
+
+cat > "$NETWORK_RUNNER" <<'NETWORK_RUNNER_EOF'
+#!/usr/bin/busybox sh
+set -eu
+
+interface=""
+attempt=0
+while [ "$attempt" -lt 30 ] && [ -z "$interface" ]; do
+  for path in /sys/class/net/*; do
+    candidate="${path##*/}"
+    [ "$candidate" = "lo" ] && continue
+    interface="$candidate"
+    break
+  done
+  [ -n "$interface" ] || /usr/bin/busybox sleep 1
+  attempt=$((attempt + 1))
+done
+
+if [ -z "$interface" ]; then
+  echo "ReproOS network interface not found" >&2
+  exit 1
+fi
+
+exec /usr/bin/busybox udhcpc -f -i "$interface" \
+  -s /usr/local/sbin/reproos-udhcpc-hook
+NETWORK_RUNNER_EOF
+
+cat > "$NETWORK_UNIT" <<'NETWORK_UNIT_EOF'
+[Unit]
+Description=ReproOS DHCP client
+After=systemd-udev-trigger.service
+Before=network.target sshd.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/reproos-network
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+NETWORK_UNIT_EOF
+
+cat > "$SSHD_CONFIG" <<SSHD_CONFIG_EOF
+Port 22
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+AllowUsers $USER_NAME
+PrintMotd no
+PidFile /run/sshd.pid
+Subsystem sftp /usr/libexec/sftp-server
+SSHD_CONFIG_EOF
+
+cat > "$SSHD_UNIT" <<'SSHD_UNIT_EOF'
+[Unit]
+Description=OpenSSH server
+After=network.target reproos-network.service
+Wants=reproos-network.service
+
+[Service]
+Type=simple
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/sbin/sshd -t
+ExecStart=/usr/sbin/sshd -D -e
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+SSHD_UNIT_EOF
+
+"$SUDO" mkdir -p \
+  "$MNT_DIR/usr/local/sbin" \
+  "$MNT_DIR/etc/ssh" \
+  "$MNT_DIR/etc/systemd/system/multi-user.target.wants" \
+  "$MNT_DIR/var/empty"
+"$SUDO" cp "$UDHCPC_HOOK" "$MNT_DIR/usr/local/sbin/reproos-udhcpc-hook"
+"$SUDO" cp "$NETWORK_RUNNER" "$MNT_DIR/usr/local/sbin/reproos-network"
+"$SUDO" cp "$NETWORK_UNIT" "$MNT_DIR/etc/systemd/system/reproos-network.service"
+"$SUDO" cp "$SSHD_CONFIG" "$MNT_DIR/etc/ssh/sshd_config"
+"$SUDO" cp "$SSHD_UNIT" "$MNT_DIR/etc/systemd/system/sshd.service"
+"$SUDO" chmod 0755 \
+  "$MNT_DIR/usr/local/sbin/reproos-udhcpc-hook" \
+  "$MNT_DIR/usr/local/sbin/reproos-network"
+"$SUDO" chmod 0644 \
+  "$MNT_DIR/etc/systemd/system/reproos-network.service" \
+  "$MNT_DIR/etc/systemd/system/sshd.service"
+"$SUDO" chmod 0600 "$MNT_DIR/etc/ssh/sshd_config"
+"$SUDO" chmod 0755 "$MNT_DIR/var/empty"
+
+"$SUDO" bash -c "
+  set -euo pipefail
+  grep -q '^sshd:' '$MNT_DIR/etc/group' || \
+    echo 'sshd:x:74:' >> '$MNT_DIR/etc/group'
+  grep -q '^sshd:' '$MNT_DIR/etc/gshadow' || \
+    echo 'sshd:!::' >> '$MNT_DIR/etc/gshadow'
+  grep -q '^sshd:' '$MNT_DIR/etc/passwd' || \
+    echo 'sshd:x:74:74:OpenSSH privilege separation:/var/empty:/usr/bin/false' \
+      >> '$MNT_DIR/etc/passwd'
+  grep -q '^sshd:' '$MNT_DIR/etc/shadow' || \
+    echo 'sshd:!:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow'
+  ln -sfn /etc/systemd/system/reproos-network.service \
+    '$MNT_DIR/etc/systemd/system/multi-user.target.wants/reproos-network.service'
+  ln -sfn /etc/systemd/system/sshd.service \
+    '$MNT_DIR/etc/systemd/system/multi-user.target.wants/sshd.service'
+" || { echo "[build-reproos-image] DHCP + OpenSSH configuration failed" >&2; exit 71; }
+
+# ---------------------------------------------------------------
 # Phase 10.5: wire the default systemd target + display-manager +
 # SDDM autologin for the installed system.
 #

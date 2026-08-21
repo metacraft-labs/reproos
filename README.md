@@ -57,13 +57,15 @@ repro build test-iso-reproducibility
 repro build test-iso
 repro build test-image-health
 repro build test-installed-desktop
+repro build test-installed-ssh
 repro build test-unattended-install
 ```
 
 The unattended test compares the wizard's generated configuration with the
-reviewed fixture, applies it to the installed image build, and runs the boot
-health check. The installed-desktop gate captures the graphical session after
-that health marker and checks its readiness panel with GuiAssert.
+reviewed fixture, applies it to the installed image build, waits for the boot
+health marker, and verifies the configured hostname over SSH. The
+installed-desktop gate captures the graphical session after that health marker
+and checks its readiness panel with GuiAssert.
 
 ## Interactive Workflows
 
@@ -79,6 +81,8 @@ repro run installer-vm-frame -- FRAME.png
 repro run installer-vm-screenshot
 repro run cache-backfill -- --verify-only
 repro run cache-backfill -- --verify-only --resume
+repro run image-ssh
+repro run image-ssh -- uname -a
 ```
 
 Preview mode exercises the complete wizard and simulates installation. The
@@ -109,6 +113,10 @@ Reprobuild executable and source catalog fingerprints still match.
 `boot-iso` and `boot-image` open the VM in `virt-viewer`. Closing the viewer
 reclaims the transient domain and its writable disk overlay; the ISO or QCOW2
 build output is never modified.
+
+`image-ssh` creates the same self-cleaning overlay without opening a viewer,
+forwards a loopback-only host port to the guest, and runs the requested command
+through OpenSSH. Its default command verifies the smoke image hostname.
 
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.

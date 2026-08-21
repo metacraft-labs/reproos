@@ -15,4 +15,3 @@ generated="$work/generated"
 # interactive emitter produces the exact unattended input already exercised by
 # the image build, without launching a nested build from inside a test edge.
 cmp "$generated/auto-config.toml" "$fixture"
-bash "$repo_root/tests/test-installed-image-health.sh"

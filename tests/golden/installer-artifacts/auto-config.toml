@@ -10,7 +10,7 @@ keymap = "us"
 [user]
 name = "repro"
 full_name = "Repro Test User"
-password_hash = "$6$reproosMvpD1$rrZAqlA3J4u9SLnxnaWWMcQAgVTXMplGNjmnt7yfZP3SyxEv.kE8Va8VbPVD0WBmlLhRrPYz3wO/U5O7Q1mvJ/"
+password_hash = "$6$reproosMvpD1$weHsl0ZQJ.wBhslFBf3O5enSWpih.ykGglXgXLTzbcO0B4YI78JNFZAqOOA0HUP/Bc2nv2oL6SZN837SvcnTi0"
 groups = ["wheel", "audio", "video", "networkmanager"]
 shell = "/bin/bash"
 

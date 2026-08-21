@@ -17,6 +17,8 @@ Use Reprobuild as the only contributor command surface:
   named `test-*` build targets. Use `repro build test-iso-reproducibility`
   after changing boot media authoring or source-runtime composition, and
   `repro build test-installed-desktop` after changing the graphical session.
+  `repro build test-installed-ssh` boots the installed image and verifies an
+  SSH command through a loopback-only forwarded port.
 - `repro lint` enforces the project-graph structure and source-only package
   closure before review.
 - `repro run installer` opens the safe local installer preview.
@@ -29,6 +31,8 @@ Use Reprobuild as the only contributor command surface:
   by the ISO graph; use `-- --verify-only` for a read-only cache audit.
 - `repro run boot-iso` and `repro run boot-image` leave VMs open for manual
   acceptance.
+- `repro run image-ssh -- COMMAND...` boots a self-cleaning installed VM and
+  runs a command over SSH; with no command it verifies the configured hostname.
 - `repro tasks` lists interactive workflows.
 
 Use the local installer run edge for routine design work. Reserve VM boots for

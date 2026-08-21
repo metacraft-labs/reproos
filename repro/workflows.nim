@@ -264,20 +264,39 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash", "vm-harness"])
     discard target("test-installed-desktop", testInstalledDesktop)
 
-    let testUnattendedInstall = shell(
+    let sshImage = shell(
       command = withHostVmRuntime(
-        "bash tests/test-unattended-install.sh"),
+        "bash tests/test-installed-ssh.sh \"$@\""),
+      args = @["reproos-image-ssh"],
+      actionId = "reproos.image-ssh",
+      deps = @[imagePackage.ReproosImageBuildActionId],
+      extraInputs = @["tests/test-installed-ssh.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("image-ssh", build = sshImage.id,
+      owningPackage = "reproosWorkflows")
+
+    let testInstalledSsh = shell(
+      command = withHostVmRuntime(
+        "bash tests/test-installed-ssh.sh"),
+      actionId = "reproos.test-installed-ssh",
+      deps = @[imagePackage.ReproosImageBuildActionId],
+      extraInputs = @["tests/test-installed-ssh.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    discard target("test-installed-ssh", testInstalledSsh)
+
+    let testUnattendedInstall = shell(
+      command = "bash tests/test-unattended-install.sh",
       actionId = "reproos.test-unattended-install",
       deps = @[
         installerPackage.ReproosInstallerReadyActionId,
         imagePackage.ReproosImageBuildActionId,
+        testInstalledSsh.id,
       ],
       extraInputs = @[
         "tests/test-unattended-install.sh",
-        "tests/test-installed-image-health.sh",
         "tests/fixtures/auto-config-minimal.toml",
       ],
-      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+      cacheable = false).withToolIdentities(["bash"])
     discard target("test-unattended-install", testUnattendedInstall)
 
     discard target("test-source-composition", sourceComposition)
@@ -293,5 +312,6 @@ package reproosWorkflows:
       testIso,
       testImageHealth,
       testInstalledDesktop,
+      testInstalledSsh,
       testUnattendedInstall,
     ])

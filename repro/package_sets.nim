@@ -41,6 +41,7 @@ const ReproosGraphicalRootfsPackages* = @[
   "libcap",
   "libcap-ng",
   "openssl",
+  "openssh",
   "curl",
   "libdrm",
   "libevdev",

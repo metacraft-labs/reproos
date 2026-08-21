@@ -78,6 +78,7 @@ package reproosIso:
     "libcap"
     "libcap-ng"
     "openssl"
+    "openssh"
     "curl"
     "libdrm"
     "libevdev"

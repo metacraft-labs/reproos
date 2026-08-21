@@ -752,6 +752,7 @@ BASE_USERSPACE_RECIPES=(
   iputils
   nano
   iproute2
+  openssh
   kbd
   xkeyboard-config
   libxkbfile
@@ -872,6 +873,32 @@ link_base_recipe_binaries() {
         ln -sfn "${pam_module#$STAGE_DIR}" \
           "$STAGE_DIR/$pam_security_dir/$pam_module_name"
       done
+    done
+  fi
+  # OpenSSH installs configuration and privileged helpers outside bin/sbin.
+  # Stage those source-built files at the FHS locations compiled into sshd.
+  if [ "$recipe" = "openssh" ]; then
+    local openssh_config="$install_root/etc/ssh"
+    local openssh_libexec="$install_usr/libexec"
+    if [ ! -x "$install_usr/sbin/sshd" ] || \
+       [ ! -x "$install_usr/bin/ssh-keygen" ] || \
+       [ ! -f "$openssh_config/moduli" ] || \
+       [ ! -x "$openssh_libexec/sshd-session" ] || \
+       [ ! -x "$openssh_libexec/sshd-auth" ] || \
+       [ ! -x "$openssh_libexec/sftp-server" ]; then
+      echo "[stage-de-rootfs] required source OpenSSH runtime missing" >&2
+      return 1
+    fi
+    rm -rf "$STAGE_DIR/etc/ssh"
+    mkdir -p "$STAGE_DIR/etc/ssh" "$STAGE_DIR/usr/libexec"
+    cp -a "$openssh_config/." "$STAGE_DIR/etc/ssh/"
+    local openssh_helper
+    for openssh_helper in "$openssh_libexec"/*; do
+      [ -e "$openssh_helper" ] || continue
+      local helper_name
+      helper_name="$(basename "$openssh_helper")"
+      local helper_target="${openssh_helper#$STAGE_DIR}"
+      ln -sfn "$helper_target" "$STAGE_DIR/usr/libexec/$helper_name"
     done
   fi
   # D-Bus 1.16 installs its daemon configuration below datadir. The daemon's

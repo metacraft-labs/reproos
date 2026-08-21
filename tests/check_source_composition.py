@@ -250,6 +250,22 @@ def main() -> None:
             "workflow uses must select the federated vm-harness producer"
         )
 
+    workflow_content = source(WORKFLOW_RECIPE)
+    if workflow_content.count("withHostVmRuntime(") != 4:
+        raise AssertionError(
+            "all direct VM workflows must select the available libvirt runtime"
+        )
+    require_contains(
+        WORKFLOW_RECIPE,
+        [
+            'export LIBVIRT_DEFAULT_URI=qemu:///session',
+            '"boot-iso"',
+            '"test-iso"',
+            '"boot-image"',
+        ],
+        "host VM runtime fallback",
+    )
+
     require_contains(
         WORKFLOW_RECIPE,
         [

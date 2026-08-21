@@ -13,6 +13,16 @@ proc withToolIdentities(action: BuildActionDef;
   appendRegisteredActionToolIdentityRefs(action.id, tools)
   action
 
+proc withHostVmRuntime(command: string): string =
+  ## Prefer an available unprivileged libvirt session when no system daemon is
+  ## running. This keeps local VM workflows usable on NixOS and WSL hosts while
+  ## preserving explicit operator configuration and system-libvirt defaults.
+  "if [ -z \"${LIBVIRT_DEFAULT_URI:-}\" ] && " &
+    "[ -S \"/run/user/$UID/libvirt/libvirt-sock\" ] && " &
+    "[ ! -S /run/libvirt/libvirt-sock ] && " &
+    "[ ! -S /run/libvirt/virtqemud-sock ]; then " &
+    "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " & command
+
 package reproosWorkflows:
   defaultToolProvisioning "from-source"
 
@@ -167,10 +177,11 @@ package reproosWorkflows:
     discard target("test-cache-backfill", testCacheBackfill)
 
     let bootIso = shell(
-      command = "vm-harness boot --backend auto --source-image \"" &
+      command = withHostVmRuntime(
+        "vm-harness boot --backend auto --source-image \"" &
         isoPackage.ReproosIsoOutput &
         "\" --kind iso --generation 2 --graphics vnc --video virtio " &
-        "--viewer \"$@\"",
+        "--viewer \"$@\""),
       args = @["reproos-boot-iso"],
       actionId = "reproos.boot-iso",
       deps = @[isoPackage.ReproosIsoBuildActionId],
@@ -179,9 +190,10 @@ package reproosWorkflows:
       owningPackage = "reproosWorkflows")
 
     let testIso = shell(
-      command = "vm-harness boot --backend auto --source-image \"" &
+      command = withHostVmRuntime(
+        "vm-harness boot --backend auto --source-image \"" &
         isoPackage.ReproosIsoOutput &
-        "\" --kind iso --expect \"Linux version\" --timeout-sec 300",
+        "\" --kind iso --expect \"Linux version\" --timeout-sec 300"),
       actionId = "reproos.test-iso",
       deps = @[isoPackage.ReproosIsoBuildActionId],
       cacheable = false).withToolIdentities(["vm-harness"])
@@ -217,10 +229,11 @@ package reproosWorkflows:
     discard target("test-iso-reproducibility", testIsoReproducibility)
 
     let bootImage = shell(
-      command = "vm-harness boot --backend auto --source-image \"" &
+      command = withHostVmRuntime(
+        "vm-harness boot --backend auto --source-image \"" &
         imagePackage.ReproosImageOutput &
         "\" --kind qcow2 --generation 2 --graphics vnc --video virtio " &
-        "--viewer \"$@\"",
+        "--viewer \"$@\""),
       args = @["reproos-boot-image"],
       actionId = "reproos.boot-image",
       deps = @[imagePackage.ReproosImageBuildActionId],

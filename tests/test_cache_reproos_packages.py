@@ -50,6 +50,13 @@ if args[:2] == ["graph", "iso"]:
     raise SystemExit(0)
 
 if args and args[0] == "graph":
+    expected_source_root = os.environ["FAKE_EXPECTED_SOURCE_ROOT"]
+    if os.environ.get("REPRO_FROM_SOURCE_ROOT") != expected_source_root:
+        print("wrong source root", file=sys.stderr)
+        raise SystemExit(3)
+    if "REPRO_LOCK_PATH" in os.environ or "REPRO_LOCK_PINS" in os.environ:
+        print("ambient lock leaked into package graph", file=sys.stderr)
+        raise SystemExit(3)
     with graph_log_path.open("a", encoding="utf-8") as stream:
         stream.write(cwd.name + "\n")
     key = alpha_key if cwd.name == "alpha" else beta_key

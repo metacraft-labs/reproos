@@ -78,6 +78,7 @@ repro run installer-accept-goldens
 repro run installer-vm-frame -- FRAME.png
 repro run installer-vm-screenshot
 repro run cache-backfill -- --verify-only
+repro run cache-backfill -- --verify-only --resume
 ```
 
 Preview mode exercises the complete wizard and simulates installation. The
@@ -101,7 +102,9 @@ ISO graph, publishes only missing materialized entries, and verifies every key
 against `https://repro-cache.metacraft-labs.com`. Publishing requires the
 authorized `REPRO_BINARY_CACHE_KEY_PATH` and `REPRO_BINARY_CACHE_CERT_PATH`
 environment variables. Use `-- --packages-root PATH` when the
-`reprobuild-packages` checkout is not the normal sibling directory.
+`reprobuild-packages` checkout is not the normal sibling directory. Long audits
+can use `-- --resume` to reuse completed packages from the report when the
+Reprobuild executable and source catalog fingerprints still match.
 
 `boot-iso` and `boot-image` open the VM in `virt-viewer`. Closing the viewer
 reclaims the transient domain and its writable disk overlay; the ISO or QCOW2

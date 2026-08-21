@@ -30,16 +30,28 @@ cwd = Path.cwd()
 args = sys.argv[1:]
 state_path = Path(os.environ["FAKE_CACHE_STATE"])
 log_path = Path(os.environ["FAKE_REPRO_LOG"])
+graph_log_path = Path(os.environ["FAKE_GRAPH_LOG"])
 alpha_key = "a" * 64
 beta_key = "b" * 64
 
 if args[:2] == ["graph", "iso"]:
+    expected_source_root = os.environ["FAKE_EXPECTED_SOURCE_ROOT"]
+    if os.environ.get("REPRO_FROM_SOURCE_ROOT") != expected_source_root:
+        print("wrong source root", file=sys.stderr)
+        raise SystemExit(3)
+    if "REPRO_LOCK_PATH" in os.environ or "REPRO_LOCK_PINS" in os.environ:
+        print("ambient lock leaked into graph", file=sys.stderr)
+        raise SystemExit(3)
+    with graph_log_path.open("a", encoding="utf-8") as stream:
+        stream.write("iso\n")
     print(json.dumps({
         "graph": {"actions": [{"toolIdentityRefs": ["beta", "ignored", "alpha"]}]}
     }))
     raise SystemExit(0)
 
 if args and args[0] == "graph":
+    with graph_log_path.open("a", encoding="utf-8") as stream:
+        stream.write(cwd.name + "\n")
     key = alpha_key if cwd.name == "alpha" else beta_key
     print(json.dumps({
         "actions": [{
@@ -93,6 +105,7 @@ class CacheBackfillTests(unittest.TestCase):
         self.repro.chmod(self.repro.stat().st_mode | stat.S_IXUSR)
         self.state = self.root / "cache-state.json"
         self.log = self.root / "repro.log"
+        self.graph_log = self.root / "graph.log"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -102,6 +115,12 @@ class CacheBackfillTests(unittest.TestCase):
         env = os.environ.copy()
         env["FAKE_CACHE_STATE"] = str(self.state)
         env["FAKE_REPRO_LOG"] = str(self.log)
+        env["FAKE_GRAPH_LOG"] = str(self.graph_log)
+        env["FAKE_EXPECTED_SOURCE_ROOT"] = str(
+            self.packages_root / "packages" / "source"
+        )
+        env["REPRO_LOCK_PATH"] = str(self.root / "ambient.lock")
+        env["REPRO_LOCK_PINS"] = "ambient=pins"
         return subprocess.run(
             [
                 sys.executable,
@@ -146,6 +165,31 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertEqual(report["sourcePackageCount"], 1)
         self.assertEqual(report["packages"][0]["status"], "missing")
         self.assertFalse(self.log.exists())
+
+    def test_resume_skips_completed_package_graphs_for_matching_inputs(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only")
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        self.graph_log.unlink()
+        resumed = self.run_backfill("--verify-only", "--resume")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["schemaVersion"], 2)
+        self.assertTrue(all(item["resumed"] for item in report["packages"]))
+        self.assertEqual(self.graph_log.read_text(encoding="utf-8"), "iso\n")
+
+    def test_resume_rejects_a_changed_source_catalog(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only")
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        alpha_recipe = self.packages_root / "packages" / "source" / "alpha" / "repro.nim"
+        alpha_recipe.write_text("discard\n# changed\n", encoding="utf-8")
+        resumed = self.run_backfill("--verify-only", "--resume")
+        self.assertEqual(resumed.returncode, 1)
+        self.assertIn("resume report inputs changed: source catalog", resumed.stderr)
 
 
 if __name__ == "__main__":

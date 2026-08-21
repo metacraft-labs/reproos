@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -220,6 +221,87 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def file_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_catalog_fingerprint(packages_root: Path) -> str:
+    digest = hashlib.sha256()
+    source_root = packages_root / "packages" / "source"
+    for recipe in sorted(source_root.glob("*/repro.nim")):
+        relative = recipe.relative_to(source_root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(file_fingerprint(recipe).encode("ascii"))
+    return digest.hexdigest()
+
+
+def load_resume_items(
+    path: Path,
+    *,
+    cache_url: str,
+    cache_scope: str,
+    packages_root: Path,
+    repro_fingerprint: str,
+    catalog_fingerprint: str,
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    if not path.is_file():
+        return {}, False
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BackfillError(f"unable to read resume report {path}: {error}") from error
+    if not isinstance(previous, dict):
+        raise BackfillError(f"resume report {path} is not a JSON object")
+
+    expected = {
+        "target": "iso",
+        "cacheUrl": cache_url,
+        "cacheScope": cache_scope,
+        "reprobuildPackagesRoot": str(packages_root),
+    }
+    mismatches = [
+        name for name, value in expected.items() if previous.get(name) != value
+    ]
+    if mismatches:
+        raise BackfillError(
+            "resume report does not match the current run: " + ", ".join(mismatches)
+        )
+
+    legacy = previous.get("schemaVersion") == 1
+    if not legacy:
+        fingerprint_mismatches = []
+        if previous.get("reproFingerprint") != repro_fingerprint:
+            fingerprint_mismatches.append("repro executable")
+        if previous.get("sourceCatalogFingerprint") != catalog_fingerprint:
+            fingerprint_mismatches.append("source catalog")
+        if fingerprint_mismatches:
+            raise BackfillError(
+                "resume report inputs changed: " + ", ".join(fingerprint_mismatches)
+            )
+
+    items: dict[str, dict[str, Any]] = {}
+    for item in previous.get("packages", []):
+        if not isinstance(item, dict) or item.get("status") not in {"hit", "published"}:
+            continue
+        package = item.get("package")
+        keys = item.get("cacheKeys")
+        missing_after = item.get("missingAfter")
+        if (
+            isinstance(package, str)
+            and isinstance(keys, list)
+            and keys
+            and all(isinstance(key, str) and CACHE_KEY_RE.fullmatch(key) for key in keys)
+            and missing_after == []
+        ):
+            items[package] = item
+    return items, legacy
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repro", default="", help="path to the repro CLI")
@@ -244,6 +326,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--verify-only",
         action="store_true",
         help="check the cache without publishing missing entries",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse completed packages from a matching report",
     )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--graph-timeout-sec", type=int, default=900)
@@ -270,8 +357,11 @@ def main(argv: list[str] | None = None) -> int:
                 "REPRO_BINARY_CACHE_SCOPE": args.cache_scope,
                 "REPRO_DAEMON": "off",
                 "REPROBUILD_NO_RUNQUOTA": "1",
+                "REPRO_FROM_SOURCE_ROOT": str(packages_root / "packages" / "source"),
             }
         )
+        env.pop("REPRO_LOCK_PATH", None)
+        env.pop("REPRO_LOCK_PINS", None)
         packages, ignored_refs = discover_iso_packages(
             repro, packages_root, env, args.graph_timeout_sec
         )
@@ -284,17 +374,37 @@ def main(argv: list[str] | None = None) -> int:
                     + ", ".join(unknown)
                 )
             packages = [name for name in packages if name in requested]
+        repro_fingerprint = file_fingerprint(Path(repro))
+        catalog_fingerprint = source_catalog_fingerprint(packages_root)
+        resume_items: dict[str, dict[str, Any]] = {}
+        if args.resume:
+            resume_items, legacy_resume = load_resume_items(
+                report_path,
+                cache_url=args.cache_url,
+                cache_scope=args.cache_scope,
+                packages_root=packages_root,
+                repro_fingerprint=repro_fingerprint,
+                catalog_fingerprint=catalog_fingerprint,
+            )
+            if legacy_resume:
+                print(
+                    "cache backfill: warning: resuming a schema-1 report without "
+                    "input fingerprints",
+                    file=sys.stderr,
+                )
     except (BackfillError, OSError, subprocess.SubprocessError) as error:
         print(f"cache backfill: {error}", file=sys.stderr)
         return 1
 
     report: dict[str, Any] = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "target": "iso",
         "cacheUrl": args.cache_url,
         "cacheScope": args.cache_scope,
         "verifyOnly": args.verify_only,
         "reprobuildPackagesRoot": str(packages_root),
+        "reproFingerprint": repro_fingerprint,
+        "sourceCatalogFingerprint": catalog_fingerprint,
         "ignoredToolIdentityRefs": ignored_refs,
         "sourcePackageCount": len(packages),
         "cacheEntryCount": 0,
@@ -308,6 +418,22 @@ def main(argv: list[str] | None = None) -> int:
     assert isinstance(package_reports, list)
 
     for index, package in enumerate(packages, start=1):
+        resumed = resume_items.get(package)
+        if resumed is not None:
+            print(f"[{index}/{len(packages)}] {package} (resumed)", flush=True)
+            item = dict(resumed)
+            item["resumed"] = True
+            package_reports.append(item)
+            keys = item["cacheKeys"]
+            missing_before = item.get("missingBefore", [])
+            report["cacheEntryCount"] += len(keys)
+            report["hitBeforeCount"] += len(keys) - len(missing_before)
+            report["verifiedEntryCount"] += len(keys)
+            if item["status"] == "published":
+                report["publishedPackageCount"] += 1
+            write_report(report_path, report)
+            continue
+
         print(f"[{index}/{len(packages)}] {package}", flush=True)
         package_dir = packages_root / "packages" / "source" / package
         item: dict[str, Any] = {
@@ -317,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
             "missingAfter": [],
             "reportedPublicationKeys": [],
             "status": "pending",
+            "resumed": False,
             "elapsedSeconds": 0.0,
             "error": "",
         }

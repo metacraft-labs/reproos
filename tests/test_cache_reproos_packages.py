@@ -24,6 +24,7 @@ FAKE_REPRO = r'''#!/usr/bin/env python3
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 cwd = Path.cwd()
@@ -58,7 +59,11 @@ if args and args[0] == "graph":
         print("ambient lock leaked into package graph", file=sys.stderr)
         raise SystemExit(3)
     with graph_log_path.open("a", encoding="utf-8") as stream:
-        stream.write(cwd.name + "\n")
+        stream.write(
+            cwd.name + ":" +
+            os.environ.get("REPRO_PROVIDER_NIMCACHE_SESSION", "") + "\n"
+        )
+    time.sleep(0.2)
     key = alpha_key if cwd.name == "alpha" else beta_key
     print(json.dumps({
         "actions": [{
@@ -128,6 +133,7 @@ class CacheBackfillTests(unittest.TestCase):
         )
         env["REPRO_LOCK_PATH"] = str(self.root / "ambient.lock")
         env["REPRO_LOCK_PINS"] = "ambient=pins"
+        env["REPRO_PROVIDER_NIMCACHE_SESSION"] = "ambient-session"
         return subprocess.run(
             [
                 sys.executable,
@@ -210,6 +216,19 @@ class CacheBackfillTests(unittest.TestCase):
             ["alpha", "beta"],
         )
         self.assertEqual(report["verifiedEntryCount"], 2)
+        package_sessions = {
+            line.split(":", 1)[1]
+            for line in self.graph_log.read_text(encoding="utf-8").splitlines()
+            if ":" in line
+        }
+        self.assertEqual(len(package_sessions), 2)
+        self.assertNotIn("ambient-session", package_sessions)
+        self.assertTrue(
+            all(
+                session.startswith("reproos-cache-backfill-")
+                for session in package_sessions
+            )
+        )
 
 
 if __name__ == "__main__":

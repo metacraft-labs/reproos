@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -215,6 +216,15 @@ def publish_package(
     return True, "", sorted(reported_keys)
 
 
+def provider_worker_env(env: dict[str, str]) -> dict[str, str]:
+    """Give each audit worker a reusable, non-overlapping provider cache."""
+    result = env.copy()
+    result["REPRO_PROVIDER_NIMCACHE_SESSION"] = (
+        f"reproos-cache-backfill-{os.getpid()}-{threading.get_ident()}"
+    )
+    return result
+
+
 def process_package(
     package: str,
     *,
@@ -245,16 +255,19 @@ def process_package(
         "verifiedEntryCount": 0,
     }
     package_dir = packages_root / "packages" / "source" / package
+    worker_env = provider_worker_env(env)
     started = time.monotonic()
     try:
-        keys = package_cache_keys(repro, package_dir, env, graph_timeout)
+        keys = package_cache_keys(repro, package_dir, worker_env, graph_timeout)
         item["cacheKeys"] = keys
         counts["cacheEntryCount"] = len(keys)
 
         missing: list[str] = []
         lookup_errors: list[str] = []
         for key in keys:
-            hit, detail = cache_lookup(repro, key, package_dir, env, lookup_timeout)
+            hit, detail = cache_lookup(
+                repro, key, package_dir, worker_env, lookup_timeout
+            )
             if hit:
                 counts["hitBeforeCount"] += 1
             else:
@@ -275,7 +288,7 @@ def process_package(
                 repro,
                 package_dir,
                 package_report,
-                env,
+                worker_env,
                 build_timeout,
             )
             item["reportedPublicationKeys"] = reported_keys
@@ -289,7 +302,7 @@ def process_package(
                 detail = ""
                 for attempt in range(5):
                     hit, detail = cache_lookup(
-                        repro, key, package_dir, env, lookup_timeout
+                        repro, key, package_dir, worker_env, lookup_timeout
                     )
                     if hit:
                         break

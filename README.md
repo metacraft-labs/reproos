@@ -80,10 +80,14 @@ repro run installer-accept-goldens
 repro run installer-vm-frame -- FRAME.png
 repro run installer-vm-screenshot
 repro run cache-backfill -- --verify-only
-repro run cache-backfill -- --verify-only --resume
+repro run cache-backfill -- --verify-only --resume --jobs 8
 repro run image-ssh
 repro run image-ssh -- uname -a
 ```
+
+Cache verification is sequential by default. Use `--jobs` for bounded parallel
+package-graph checks; the atomic report remains resumable if the run is
+interrupted.
 
 Preview mode exercises the complete wizard and simulates installation. The
 final step writes `auto-config.toml`, `system.nim`, `hardware.nim`, `disko.json`,

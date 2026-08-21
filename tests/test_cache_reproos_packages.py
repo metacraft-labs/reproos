@@ -198,6 +198,19 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertEqual(resumed.returncode, 1)
         self.assertIn("resume report inputs changed: source catalog", resumed.stderr)
 
+    def test_parallel_verification_keeps_report_order_deterministic(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
+        result = self.run_backfill("--verify-only", "--jobs", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["complete"])
+        self.assertEqual(
+            [item["package"] for item in report["packages"]],
+            ["alpha", "beta"],
+        )
+        self.assertEqual(report["verifiedEntryCount"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

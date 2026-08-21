@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +215,105 @@ def publish_package(
     return True, "", sorted(reported_keys)
 
 
+def process_package(
+    package: str,
+    *,
+    repro: str,
+    packages_root: Path,
+    report_path: Path,
+    env: dict[str, str],
+    verify_only: bool,
+    graph_timeout: int,
+    build_timeout: int,
+    lookup_timeout: int,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    item: dict[str, Any] = {
+        "package": package,
+        "cacheKeys": [],
+        "missingBefore": [],
+        "missingAfter": [],
+        "reportedPublicationKeys": [],
+        "status": "pending",
+        "resumed": False,
+        "elapsedSeconds": 0.0,
+        "error": "",
+    }
+    counts = {
+        "cacheEntryCount": 0,
+        "hitBeforeCount": 0,
+        "publishedPackageCount": 0,
+        "verifiedEntryCount": 0,
+    }
+    package_dir = packages_root / "packages" / "source" / package
+    started = time.monotonic()
+    try:
+        keys = package_cache_keys(repro, package_dir, env, graph_timeout)
+        item["cacheKeys"] = keys
+        counts["cacheEntryCount"] = len(keys)
+
+        missing: list[str] = []
+        lookup_errors: list[str] = []
+        for key in keys:
+            hit, detail = cache_lookup(repro, key, package_dir, env, lookup_timeout)
+            if hit:
+                counts["hitBeforeCount"] += 1
+            else:
+                missing.append(key)
+                if detail:
+                    lookup_errors.append(detail)
+        item["missingBefore"] = missing
+
+        if missing and verify_only:
+            item["status"] = "missing"
+            item["missingAfter"] = missing
+            item["error"] = "; ".join(lookup_errors)
+        elif missing:
+            package_report = (
+                report_path.parent / "cache-backfill-packages" / f"{package}.json"
+            )
+            ok, detail, reported_keys = publish_package(
+                repro,
+                package_dir,
+                package_report,
+                env,
+                build_timeout,
+            )
+            item["reportedPublicationKeys"] = reported_keys
+            if not ok:
+                raise BackfillError(detail)
+            counts["publishedPackageCount"] = 1
+
+            missing_after: list[str] = []
+            for key in keys:
+                hit = False
+                detail = ""
+                for attempt in range(5):
+                    hit, detail = cache_lookup(
+                        repro, key, package_dir, env, lookup_timeout
+                    )
+                    if hit:
+                        break
+                    if attempt < 4:
+                        time.sleep(1)
+                if hit:
+                    counts["verifiedEntryCount"] += 1
+                else:
+                    missing_after.append(key)
+                    if detail:
+                        item["error"] = detail
+            item["missingAfter"] = missing_after
+            item["status"] = "published" if not missing_after else "failed"
+        else:
+            counts["verifiedEntryCount"] = len(keys)
+            item["status"] = "hit"
+    except (BackfillError, OSError, subprocess.SubprocessError) as error:
+        item["status"] = "failed"
+        item["error"] = str(error)
+    finally:
+        item["elapsedSeconds"] = round(time.monotonic() - started, 3)
+    return item, counts
+
+
 def write_report(path: Path, report: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -336,6 +436,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--graph-timeout-sec", type=int, default=900)
     parser.add_argument("--build-timeout-sec", type=int, default=14400)
     parser.add_argument("--lookup-timeout-sec", type=int, default=60)
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="verify or publish this many package graphs concurrently",
+    )
     return parser.parse_args(argv)
 
 
@@ -346,6 +452,10 @@ def main(argv: list[str] | None = None) -> int:
         report_path = ROOT / report_path
 
     try:
+        if args.jobs < 1:
+            raise BackfillError("--jobs must be at least 1")
+        if args.fail_fast and args.jobs != 1:
+            raise BackfillError("--fail-fast requires --jobs=1")
         repro = resolve_repro(args.repro)
         packages_root = resolve_packages_root(args.packages_root)
         env = os.environ.copy()
@@ -417,111 +527,69 @@ def main(argv: list[str] | None = None) -> int:
     package_reports = report["packages"]
     assert isinstance(package_reports, list)
 
+    completed: dict[int, dict[str, Any]] = {}
+
+    def record(index: int, item: dict[str, Any], counts: dict[str, int]) -> None:
+        completed[index] = item
+        for name, count in counts.items():
+            report[name] += count
+        package_reports[:] = [completed[i] for i in sorted(completed)]
+        write_report(report_path, report)
+
+    pending: list[tuple[int, str]] = []
     for index, package in enumerate(packages, start=1):
         resumed = resume_items.get(package)
-        if resumed is not None:
-            print(f"[{index}/{len(packages)}] {package} (resumed)", flush=True)
-            item = dict(resumed)
-            item["resumed"] = True
-            package_reports.append(item)
-            keys = item["cacheKeys"]
-            missing_before = item.get("missingBefore", [])
-            report["cacheEntryCount"] += len(keys)
-            report["hitBeforeCount"] += len(keys) - len(missing_before)
-            report["verifiedEntryCount"] += len(keys)
-            if item["status"] == "published":
-                report["publishedPackageCount"] += 1
-            write_report(report_path, report)
+        if resumed is None:
+            pending.append((index, package))
             continue
+        print(f"[{index}/{len(packages)}] {package} (resumed)", flush=True)
+        item = dict(resumed)
+        item["resumed"] = True
+        keys = item["cacheKeys"]
+        missing_before = item.get("missingBefore", [])
+        record(
+            index,
+            item,
+            {
+                "cacheEntryCount": len(keys),
+                "hitBeforeCount": len(keys) - len(missing_before),
+                "publishedPackageCount": int(item["status"] == "published"),
+                "verifiedEntryCount": len(keys),
+            },
+        )
 
-        print(f"[{index}/{len(packages)}] {package}", flush=True)
-        package_dir = packages_root / "packages" / "source" / package
-        item: dict[str, Any] = {
-            "package": package,
-            "cacheKeys": [],
-            "missingBefore": [],
-            "missingAfter": [],
-            "reportedPublicationKeys": [],
-            "status": "pending",
-            "resumed": False,
-            "elapsedSeconds": 0.0,
-            "error": "",
-        }
-        package_reports.append(item)
-        started = time.monotonic()
-        try:
-            keys = package_cache_keys(
-                repro, package_dir, env, args.graph_timeout_sec
-            )
-            item["cacheKeys"] = keys
-            report["cacheEntryCount"] += len(keys)
-
-            missing: list[str] = []
-            lookup_errors: list[str] = []
-            for key in keys:
-                hit, detail = cache_lookup(
-                    repro, key, package_dir, env, args.lookup_timeout_sec
+    package_args = {
+        "repro": repro,
+        "packages_root": packages_root,
+        "report_path": report_path,
+        "env": env,
+        "verify_only": args.verify_only,
+        "graph_timeout": args.graph_timeout_sec,
+        "build_timeout": args.build_timeout_sec,
+        "lookup_timeout": args.lookup_timeout_sec,
+    }
+    if args.jobs == 1:
+        for index, package in pending:
+            print(f"[{index}/{len(packages)}] {package}", flush=True)
+            item, counts = process_package(package, **package_args)
+            record(index, item, counts)
+            if item["status"] in {"failed", "missing"} and args.fail_fast:
+                break
+    else:
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            futures = {}
+            for index, package in pending:
+                print(f"[{index}/{len(packages)}] {package} (scheduled)", flush=True)
+                future = executor.submit(process_package, package, **package_args)
+                futures[future] = (index, package)
+            for future in as_completed(futures):
+                index, package = futures[future]
+                item, counts = future.result()
+                print(
+                    f"[{index}/{len(packages)}] {package} ({item['status']})",
+                    flush=True,
                 )
-                if hit:
-                    report["hitBeforeCount"] += 1
-                else:
-                    missing.append(key)
-                    if detail:
-                        lookup_errors.append(detail)
-            item["missingBefore"] = missing
-
-            if missing and args.verify_only:
-                item["status"] = "missing"
-                item["missingAfter"] = missing
-                item["error"] = "; ".join(lookup_errors)
-            elif missing:
-                package_report = (
-                    report_path.parent / "cache-backfill-packages" / f"{package}.json"
-                )
-                ok, detail, reported_keys = publish_package(
-                    repro,
-                    package_dir,
-                    package_report,
-                    env,
-                    args.build_timeout_sec,
-                )
-                item["reportedPublicationKeys"] = reported_keys
-                if not ok:
-                    raise BackfillError(detail)
-                report["publishedPackageCount"] += 1
-
-                missing_after: list[str] = []
-                for key in keys:
-                    hit = False
-                    detail = ""
-                    for attempt in range(5):
-                        hit, detail = cache_lookup(
-                            repro, key, package_dir, env, args.lookup_timeout_sec
-                        )
-                        if hit:
-                            break
-                        if attempt < 4:
-                            time.sleep(1)
-                    if hit:
-                        report["verifiedEntryCount"] += 1
-                    else:
-                        missing_after.append(key)
-                        if detail:
-                            item["error"] = detail
-                item["missingAfter"] = missing_after
-                item["status"] = "published" if not missing_after else "failed"
-            else:
-                report["verifiedEntryCount"] += len(keys)
-                item["status"] = "hit"
-        except (BackfillError, OSError, subprocess.SubprocessError) as error:
-            item["status"] = "failed"
-            item["error"] = str(error)
-        finally:
-            item["elapsedSeconds"] = round(time.monotonic() - started, 3)
-            write_report(report_path, report)
-
-        if item["status"] in {"failed", "missing"} and args.fail_fast:
-            break
+                record(index, item, counts)
 
     report["complete"] = (
         len(package_reports) == len(packages)

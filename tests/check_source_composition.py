@@ -251,9 +251,9 @@ def main() -> None:
         )
 
     workflow_content = source(WORKFLOW_RECIPE)
-    if workflow_content.count("withHostVmRuntime(") != 4:
+    if workflow_content.count("withHostVmRuntime(") != 8:
         raise AssertionError(
-            "all direct VM workflows must select the available libvirt runtime"
+            "all VM-backed workflows must select the available libvirt runtime"
         )
     require_contains(
         WORKFLOW_RECIPE,

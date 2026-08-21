@@ -127,7 +127,8 @@ package reproosWorkflows:
       owningPackage = "reproosWorkflows")
 
     let captureInstallerVmScreenshot = shell(
-      command = "bash tests/test-installer-vm-screenshot.sh \"$@\"",
+      command = withHostVmRuntime(
+        "bash tests/test-installer-vm-screenshot.sh \"$@\""),
       args = @["reproos-installer-vm-screenshot"],
       actionId = "reproos.capture-installer-vm-screenshot",
       deps = @[isoPackage.ReproosIsoBuildActionId],
@@ -242,7 +243,8 @@ package reproosWorkflows:
       owningPackage = "reproosWorkflows")
 
     let testImageHealth = shell(
-      command = "bash tests/test-installed-image-health.sh",
+      command = withHostVmRuntime(
+        "bash tests/test-installed-image-health.sh"),
       actionId = "reproos.test-image-health",
       deps = @[imagePackage.ReproosImageBuildActionId],
       extraInputs = @["tests/test-installed-image-health.sh"],
@@ -250,7 +252,8 @@ package reproosWorkflows:
     discard target("test-image-health", testImageHealth)
 
     let testInstalledDesktop = shell(
-      command = "bash tests/test-installed-desktop-screenshot.sh",
+      command = withHostVmRuntime(
+        "bash tests/test-installed-desktop-screenshot.sh"),
       actionId = "reproos.test-installed-desktop",
       deps = @[imagePackage.ReproosImageBuildActionId],
       extraInputs = @[
@@ -262,7 +265,8 @@ package reproosWorkflows:
     discard target("test-installed-desktop", testInstalledDesktop)
 
     let testUnattendedInstall = shell(
-      command = "bash tests/test-unattended-install.sh",
+      command = withHostVmRuntime(
+        "bash tests/test-unattended-install.sh"),
       actionId = "reproos.test-unattended-install",
       deps = @[
         installerPackage.ReproosInstallerReadyActionId,

@@ -20,6 +20,7 @@ rm -f "$output"
   --expect REPROOS_INSTALLER_FRAME_READY \
   --timeout-sec 300 \
   --screenshot "$output" \
+  --screenshot-delay-sec "${REPROOS_SCREENSHOT_DELAY_SEC:-5}" \
   --output-dir "$boot_output"
 
 test -s "$output"

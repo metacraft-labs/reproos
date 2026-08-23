@@ -293,6 +293,12 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
     write_text(
         rootfs / "usr" / "lib" / "reproos" / "incus-network",
         "#!/usr/bin/busybox sh\nset -eu\n"
+        "init_environment() {\n"
+        "  /usr/bin/busybox tr '\\000' '\\n' < /proc/1/environ |\n"
+        "    /usr/bin/busybox sed -n \"s/^$1=//p\"\n"
+        "}\n"
+        "REPROOS_INCUS_IPV4=${REPROOS_INCUS_IPV4:-$(init_environment REPROOS_INCUS_IPV4)}\n"
+        "REPROOS_INCUS_GATEWAY=${REPROOS_INCUS_GATEWAY:-$(init_environment REPROOS_INCUS_GATEWAY)}\n"
         "/usr/bin/busybox ip link set eth0 up\n"
         "if [ -n \"${REPROOS_INCUS_IPV4:-}\" ]; then\n"
         "  /usr/bin/busybox ip addr flush dev eth0\n"

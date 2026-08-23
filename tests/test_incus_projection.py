@@ -75,6 +75,8 @@ def main() -> int:
         assert "UsePAM" not in sshd_config
         network = (rootfs / "usr" / "lib" / "reproos" / "incus-network").read_text()
         assert "REPROOS_INCUS_IPV4" in network
+        assert "/proc/1/environ" in network
+        assert "init_environment REPROOS_INCUS_GATEWAY" in network
         assert "udhcpc" in network
 
         unsupported = work / "unsupported.toml"

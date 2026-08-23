@@ -36,7 +36,11 @@ FIELD_RULES = (
     ("disk.layout.type", FieldClass.IGNORED, "a container has no partition table"),
     ("disk.layout.esp_size_mib", FieldClass.IGNORED, "a container has no EFI system partition"),
     ("de.default", FieldClass.SHARED, "package intent is retained; seat activation is suppressed"),
-    ("network.ipv4", FieldClass.CONTAINER, "DHCP is projected onto the Incus eth0 device"),
+    (
+        "network.ipv4",
+        FieldClass.CONTAINER,
+        "the Incus profile supplies a deterministic address with guest DHCP fallback",
+    ),
     ("activities.enabled", FieldClass.SHARED, "activity selection is identical"),
     ("install.target_device", FieldClass.IGNORED, "Incus creates the root volume"),
 )
@@ -111,7 +115,10 @@ def projection_report(config_path: Path, config: dict) -> dict:
                 "devices": {"mode": "deny-by-default"},
                 "nesting": {"enabled": False},
                 "storage": {"provider": "incus-root-volume", "bootable": False},
-                "network": {"provider": "incus-veth", "guest_mode": "dhcp"},
+                "network": {
+                    "provider": "incus-veth",
+                    "guest_mode": "profile-static-with-dhcp-fallback",
+                },
                 "firmware": {"available": False},
                 "remote_attestation": {"available": False},
             },

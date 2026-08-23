@@ -115,6 +115,14 @@ def check_report(report_path: Path, config_path: Path) -> None:
     network = fields.get("network.ipv4")
     if not network or network.get("classification") != "container-specific" or not network.get("projected"):
         raise ValueError("container network projection is not documented")
+    network_capability = (
+        report.get("realization_profile", {}).get("capabilities", {}).get("network")
+    )
+    if network_capability != {
+        "provider": "incus-veth",
+        "guest_mode": "profile-static-with-dhcp-fallback",
+    }:
+        raise ValueError("container network realization mode is not documented")
 
     differences = {
         difference["path"]: difference

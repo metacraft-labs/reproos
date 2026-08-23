@@ -56,6 +56,11 @@ def main() -> int:
         fields = {field["path"]: field for field in report["fields"]}
         assert fields["hostname"]["classification"] == "shared"
         assert fields["network.ipv4"]["classification"] == "container-specific"
+        assert "deterministic address" in fields["network.ipv4"]["reason"]
+        assert report["realization_profile"]["capabilities"]["network"] == {
+            "provider": "incus-veth",
+            "guest_mode": "profile-static-with-dhcp-fallback",
+        }
         assert fields["disk.layout.type"]["classification"] == "ignored-with-reason"
         assert not fields["disk.layout.type"]["projected"]
         report_text = (first / "projection-report.json").read_text()

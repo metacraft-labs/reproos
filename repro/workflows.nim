@@ -271,6 +271,17 @@ package reproosWorkflows:
       ])
     discard target("test-incus-lifecycle", testIncusLifecycle)
 
+    let testIncusParallelIsolation = shell(
+      command = "bash tests/test-incus-parallel-isolation.sh",
+      actionId = "reproos.test-incus-parallel-isolation",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @[
+        "tests/test-incus-parallel-isolation.sh",
+        "tools/reproos-incus.sh",
+      ],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    discard target("test-incus-parallel-isolation", testIncusParallelIsolation)
+
     let testIncusReproducibility = shell(
       command = "bash tests/test-incus-image-reproducibility.sh",
       actionId = "reproos.test-incus-reproducibility",
@@ -455,5 +466,6 @@ package reproosWorkflows:
       testVmIncusParityChecker,
       testIncusReproducibility,
       testIncusLifecycle,
+      testIncusParallelIsolation,
       testVmIncusParity,
     ])

@@ -86,10 +86,12 @@ repro build incus-acceptance
 
 Focused targets are `test-incus-projection`, `test-incus-helper`,
 `test-vm-incus-parity-checker`, `test-incus-reproducibility`,
-`test-incus-lifecycle`, and `test-vm-incus-parity`. The lifecycle test validates
-import, boot health, SSH, snapshot restore, generation switch and rollback
-across real reboots, and cleanup. The parity test compares the selected
-generation, generated files,
+`test-incus-lifecycle`, `test-incus-parallel-isolation`, and
+`test-vm-incus-parity`. The lifecycle test validates import, boot health, SSH,
+snapshot restore, generation switch and rollback across real reboots, and
+cleanup. The parallel isolation test launches two independent projects,
+bridges, pools, and instances concurrently. The parity test compares the
+selected generation, generated files,
 representative source-built runtime package hashes, SSH service state,
 normalized route and resolver availability, and an application response over
 SSH. It also verifies that the installed VM and container realize the same

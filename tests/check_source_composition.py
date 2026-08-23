@@ -293,6 +293,7 @@ def main() -> None:
                 "test-incus-helper",
                 "test-vm-incus-parity-checker",
                 "test-incus-lifecycle",
+                "test-incus-parallel-isolation",
                 "test-incus-reproducibility",
                 "test-vm-incus-parity",
                 "test-iso",
@@ -338,6 +339,7 @@ def main() -> None:
             "tests/test_incus_projection.py",
             "tests/test_reproos_incus_helper.py",
             "tests/test-incus-lifecycle.sh",
+            "tests/test-incus-parallel-isolation.sh",
             "tests/test-incus-image-reproducibility.sh",
             "tests/test-vm-incus-parity.sh",
             "tests/check_vm_incus_parity.py",
@@ -557,6 +559,19 @@ def main() -> None:
             "/proc/sys/kernel/random/boot_id",
         ],
         "isolated vm-harness lifecycle and failure evidence",
+    )
+    require_contains(
+        ROOT / "tests/test-incus-parallel-isolation.sh",
+        [
+            "launch_one a &",
+            "launch_one b &",
+            'storage_for() {',
+            'user.reproos.managed',
+            '"$vm_harness" instance wait',
+            '"$vm_harness" instance exec',
+            "ReproOS parallel Incus lifecycle isolation: PASS",
+        ],
+        "parallel Incus isolation acceptance",
     )
     lifecycle_content = source(INCUS_LIFECYCLE_TEST)
     for direct_operation in ["incus_test exec", "incus_test file"]:

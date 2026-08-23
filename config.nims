@@ -23,4 +23,8 @@ if fileExists(blake3Headers / "blake3.h") and
   switch("passC", "-I" & blake3Headers)
   switch("passC", "-I" & xxhashHeaders)
   switch("path", thisDir() / "support")
-  switch("import", "reproos_vendored_hash_runtime")
+  # Provider builds import the Reprobuild hash modules directly; under
+  # -d:reproVendoredHash those modules already schedule the vendored C files.
+  # Interface-only runners lack that module closure and need the local shim.
+  if not defined(reproVendoredHash):
+    switch("import", "reproos_vendored_hash_runtime")

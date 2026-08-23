@@ -7,6 +7,7 @@ import repro_resources/run_edge
 import "../apps/reproos-installer/package" as installerPackage
 import "../recipes/reproos-iso/package" as isoPackage
 import "../recipes/reproos-image/package" as imagePackage
+import "../recipes/reproos-container/package" as containerPackage
 
 proc withToolIdentities(action: BuildActionDef;
                         tools: openArray[string]): BuildActionDef =
@@ -177,6 +178,86 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3"])
     discard target("test-cache-backfill", testCacheBackfill)
 
+    let testIncusProjection = shell(
+      command = "python3 tests/test_incus_projection.py",
+      actionId = "reproos.test-incus-projection",
+      extraInputs = @[
+        "tests/test_incus_projection.py",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tests/golden/installer-artifacts",
+        "recipes/reproos-container/scripts/project-incus-config.py",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test-incus-projection", testIncusProjection)
+
+    let importIncus = shell(
+      command = "bash tools/reproos-incus.sh import",
+      actionId = "reproos.incus-import",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @["tools/reproos-incus.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("incus-import", build = importIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let launchIncus = shell(
+      command = "bash tools/reproos-incus.sh launch",
+      actionId = "reproos.incus-launch",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @["tools/reproos-incus.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("incus-launch", build = launchIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let shellIncus = shell(
+      command = "bash tools/reproos-incus.sh shell",
+      actionId = "reproos.incus-shell",
+      extraInputs = @["tools/reproos-incus.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("incus-shell", build = shellIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let logsIncus = shell(
+      command = "bash tools/reproos-incus.sh logs",
+      actionId = "reproos.incus-logs",
+      extraInputs = @["tools/reproos-incus.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("incus-logs", build = logsIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let destroyIncus = shell(
+      command = "bash tools/reproos-incus.sh destroy",
+      actionId = "reproos.incus-destroy",
+      extraInputs = @["tools/reproos-incus.sh"],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    run("incus-destroy", build = destroyIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let testIncusLifecycle = shell(
+      command = "bash tests/test-incus-lifecycle.sh",
+      actionId = "reproos.test-incus-lifecycle",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @[
+        "tests/test-incus-lifecycle.sh",
+        "tools/reproos-incus.sh",
+      ],
+      cacheable = false).withToolIdentities(["bash", "python3", "vm-harness"])
+    discard target("test-incus-lifecycle", testIncusLifecycle)
+
+    let testIncusReproducibility = shell(
+      command = "bash tests/test-incus-image-reproducibility.sh",
+      actionId = "reproos.test-incus-reproducibility",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @[
+        "tests/test-incus-image-reproducibility.sh",
+        "recipes/reproos-container/scripts/build-incus-image.sh",
+        containerPackage.ReproosIncusProjectionOutput,
+        isoPackage.ReproosIsoRootfsOutput,
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "python3", "tar", "xz",
+      ])
+    discard target("test-incus-reproducibility", testIncusReproducibility)
+
     let bootIso = shell(
       command = withHostVmRuntime(
         "vm-harness boot --backend auto --source-image \"" &
@@ -308,10 +389,17 @@ package reproosWorkflows:
       testInstallerVisuals,
       testInstallerArtifacts,
       testCacheBackfill,
+      testIncusProjection,
       testIsoReproducibility,
       testIso,
       testImageHealth,
       testInstalledDesktop,
       testInstalledSsh,
       testUnattendedInstall,
+    ])
+
+    discard collect("incus-acceptance", actions = @[
+      testIncusProjection,
+      testIncusReproducibility,
+      testIncusLifecycle,
     ])

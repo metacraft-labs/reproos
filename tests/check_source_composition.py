@@ -12,6 +12,7 @@ ROOT_RECIPE = ROOT / "repro.nim"
 INSTALLER_RECIPE = ROOT / "apps/reproos-installer/package.nim"
 ISO_RECIPE = ROOT / "recipes/reproos-iso/package.nim"
 IMAGE_RECIPE = ROOT / "recipes/reproos-image/package.nim"
+CONTAINER_RECIPE = ROOT / "recipes/reproos-container/package.nim"
 WORKFLOW_RECIPE = ROOT / "repro/workflows.nim"
 PACKAGE_SETS = ROOT / "repro/package_sets.nim"
 STAGE_ROOTFS_SCRIPT = ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh"
@@ -134,6 +135,7 @@ def main() -> None:
         INSTALLER_RECIPE,
         ISO_RECIPE,
         IMAGE_RECIPE,
+        CONTAINER_RECIPE,
         WORKFLOW_RECIPE,
         PACKAGE_SETS,
     ]
@@ -146,6 +148,7 @@ def main() -> None:
         INSTALLER_RECIPE,
         ISO_RECIPE,
         IMAGE_RECIPE,
+        CONTAINER_RECIPE,
         WORKFLOW_RECIPE,
     ]
     for path in package_modules:
@@ -153,7 +156,7 @@ def main() -> None:
             raise AssertionError(f"package does not default to from-source tools: {path}")
     if "shell(" in source(ROOT_RECIPE) or "command =" in source(ROOT_RECIPE):
         raise AssertionError("root repro.nim must remain a composition manifest")
-    for path in [ISO_RECIPE, IMAGE_RECIPE, WORKFLOW_RECIPE]:
+    for path in [ISO_RECIPE, IMAGE_RECIPE, CONTAINER_RECIPE, WORKFLOW_RECIPE]:
         require_shell_action_contracts(path)
     require_contains(
         ISO_RECIPE,
@@ -177,6 +180,7 @@ def main() -> None:
             "installerPackage.buildReproosInstallerPackage()",
             "isoPackage.buildReproosIsoPackage()",
             "imagePackage.buildReproosImagePackage()",
+            "containerPackage.buildReproosContainerPackage()",
             "workflows.buildReproosWorkflowsPackage()",
             'collect("default"',
         ],
@@ -216,6 +220,7 @@ def main() -> None:
         WORKFLOW_RECIPE,
         ISO_RECIPE,
         IMAGE_RECIPE,
+        CONTAINER_RECIPE,
         ROOT / "tools/installer-dev-runtime.sh",
         ROOT / "tests/test-installer-artifacts.sh",
         ROOT / "tests/test-unattended-install.sh",
@@ -281,6 +286,9 @@ def main() -> None:
                 "test-installer-visuals",
                 "test-installer-artifacts",
                 "test-cache-backfill",
+                "test-incus-projection",
+                "test-incus-lifecycle",
+                "test-incus-reproducibility",
                 "test-iso",
                 "test-image-health",
                 "test-installed-desktop",
@@ -296,6 +304,11 @@ def main() -> None:
                 "boot-iso",
                 "boot-image",
                 "image-ssh",
+                "incus-import",
+                "incus-launch",
+                "incus-shell",
+                "incus-logs",
+                "incus-destroy",
             ]],
             'collect("lint"',
         ],
@@ -316,6 +329,10 @@ def main() -> None:
             "tests/test_installer_vm_frame.nim",
             "tests/test-installer-artifacts.sh",
             "tests/test_cache_reproos_packages.py",
+            "tests/test_incus_projection.py",
+            "tests/test-incus-lifecycle.sh",
+            "tests/test-incus-image-reproducibility.sh",
+            "tools/reproos-incus.sh",
             "tools/cache_reproos_packages.py",
             "tests/test-installed-image-health.sh",
             "tests/test-installed-desktop-screenshot.sh",
@@ -345,6 +362,14 @@ def main() -> None:
         "contributor graph-quality policy",
     )
     require_contains(README, ["repro lint"], "README quality command")
+    require_contains(
+        ROOT / "config.nims",
+        [
+            "if not defined(reproVendoredHash):",
+            'switch("import", "reproos_vendored_hash_runtime")',
+        ],
+        "single vendored hash runtime scheduling",
+    )
 
     iso_content = source(ISO_RECIPE)
     if re.search(r"vendor/(vmlinuz|initrd)", iso_content):
@@ -400,9 +425,49 @@ def main() -> None:
         if legacy in image_script:
             raise AssertionError(f"image driver retains private stage cache: {legacy}")
 
+    require_contains(
+        CONTAINER_RECIPE,
+        [
+            'ReproosIncusProjectionActionId* =',
+            'ReproosIncusImageActionId* = "reproosContainer.build_image"',
+            "isoPackage.ReproosIsoRootfsActionId",
+            "isoPackage.ReproosIsoRootfsOutput",
+            'target("incus-projection", projectionAction)',
+            'target("incus-image", imageAction)',
+            "actionCachePolicy = acfpHybrid",
+            "automaticMonitorPolicy(@[projectionOutputAbs])",
+            "automaticMonitorPolicy(@[imageBuildDirAbs])",
+        ],
+        "Incus image graph",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-container/scripts/build-incus-image.sh",
+        [
+            "metadata.yaml",
+            'alias=reproos-incus',
+            "--sort=name",
+            '--mtime="@$epoch"',
+            "packages/source/kernel",
+            "projection-report.json",
+        ],
+        "deterministic Incus image driver",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-container/scripts/project-incus-config.py",
+        [
+            'class FieldClass(str, Enum)',
+            '"incus-system-container"',
+            '"invalid-for-incus"',
+            '"provider": "host"',
+            '"privilege": "unprivileged"',
+        ],
+        "typed Incus projection",
+    )
+
     active_sources = [
         ISO_RECIPE,
         IMAGE_RECIPE,
+        CONTAINER_RECIPE,
         STAGE_ROOTFS_SCRIPT,
         ROOT / "recipes/reproos-iso/scripts/build-initramfs.sh",
         ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
@@ -416,7 +481,7 @@ def main() -> None:
             if legacy in content:
                 raise AssertionError(f"legacy source root remains in {path}: {legacy}")
 
-    stage_path = active_sources[2]
+    stage_path = active_sources[3]
     stage_content = source(stage_path)
     stage_requirements = [
         "stage filesystem is case-insensitive",

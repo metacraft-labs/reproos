@@ -13,9 +13,10 @@ FIXTURE = ROOT / "tests/fixtures/auto-config-minimal.toml"
 ARTIFACTS = ROOT / "tests/golden/installer-artifacts"
 
 
-def run_projection(config: Path, output: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
+def run_projection(
+    config: Path, output: Path, rootfs: Path | None = None
+) -> subprocess.CompletedProcess:
+    command = [
             sys.executable,
             str(PROJECTOR),
             "--config",
@@ -24,7 +25,11 @@ def run_projection(config: Path, output: Path) -> subprocess.CompletedProcess:
             str(ARTIFACTS),
             "--output-dir",
             str(output),
-        ],
+        ]
+    if rootfs is not None:
+        command.extend(["--rootfs", str(rootfs)])
+    return subprocess.run(
+        command,
         text=True,
         capture_output=True,
     )
@@ -58,6 +63,19 @@ def main() -> int:
         assert password_hash not in report_text
         difference_paths = {entry["path"] for entry in report["differences"]}
         assert {"hardware.boot", "services.display-manager", "install.target_device"} <= difference_paths
+
+        rootfs = work / "rootfs"
+        (rootfs / "etc").mkdir(parents=True)
+        for name in ("passwd", "group", "shadow", "gshadow"):
+            (rootfs / "etc" / name).write_text("root:x:0:0:root:/root:/bin/sh\n")
+        projected = run_projection(FIXTURE, work / "with-rootfs", rootfs)
+        assert projected.returncode == 0, projected.stderr
+        assert "sshd:x:74:74:" in (rootfs / "etc" / "passwd").read_text()
+        sshd_config = (rootfs / "etc" / "ssh" / "sshd_config").read_text()
+        assert "UsePAM" not in sshd_config
+        network = (rootfs / "usr" / "lib" / "reproos" / "incus-network").read_text()
+        assert "REPROOS_INCUS_IPV4" in network
+        assert "udhcpc" in network
 
         unsupported = work / "unsupported.toml"
         shutil.copyfile(FIXTURE, unsupported)

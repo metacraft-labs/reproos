@@ -46,9 +46,18 @@ setup_project() {
     incus_global network create "$network" --type=bridge \
       ipv4.address=auto ipv4.nat=true ipv6.address=none
   fi
+  local network_cidr gateway network_prefix prefix_length container_ipv4
+  network_cidr="$(incus_global network get "$network" ipv4.address)"
+  gateway="${network_cidr%/*}"
+  network_prefix="${gateway%.*}"
+  prefix_length="${network_cidr#*/}"
+  container_ipv4="$network_prefix.2/$prefix_length"
+  incus_project profile set default \
+    environment.REPROOS_INCUS_IPV4="$container_ipv4" \
+    environment.REPROOS_INCUS_GATEWAY="$gateway"
   if ! incus_project profile device show default | grep -q '^eth0:'; then
     incus_project profile device add default eth0 nic \
-      nictype=bridged parent="$network" name=eth0
+      network="$network" name=eth0
   fi
 }
 

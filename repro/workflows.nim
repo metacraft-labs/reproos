@@ -32,6 +32,7 @@ package reproosWorkflows:
     "bash"
     "python3"
     "vm-harness"
+    "openssh"
 
   build:
     let sourceComposition = shell(
@@ -250,7 +251,9 @@ package reproosWorkflows:
         "tests/test-incus-lifecycle.sh",
         "tools/reproos-incus.sh",
       ],
-      cacheable = false).withToolIdentities(["bash", "python3", "vm-harness"])
+      cacheable = false).withToolIdentities([
+        "bash", "python3", "vm-harness", "openssh",
+      ])
     discard target("test-incus-lifecycle", testIncusLifecycle)
 
     let testIncusReproducibility = shell(

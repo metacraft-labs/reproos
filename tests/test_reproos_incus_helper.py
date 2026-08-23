@@ -35,6 +35,9 @@ if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "sho
     raise SystemExit(0)
 if args[:2] == ["network", "show"] and args[2:] == [os.environ["REPROOS_INCUS_NETWORK"]]:
     raise SystemExit(1 if phase == "import" else 0)
+if args[:2] == ["network", "get"]:
+    print("10.231.44.1/24")
+    raise SystemExit(0)
 if args[:3] == ["--project", project, "image"] and args[3] == "list":
     if phase == "destroy":
         print("fake-fingerprint")
@@ -95,9 +98,11 @@ def main() -> None:
             line for line in imported if line.startswith("project create ")
         )
         assert any(
-            "nictype=bridged parent=test-network name=eth0" in line
+            "profile set default environment.REPROOS_INCUS_IPV4=10.231.44.2/24 "
+            "environment.REPROOS_INCUS_GATEWAY=10.231.44.1" in line
             for line in imported
         ), imported
+        assert any("network=test-network name=eth0" in line for line in imported), imported
 
         destroyed = run_helper("destroy", "destroy", temp)
         expected = {

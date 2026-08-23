@@ -465,7 +465,8 @@ def main() -> None:
         [
             "--type=bridge",
             "features.networks=false",
-            "nictype=bridged",
+            "environment.REPROOS_INCUS_IPV4",
+            'network="$network"',
             'incus_global network delete "$network"',
             "Linux maximum of 15 characters",
             'incus_global project delete "$project"',
@@ -491,6 +492,19 @@ def main() -> None:
             '"privilege": "unprivileged"',
         ],
         "typed Incus projection",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-container/scripts/project-incus-config.py",
+        [
+            "REPROOS_INCUS_IPV4",
+            "Privilege-separated SSH",
+        ],
+        "container static-network and SSH runtime",
+    )
+    require_contains(
+        ROOT / "tests/test_incus_projection.py",
+        ['assert "UsePAM" not in sshd_config'],
+        "container SSH compatibility regression",
     )
 
     active_sources = [

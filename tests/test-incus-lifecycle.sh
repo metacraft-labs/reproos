@@ -74,12 +74,12 @@ until incus_test exec "$instance" -- test -s /run/reproos/healthy >/dev/null 2>&
   sleep 1
 done
 
-incus_test exec "$instance" -- grep -Fx REPROOS_INCUS_HEALTH:PASS /run/reproos/healthy
+incus_test exec "$instance" -- /usr/bin/busybox grep -Fx REPROOS_INCUS_HEALTH:PASS /run/reproos/healthy
 incus_test exec "$instance" -- test "$(incus_test exec "$instance" -- hostname | tr -d '\r')" = reproos-smoke
 incus_test exec "$instance" -- test -s /etc/repro/system.nim
 incus_test exec "$instance" -- test -s /etc/repro/hardware.nim
 incus_test exec "$instance" -- test -s /etc/repro/home.nim
-incus_test exec "$instance" -- grep -Fq '"kind": "incus-system-container"' /etc/repro/realization.json
+incus_test exec "$instance" -- /usr/bin/busybox grep -Fq '"kind": "incus-system-container"' /etc/repro/realization.json
 incus_test exec "$instance" -- test ! -e /boot/vmlinuz
 incus_test exec "$instance" -- systemctl is-active sshd.service
 incus_test exec "$instance" -- systemctl is-active reproos-incus-network.service

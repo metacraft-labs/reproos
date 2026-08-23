@@ -127,6 +127,18 @@ def write_text(path: Path, content: str, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
+def upsert_account_record(path: Path, name: str, record: str, mode: int = 0o644) -> None:
+    rows = []
+    if path.exists():
+        rows = [
+            row
+            for row in path.read_text(encoding="utf-8").splitlines()
+            if row and row.split(":", 1)[0] != name
+        ]
+    rows.append(record)
+    write_text(path, "\n".join(rows) + "\n", mode)
+
+
 def rewrite_records(path: Path, removed: set[str], additions: list[str]) -> None:
     rows = []
     if path.exists():
@@ -221,6 +233,15 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
     )
     write_text(rootfs / "etc" / "machine-id", "")
     configure_accounts(rootfs, config)
+    upsert_account_record(
+        rootfs / "etc" / "passwd",
+        "sshd",
+        "sshd:x:74:74:Privilege-separated SSH:/var/empty:/usr/sbin/nologin",
+    )
+    upsert_account_record(rootfs / "etc" / "group", "sshd", "sshd:x:74:")
+    upsert_account_record(rootfs / "etc" / "shadow", "sshd", "sshd:!:::::::", 0o600)
+    upsert_account_record(rootfs / "etc" / "gshadow", "sshd", "sshd:!::", 0o600)
+    (rootfs / "var" / "empty").mkdir(parents=True, exist_ok=True)
 
     init = rootfs / "usr" / "sbin" / "init"
     init.parent.mkdir(parents=True, exist_ok=True)
@@ -266,9 +287,25 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
         "[Unit]\nDescription=Configure the Incus network device\n"
         "After=local-fs.target\nBefore=network-online.target sshd.service\n"
         "Wants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
-        "ExecStart=/usr/bin/busybox ip link set eth0 up\n"
-        "ExecStart=/usr/bin/busybox udhcpc -q -n -t 20 -T 1 -i eth0 -s /usr/lib/reproos/incus-udhcpc\n\n"
+        "ExecStart=/usr/lib/reproos/incus-network\n\n"
         "[Install]\nWantedBy=multi-user.target\n",
+    )
+    write_text(
+        rootfs / "usr" / "lib" / "reproos" / "incus-network",
+        "#!/usr/bin/busybox sh\nset -eu\n"
+        "/usr/bin/busybox ip link set eth0 up\n"
+        "if [ -n \"${REPROOS_INCUS_IPV4:-}\" ]; then\n"
+        "  /usr/bin/busybox ip addr flush dev eth0\n"
+        "  /usr/bin/busybox ip addr add \"$REPROOS_INCUS_IPV4\" dev eth0\n"
+        "  if [ -n \"${REPROOS_INCUS_GATEWAY:-}\" ]; then\n"
+        "    /usr/bin/busybox ip route add default via \"$REPROOS_INCUS_GATEWAY\"\n"
+        "    echo \"nameserver $REPROOS_INCUS_GATEWAY\" > /etc/resolv.conf\n"
+        "  fi\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec /usr/bin/busybox udhcpc -q -n -t 20 -T 1 -i eth0 "
+        "-s /usr/lib/reproos/incus-udhcpc\n",
+        0o755,
     )
 
     ssh_dir = rootfs / "etc" / "ssh"
@@ -280,7 +317,7 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
         "HostKey /etc/ssh/ssh_host_ed25519_key\n"
         "HostKey /etc/ssh/ssh_host_rsa_key\n"
         "PermitRootLogin no\nPasswordAuthentication yes\n"
-        "PubkeyAuthentication yes\nUsePAM no\nStrictModes yes\n"
+        "PubkeyAuthentication yes\nStrictModes yes\n"
         "PidFile /run/sshd.pid\nSubsystem sftp internal-sftp\n",
         0o600,
     )

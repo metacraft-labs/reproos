@@ -55,7 +55,9 @@ raise SystemExit(0 if backends.get("libvirt", {}).get("available") else 1)
   echo "vm-harness cannot reach the libvirt backend" >&2
   echo "LIBVIRT_DEFAULT_URI=${LIBVIRT_DEFAULT_URI:-<unset>}" >&2
   echo "PATH=$PATH" >&2
+  echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}" >&2
   command -v virsh >&2 || echo "virsh is not on PATH" >&2
+  virsh --connect "${LIBVIRT_DEFAULT_URI:-qemu:///system}" list --all >&2 || true
   exit 1
 fi
 

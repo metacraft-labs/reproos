@@ -144,13 +144,14 @@ build output is never modified.
 forwards a loopback-only host port to the guest, and runs the requested command
 through OpenSSH. Its default command verifies the smoke image hostname.
 
-The Incus workflows use an isolated `reproos-dev` project and a dedicated host
-bridge. The generated profile gives the container a deterministic address with
-DHCP fallback, while leaving the host's default project and networks untouched.
+The Incus workflows use an isolated `reproos-dev` project, dedicated host
+bridge, and dedicated storage pool. The generated profile gives the container a
+deterministic address with DHCP fallback, while ownership guards leave default
+and unrelated Incus resources untouched.
 `incus-launch` imports the source-built image and keeps the container running;
 use `incus-shell` or `incus-logs` to inspect it and `incus-destroy` to remove the
-instance, image, bridge, and project. Container configuration is selected from
-immutable `/var/lib/reproos/generations` entries with the
+instance, image, bridge, project, and pool. Container configuration is selected
+from immutable `/var/lib/reproos/generations` entries with the
 `reproos-generation` switch and rollback command. See
 `recipes/reproos-container/README.md` for overrides and acceptance details.
 

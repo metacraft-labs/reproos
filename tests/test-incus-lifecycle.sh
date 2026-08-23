@@ -6,6 +6,7 @@ tag="${REPROOS_INCUS_TEST_TAG:-$$}"
 project="reproos-test-$tag"
 instance="reproos-test-$tag"
 network="ro-${tag:0:12}"
+storage="rs-${tag:0:12}"
 output="$repo_root/build/test-incus-$tag"
 tool="$repo_root/tools/reproos-incus.sh"
 vm_harness="${VM_HARNESS_BIN:-vm-harness}"
@@ -55,6 +56,7 @@ events_pid=$!
 incus_global list --project default --format csv -c n | sort >"$output/default-instances.before"
 incus_global image list --project default --format csv -c f | sort >"$output/default-images.before"
 incus_global network list --project default --format csv -c n | sort >"$output/default-networks.before"
+incus_global storage list --format csv -c n | sort >"$output/storage-pools.before"
 
 capture_evidence() {
   incus_test config show "$instance" --expanded >"$output/config.yaml" 2>&1 || true
@@ -62,6 +64,7 @@ capture_evidence() {
   incus_test console "$instance" --show-log >"$output/console.log" 2>&1 || true
   incus_test list "$instance" --format json >"$output/address.json" 2>&1 || true
   incus_global project show "$project" >"$output/project.yaml" 2>&1 || true
+  incus_global storage show "$storage" >"$output/storage.yaml" 2>&1 || true
   vmh_exec journalctl -b --no-pager >"$output/journal.log" 2>&1 || true
   vmh_exec cat /etc/repro/generation >"$output/generation.txt" 2>&1 || true
 }
@@ -77,16 +80,23 @@ cleanup() {
   REPROOS_INCUS_PROJECT="$project" \
   REPROOS_INCUS_INSTANCE="$instance" \
   REPROOS_INCUS_NETWORK="$network" \
+  REPROOS_INCUS_STORAGE="$storage" \
   VM_HARNESS_BIN="$vm_harness" \
     bash "$tool" destroy >/dev/null 2>&1 || true
   incus_global list --project default --format csv -c n | sort >"$output/default-instances.after"
   incus_global image list --project default --format csv -c f | sort >"$output/default-images.after"
   incus_global network list --project default --format csv -c n | sort >"$output/default-networks.after"
+  incus_global storage list --format csv -c n | sort >"$output/storage-pools.after"
   cmp "$output/default-instances.before" "$output/default-instances.after"
   cmp "$output/default-images.before" "$output/default-images.after"
   cmp "$output/default-networks.before" "$output/default-networks.after"
+  cmp "$output/storage-pools.before" "$output/storage-pools.after"
   if incus_global project show "$project" >/dev/null 2>&1; then
     echo "isolated Incus project survived cleanup: $project" >&2
+    status=1
+  fi
+  if incus_global storage show "$storage" >/dev/null 2>&1; then
+    echo "isolated Incus storage pool survived cleanup: $storage" >&2
     status=1
   fi
   exit "$status"
@@ -96,6 +106,7 @@ trap cleanup EXIT
 REPROOS_INCUS_PROJECT="$project" \
 REPROOS_INCUS_INSTANCE="$instance" \
 REPROOS_INCUS_NETWORK="$network" \
+REPROOS_INCUS_STORAGE="$storage" \
 VM_HARNESS_BIN="$vm_harness" \
   bash "$tool" launch
 

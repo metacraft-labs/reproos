@@ -32,6 +32,31 @@ if args == ["project", "get", project, "user.reproos.managed"]:
     if phase != "unowned":
         print("true")
     raise SystemExit(0)
+if args == ["storage", "show", os.environ["REPROOS_INCUS_STORAGE"]]:
+    raise SystemExit(1 if phase == "import" else 0)
+if args == [
+    "storage", "get", os.environ["REPROOS_INCUS_STORAGE"],
+    "user.reproos.project",
+]:
+    if phase != "unowned-storage":
+        print(project)
+    raise SystemExit(0)
+if args[:3] == ["--project", project, "config"] and args[3:6] == [
+    "get", os.environ["REPROOS_INCUS_INSTANCE"], "user.reproos.managed",
+]:
+    if phase != "unowned-instance":
+        print("true")
+    raise SystemExit(0)
+if args[:3] == ["--project", project, "config"] and args[3:6] == [
+    "get", os.environ["REPROOS_INCUS_INSTANCE"], "user.reproos.project",
+]:
+    if phase != "unowned-instance":
+        print(project)
+    raise SystemExit(0)
+if args[:3] == ["--project", project, "list"]:
+    if phase in {"destroy", "unowned-instance"}:
+        print(os.environ["REPROOS_INCUS_INSTANCE"])
+    raise SystemExit(0)
 if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "show", "default"]:
     print("root:")
     if phase == "destroy":
@@ -40,7 +65,7 @@ if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "sho
 if args[:2] == ["network", "show"] and args[2:] == [os.environ["REPROOS_INCUS_NETWORK"]]:
     raise SystemExit(1 if phase == "import" else 0)
 if args == ["network", "get", os.environ["REPROOS_INCUS_NETWORK"], "user.reproos.project"]:
-    if phase != "unowned":
+    if phase not in {"unowned", "unowned-network"}:
         print(project)
     raise SystemExit(0)
 if args == ["network", "get", os.environ["REPROOS_INCUS_NETWORK"], "ipv4.address"]:
@@ -66,6 +91,7 @@ def run_helper(
     *,
     project: str = "test-project",
     network: str = "test-network",
+    storage: str = "test-storage",
     check: bool = True,
 ) -> tuple[list[str], subprocess.CompletedProcess[str]]:
     log = temp / f"{phase}.log"
@@ -92,6 +118,7 @@ def run_helper(
             "REPROOS_INCUS_INSTANCE": "test-instance",
             "REPROOS_INCUS_NETWORK": network,
             "REPROOS_INCUS_PROJECT": project,
+            "REPROOS_INCUS_STORAGE": storage,
             "VMH_INCUS_CMD": str(fake_incus),
             "VM_HARNESS_BIN": str(fake_vmh),
         }
@@ -123,6 +150,20 @@ def main() -> None:
             line for line in imported if line.startswith("project create ")
         )
         assert any(
+            line == (
+                "storage create test-storage dir "
+                "user.reproos.project=test-project"
+            )
+            for line in imported
+        ), imported
+        assert any(
+            line == (
+                "--project test-project profile device set default "
+                "root pool test-storage"
+            )
+            for line in imported
+        ), imported
+        assert any(
             "profile set default environment.REPROOS_INCUS_IPV4=10.231.44.2/24 "
             "environment.REPROOS_INCUS_GATEWAY=10.231.44.1" in line
             for line in imported
@@ -132,12 +173,23 @@ def main() -> None:
         ), imported
         assert any("network=test-network name=eth0" in line for line in imported), imported
 
+        launched, _ = run_helper("launch", "launch", temp)
+        assert (
+            "--project test-project config set test-instance "
+            "user.reproos.managed true"
+        ) in launched
+        assert (
+            "--project test-project config set test-instance "
+            "user.reproos.project test-project"
+        ) in launched
+
         destroyed, _ = run_helper("destroy", "destroy", temp)
         expected = {
             "--project test-project profile device remove default eth0",
             "network delete test-network",
             "--project test-project image delete fake-fingerprint",
             "project delete test-project",
+            "storage delete test-storage",
         }
         assert expected.issubset(set(destroyed)), destroyed
         assert all("--force" not in line for line in destroyed), destroyed
@@ -154,9 +206,45 @@ def main() -> None:
         assert default_network.returncode == 2
         assert "refusing to manage reserved Incus bridge" in default_network.stderr
 
+        _, default_storage = run_helper(
+            "destroy", "destroy", temp, storage="default", check=False
+        )
+        assert default_storage.returncode == 2
+        assert (
+            "refusing to manage the default Incus storage pool"
+            in default_storage.stderr
+        )
+
         _, unowned = run_helper("destroy", "unowned", temp, check=False)
         assert unowned.returncode == 2
         assert "refusing to modify unowned Incus project" in unowned.stderr
+
+        _, unowned_network = run_helper(
+            "destroy", "unowned-network", temp, check=False
+        )
+        assert unowned_network.returncode == 2
+        assert (
+            "refusing to modify unowned Incus network"
+            in unowned_network.stderr
+        )
+
+        _, unowned_storage = run_helper(
+            "destroy", "unowned-storage", temp, check=False
+        )
+        assert unowned_storage.returncode == 2
+        assert (
+            "refusing to modify unowned Incus storage pool"
+            in unowned_storage.stderr
+        )
+
+        _, unowned_instance = run_helper(
+            "destroy", "unowned-instance", temp, check=False
+        )
+        assert unowned_instance.returncode == 2
+        assert (
+            "refusing to modify unowned Incus instance"
+            in unowned_instance.stderr
+        )
 
     print("ReproOS Incus helper setup and cleanup: PASS")
 

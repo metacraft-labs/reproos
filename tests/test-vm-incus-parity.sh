@@ -6,6 +6,7 @@ tag="${REPROOS_PARITY_TEST_TAG:-$$}"
 project="reproos-parity-$tag"
 instance="reproos-parity-$tag"
 network="rp-${tag:0:12}"
+storage="rps-${tag:0:11}"
 output="$repo_root/build/test-vm-incus-parity-$tag"
 tool="$repo_root/tools/reproos-incus.sh"
 vm_harness="${VM_HARNESS_BIN:-vm-harness}"
@@ -34,6 +35,7 @@ cleanup() {
   REPROOS_INCUS_PROJECT="$project" \
   REPROOS_INCUS_INSTANCE="$instance" \
   REPROOS_INCUS_NETWORK="$network" \
+  REPROOS_INCUS_STORAGE="$storage" \
   VM_HARNESS_BIN="$vm_harness" \
     bash "$tool" destroy >/dev/null 2>&1 || true
 }
@@ -108,6 +110,7 @@ cp "$repo_root/build/test-installed-ssh/command.log" "$output/vm.contract"
 REPROOS_INCUS_PROJECT="$project" \
 REPROOS_INCUS_INSTANCE="$instance" \
 REPROOS_INCUS_NETWORK="$network" \
+REPROOS_INCUS_STORAGE="$storage" \
 VM_HARNESS_BIN="$vm_harness" \
   bash "$tool" launch >/dev/null
 

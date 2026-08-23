@@ -6,6 +6,7 @@ image="${REPROOS_INCUS_IMAGE:-$repo_root/recipes/reproos-container/build/reproos
 bundle_dir="$(dirname "$image")"
 project="${REPROOS_INCUS_PROJECT:-reproos-dev}"
 network="${REPROOS_INCUS_NETWORK:-reproos0}"
+storage="${REPROOS_INCUS_STORAGE:-reproos-storage}"
 instance="${REPROOS_INCUS_INSTANCE:-reproos-dev}"
 alias="${REPROOS_INCUS_ALIAS:-reproos-incus}"
 vm_harness="${VM_HARNESS_BIN:-vm-harness}"
@@ -25,6 +26,10 @@ validate_resource_names() {
       exit 2
       ;;
   esac
+  if [[ -z "$storage" || "$storage" == "default" ]]; then
+    echo "refusing to manage the default Incus storage pool" >&2
+    exit 2
+  fi
 }
 
 require_managed_project() {
@@ -41,6 +46,25 @@ require_managed_network() {
   owner="$(incus_global network get "$network" user.reproos.project 2>/dev/null || true)"
   if [[ "$owner" != "$project" ]]; then
     echo "refusing to modify unowned Incus network: $network" >&2
+    exit 2
+  fi
+}
+
+require_managed_storage() {
+  local owner
+  owner="$(incus_global storage get "$storage" user.reproos.project 2>/dev/null || true)"
+  if [[ "$owner" != "$project" ]]; then
+    echo "refusing to modify unowned Incus storage pool: $storage" >&2
+    exit 2
+  fi
+}
+
+require_managed_instance() {
+  local managed owner
+  managed="$(incus_project config get "$instance" user.reproos.managed 2>/dev/null || true)"
+  owner="$(incus_project config get "$instance" user.reproos.project 2>/dev/null || true)"
+  if [[ "$managed" != "true" || "$owner" != "$project" ]]; then
+    echo "refusing to modify unowned Incus instance: $instance" >&2
     exit 2
   fi
 }
@@ -67,14 +91,23 @@ setup_project() {
       -c features.images=true \
       -c features.networks=false \
       -c features.profiles=true \
+      -c features.storage.volumes=true \
       -c user.reproos.managed=true
   else
     require_managed_project
   fi
   incus_project profile show default >/dev/null 2>&1 || \
     incus_project profile create default
+  if ! incus_global storage show "$storage" >/dev/null 2>&1; then
+    incus_global storage create "$storage" dir \
+      user.reproos.project="$project"
+  else
+    require_managed_storage
+  fi
   if ! incus_project profile device show default | grep -q '^root:'; then
-    incus_project profile device add default root disk path=/ pool=default
+    incus_project profile device add default root disk path=/ pool="$storage"
+  else
+    incus_project profile device set default root pool "$storage"
   fi
   if ! incus_global network show "$network" >/dev/null 2>&1; then
     incus_global network create "$network" --type=bridge \
@@ -124,13 +157,28 @@ launch() {
   VMH_INCUS_CMD="${incus_cmd[*]} --project $project" \
     "$vm_harness" run --ephemeral --keep --backend incus \
       --baseline "$instance" --base-image "$alias"
+  incus_project config set "$instance" user.reproos.managed true
+  incus_project config set "$instance" user.reproos.project "$project"
   echo "launched $instance in Incus project $project"
 }
 
 destroy() {
+  local have_project=0 have_network=0 have_storage=0
   if incus_global project show "$project" >/dev/null 2>&1; then
+    have_project=1
     require_managed_project
+  fi
+  if incus_global network show "$network" >/dev/null 2>&1; then
+    have_network=1
+    require_managed_network
+  fi
+  if incus_global storage show "$storage" >/dev/null 2>&1; then
+    have_storage=1
+    require_managed_storage
+  fi
+  if [[ "$have_project" -eq 1 ]]; then
     if incus_project list "$instance" --format csv -c n | grep -Fxq "$instance"; then
+      require_managed_instance
       VMH_INCUS_CMD="${incus_cmd[*]} --project $project" \
         "$vm_harness" ephemeral-destroy --backend incus \
           --baseline "$instance" --base-image "$alias"
@@ -138,9 +186,9 @@ destroy() {
     if incus_project profile device show default 2>/dev/null | grep -q '^eth0:'; then
       incus_project profile device remove default eth0
     fi
-    if incus_global network show "$network" >/dev/null 2>&1; then
-      require_managed_network
+    if [[ "$have_network" -eq 1 ]]; then
       incus_global network delete "$network"
+      have_network=0
     fi
     local fingerprint
     fingerprint="$(incus_project image list "$alias" --format csv -c f | head -n1)"
@@ -148,6 +196,12 @@ destroy() {
       incus_project image delete "$fingerprint"
     fi
     incus_global project delete "$project"
+  fi
+  if [[ "$have_network" -eq 1 ]]; then
+    incus_global network delete "$network"
+  fi
+  if [[ "$have_storage" -eq 1 ]]; then
+    incus_global storage delete "$storage"
   fi
   echo "destroyed Incus project $project"
 }
@@ -169,10 +223,12 @@ case "${1:-}" in
     ;;
   shell)
     require_managed_project
+    require_managed_instance
     incus_project exec "$instance" -- su -l repro
     ;;
   logs)
     require_managed_project
+    require_managed_instance
     incus_project console "$instance" --show-log || true
     incus_project exec "$instance" -- journalctl -b --no-pager
     ;;

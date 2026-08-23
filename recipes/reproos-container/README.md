@@ -32,11 +32,12 @@ repro run incus-logs
 repro run incus-destroy
 ```
 
-`incus-launch` creates the isolated `reproos-dev` project and `reproos0` bridge,
-imports the built image, and leaves the container running. The project profile
-supplies a deterministic IPv4 address with DHCP fallback. `incus-destroy`
-removes the instance, imported image, bridge, and project without modifying the
-default Incus project or its networks.
+`incus-launch` creates the isolated `reproos-dev` project, `reproos0` bridge,
+and `reproos-storage` pool, imports the built image, and leaves the container
+running. The project profile supplies a deterministic IPv4 address with DHCP
+fallback. `incus-destroy` removes only resources carrying the matching
+`user.reproos.*` ownership metadata. It refuses the default project and storage
+pool, reserved host bridges, and any unowned project, bridge, pool, or instance.
 
 The following environment variables select non-default resources:
 
@@ -44,6 +45,7 @@ The following environment variables select non-default resources:
 - `REPROOS_INCUS_PROJECT` selects the isolated project.
 - `REPROOS_INCUS_NETWORK` selects the host bridge; Linux limits its name to 15
   characters.
+- `REPROOS_INCUS_STORAGE` selects the isolated storage pool.
 - `REPROOS_INCUS_INSTANCE` and `REPROOS_INCUS_ALIAS` select instance and image
   names.
 - `VM_HARNESS_BIN` selects the `vm-harness` executable.

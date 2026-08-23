@@ -21,6 +21,15 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "reproos-incus-publication.py"
 GENERATION_A = "1" * 64
 GENERATION_B = "2" * 64
+PUBLICATION_ENVIRONMENT_KEYS = (
+    "REPROOS_INCUS_GENERATION",
+    "REPROOS_INCUS_PROJECT",
+    "REPROOS_INCUS_PUBLICATION_DIR",
+    "REPROOS_INCUS_PUBLICATION_URL",
+    "REPROOS_INCUS_SIGNING_KEY",
+    "REPROOS_INCUS_SIGNING_KEY_ID",
+    "REPROOS_INCUS_TRUSTED_KEY",
+)
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -60,12 +69,17 @@ def make_bundle(root: Path, generation: str, marker: str) -> Path:
 
 
 def run_tool(*args: str, check: bool = True, env: dict[str, str] | None = None):
+    tool_env = os.environ.copy()
+    for key in PUBLICATION_ENVIRONMENT_KEYS:
+        tool_env.pop(key, None)
+    if env is not None:
+        tool_env.update(env)
     completed = subprocess.run(
         [os.environ.get("PYTHON", "python3"), str(TOOL), *args],
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env=tool_env,
     )
     if check and completed.returncode != 0:
         raise AssertionError(
@@ -167,13 +181,14 @@ def main() -> None:
             encoding="utf-8",
         )
         fake_incus.chmod(0o755)
-        env = os.environ.copy()
-        env["FAKE_INCUS_LOG"] = str(fake_log)
-        env["FAKE_INCUS_STATE"] = str(temp / "incus.state")
-        env["FAKE_INCUS_FINGERPRINT"] = hashlib.sha256(
-            (generation_dir / "reproos-incus.tar.xz").read_bytes()
-        ).hexdigest()
-        env["FAKE_INCUS_ALIAS"] = GENERATION_A
+        env = {
+            "FAKE_INCUS_LOG": str(fake_log),
+            "FAKE_INCUS_STATE": str(temp / "incus.state"),
+            "FAKE_INCUS_FINGERPRINT": hashlib.sha256(
+                (generation_dir / "reproos-incus.tar.xz").read_bytes()
+            ).hexdigest(),
+            "FAKE_INCUS_ALIAS": GENERATION_A,
+        }
 
         handler = functools.partial(QuietHandler, directory=str(publication))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)

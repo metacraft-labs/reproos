@@ -204,6 +204,16 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3", "bash"])
     discard target("test-incus-helper", testIncusHelper)
 
+    let testIncusPublication = shell(
+      command = "python3 tests/test_incus_publication.py",
+      actionId = "reproos.test-incus-publication",
+      extraInputs = @[
+        "tests/test_incus_publication.py",
+        "tools/reproos-incus-publication.py",
+      ],
+      cacheable = false).withToolIdentities(["python3", "openssh"])
+    discard target("test-incus-publication", testIncusPublication)
+
     let testVmIncusParityChecker = shell(
       command = "python3 tests/test_vm_incus_parity_checker.py",
       actionId = "reproos.test-vm-incus-parity-checker",
@@ -256,6 +266,25 @@ package reproosWorkflows:
       extraInputs = @["tools/reproos-incus.sh"],
       cacheable = false).withToolIdentities(["bash", "vm-harness"])
     run("incus-destroy", build = destroyIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let publishIncus = shell(
+      command = "python3 tools/reproos-incus-publication.py publish \"$@\"",
+      args = @["reproos-incus-publish"],
+      actionId = "reproos.incus-publish",
+      deps = @[containerPackage.ReproosIncusImageActionId],
+      extraInputs = @["tools/reproos-incus-publication.py"],
+      cacheable = false).withToolIdentities(["python3", "openssh"])
+    run("incus-publish", build = publishIncus.id,
+      owningPackage = "reproosWorkflows")
+
+    let pullIncus = shell(
+      command = "python3 tools/reproos-incus-publication.py pull \"$@\"",
+      args = @["reproos-incus-pull"],
+      actionId = "reproos.incus-pull",
+      extraInputs = @["tools/reproos-incus-publication.py"],
+      cacheable = false).withToolIdentities(["python3", "openssh"])
+    run("incus-pull", build = pullIncus.id,
       owningPackage = "reproosWorkflows")
 
     let testIncusLifecycle = shell(
@@ -452,6 +481,7 @@ package reproosWorkflows:
       testCacheBackfill,
       testIncusProjection,
       testIncusHelper,
+      testIncusPublication,
       testIsoReproducibility,
       testIso,
       testImageHealth,
@@ -463,6 +493,7 @@ package reproosWorkflows:
     discard collect("incus-acceptance", actions = @[
       testIncusProjection,
       testIncusHelper,
+      testIncusPublication,
       testVmIncusParityChecker,
       testIncusReproducibility,
       testIncusLifecycle,

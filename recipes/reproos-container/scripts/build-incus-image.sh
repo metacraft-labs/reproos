@@ -54,6 +54,19 @@ python3 "$(dirname "$0")/project-incus-config.py" \
 cmp "$projection/projection-report.json" \
   "$work/projected/projection-report.json"
 
+generation="$(python3 - "$projection/projection-report.json" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as source:
+    generation = json.load(source).get("configuration_sha256", "")
+if re.fullmatch(r"[0-9a-f]{64}", generation) is None:
+    raise SystemExit("projection report has an invalid configuration_sha256")
+print(generation)
+PY
+)"
+
 cat >"$work/metadata.yaml" <<EOF
 architecture: x86_64
 creation_date: $epoch
@@ -62,6 +75,7 @@ properties:
   description: ReproOS source-built system container
   os: ReproOS
   release: dev
+  reproos.generation: $generation
   variant: incus-system-container
 templates: {}
 EOF
@@ -94,6 +108,7 @@ cat >"$manifest.tmp" <<EOF
 vm=reproos-incus
 snapshot=source-built
 alias=reproos-incus
+generation=$generation
 tarball=$(basename "$image")
 sha256=$sha
 bytes=$size

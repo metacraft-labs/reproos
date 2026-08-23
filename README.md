@@ -67,6 +67,7 @@ repro build test-installed-ssh
 repro build test-unattended-install
 repro build test-incus-projection
 repro build test-incus-helper
+repro build test-incus-publication
 repro build test-incus-reproducibility
 repro build test-incus-lifecycle
 repro build test-vm-incus-parity
@@ -105,6 +106,8 @@ repro run incus-launch
 repro run incus-shell
 repro run incus-logs
 repro run incus-destroy
+repro run incus-publish -- --destination PUBLICATION_DIR --signing-key KEY
+repro run incus-pull -- --base-url URL --trusted-key KEY.pub --project PROJECT
 ```
 
 Cache verification is sequential by default. Use `--jobs` for bounded parallel
@@ -154,6 +157,16 @@ instance, image, bridge, project, and pool. Container configuration is selected
 from immutable `/var/lib/reproos/generations` entries with the
 `reproos-generation` switch and rollback command. See
 `recipes/reproos-container/README.md` for overrides and acceptance details.
+
+`incus-publish` writes an authenticated static catalog whose image paths and
+aliases include the complete configuration generation. It signs canonical JSON
+with an OpenSSH Ed25519 key and refuses to replace an existing generation with
+different bytes. `incus-pull` verifies the signed index and generation manifest,
+then verifies the archive size, SHA-256, and embedded generation before invoking
+the selected Incus daemon. The corresponding environment variables are
+`REPROOS_INCUS_PUBLICATION_DIR`, `REPROOS_INCUS_SIGNING_KEY`,
+`REPROOS_INCUS_SIGNING_KEY_ID`, `REPROOS_INCUS_PUBLICATION_URL`, and
+`REPROOS_INCUS_TRUSTED_KEY`.
 
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.

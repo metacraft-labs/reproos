@@ -39,6 +39,9 @@ Use Reprobuild as the only contributor command surface:
 - `repro run incus-launch` imports and starts the source-built container in an
   isolated Incus project. Use `incus-shell`, `incus-logs`, and `incus-destroy`
   for inspection and cleanup; `incus-import` only refreshes the image.
+- `repro run incus-publish` publishes the built image as an immutable signed
+  generation. `repro run incus-pull` verifies and imports one published
+  generation into a selected Incus project.
 - `repro tasks` lists interactive workflows.
 
 Use the local installer run edge for routine design work. Reserve VM boots for

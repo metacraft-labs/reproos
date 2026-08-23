@@ -19,6 +19,10 @@ The image bundle contains `reproos-incus.tar.xz`, `reproos-incus.sha256`, and
 `incus-baseline.manifest`. Set `REPRO_AUTO_CONFIG` to project another reviewed
 unattended configuration.
 
+The archive metadata and baseline manifest record the full configuration
+SHA-256 as the image generation. That identity is preserved by signed
+publication and remote pull workflows.
+
 ## Manual Lifecycle
 
 The lifecycle tasks require a running Incus daemon, the `incus` client, and
@@ -50,6 +54,45 @@ The following environment variables select non-default resources:
   names.
 - `VM_HARNESS_BIN` selects the `vm-harness` executable.
 - `VMH_INCUS_CMD` selects the Incus client command.
+
+## Signed Publication
+
+Publish the built bundle to a directory served by an ordinary static HTTP
+server:
+
+```console
+repro run incus-publish -- \
+  --destination /srv/reproos/incus \
+  --signing-key /run/keys/reproos-release \
+  --key-id reproos-release
+```
+
+No signing key belongs in this repository. The task also accepts
+`REPROOS_INCUS_PUBLICATION_DIR`, `REPROOS_INCUS_SIGNING_KEY`, and
+`REPROOS_INCUS_SIGNING_KEY_ID`. Each generation directory is immutable;
+republishing identical bytes is idempotent, while a conflicting image is
+rejected. `index.json` identifies the current generation and retains every
+previous generation by its full SHA-256.
+
+On another Incus host, trust the public key and import either the signed current
+generation or an exact generation:
+
+```console
+repro run incus-pull -- \
+  --base-url https://images.example.test/reproos/incus \
+  --trusted-key /etc/reproos/release-key.pub \
+  --key-id reproos-release \
+  --generation GENERATION \
+  --project reproos-test
+```
+
+`incus-pull` verifies both OpenSSH signatures, the manifest digest, image size,
+image digest, generation-addressed paths and alias, and the generation embedded
+in `metadata.yaml` before it runs `incus image import`. Use `--no-import` for a
+verification-only pull or `--output-dir` to retain the authenticated archive.
+`REPROOS_INCUS_PUBLICATION_URL`, `REPROOS_INCUS_TRUSTED_KEY`,
+`REPROOS_INCUS_GENERATION`, and `VMH_INCUS_CMD` provide environment-based
+configuration for remote acceptance automation.
 
 ## Configuration Generations
 
@@ -85,7 +128,8 @@ repro build incus-acceptance
 ```
 
 Focused targets are `test-incus-projection`, `test-incus-helper`,
-`test-vm-incus-parity-checker`, `test-incus-reproducibility`,
+`test-incus-publication`, `test-vm-incus-parity-checker`,
+`test-incus-reproducibility`,
 `test-incus-lifecycle`, `test-incus-parallel-isolation`, and
 `test-vm-incus-parity`. The lifecycle test validates import, boot health, SSH,
 snapshot restore, generation switch and rollback across real reboots, and

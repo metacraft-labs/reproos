@@ -17,7 +17,9 @@ for pass in first second; do
 done
 cmp "$work/first/reproos-incus.tar.xz" "$work/second/reproos-incus.tar.xz"
 cmp "$work/first/incus-baseline.manifest" "$work/second/incus-baseline.manifest"
-python3 - "$work/first/reproos-incus.tar.xz" <<'PY'
+python3 - \
+  "$work/first/reproos-incus.tar.xz" \
+  "$work/first/incus-baseline.manifest" <<'PY'
 import posixpath
 import re
 import sys
@@ -25,8 +27,16 @@ import tarfile
 
 
 archive = sys.argv[1]
+manifest_path = sys.argv[2]
 with tarfile.open(archive, mode="r:xz") as bundle:
     members = {member.name: member for member in bundle.getmembers()}
+    metadata_member = members.get("metadata.yaml")
+    if metadata_member is None:
+        raise SystemExit("Incus image member missing: metadata.yaml")
+    metadata_source = bundle.extractfile(metadata_member)
+    if metadata_source is None:
+        raise SystemExit("Incus image metadata cannot be read")
+    metadata = metadata_source.read().decode("utf-8")
 
 
 def require_member(name):
@@ -36,7 +46,6 @@ def require_member(name):
     return member
 
 
-require_member("metadata.yaml")
 require_member("rootfs/usr/sbin/init")
 
 etc_repro = require_member("rootfs/etc/repro")
@@ -46,6 +55,16 @@ if not etc_repro.issym() or etc_repro.linkname != "/var/lib/reproos/current-gene
 current = require_member("rootfs/var/lib/reproos/current-generation")
 if not current.issym() or not re.fullmatch(r"generations/[0-9a-f]{64}", current.linkname):
     raise SystemExit("current-generation does not select a content-addressed generation")
+generation = current.linkname.rsplit("/", 1)[1]
+if f"  reproos.generation: {generation}\n" not in metadata:
+    raise SystemExit("Incus metadata does not identify the configuration generation")
+
+manifest = dict(
+    line.split("=", 1)
+    for line in open(manifest_path, encoding="utf-8").read().splitlines()
+)
+if manifest.get("generation") != generation:
+    raise SystemExit("bundle manifest does not identify the configuration generation")
 
 generation_root = posixpath.normpath(
     posixpath.join("rootfs/var/lib/reproos", current.linkname)

@@ -552,6 +552,10 @@ for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
   "$SUDO" cp "$CONFIG_BUNDLE_DIR/$artifact" "$MNT_DIR/etc/repro/$artifact"
   "$SUDO" chmod 0644 "$MNT_DIR/etc/repro/$artifact"
 done
+CONFIGURATION_SHA256="$(sha256sum "$CFG" | awk '{print $1}')"
+printf '%s\n' "$CONFIGURATION_SHA256" > "$WORK/configuration-generation"
+"$SUDO" install -m 0644 "$WORK/configuration-generation" \
+  "$MNT_DIR/etc/repro/generation"
 
 # ---------------------------------------------------------------
 # Phase 10: write /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow

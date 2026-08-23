@@ -45,10 +45,44 @@ printf 'hostname=%s\n' "$(hostname)"
 /usr/bin/busybox awk -F: '$1 == "repro" { print "user=" $3 ":" $4 ":" $5 ":" $6 ":" $7 }' /etc/passwd
 groups="$(/usr/bin/busybox id -Gn repro | /usr/bin/busybox tr ' ' '\n' | /usr/bin/busybox sort | /usr/bin/busybox tr '\n' ',' | /usr/bin/busybox sed 's/,$//')"
 printf 'groups=%s\n' "$groups"
-for artifact in auto-config.toml home.nim system.nim; do
+for artifact in auto-config.toml home.nim system.nim generation; do
   set -- $(/usr/bin/busybox sha256sum "/etc/repro/$artifact")
   printf '%s=%s\n' "$artifact" "$1"
 done
+for package in bash:/usr/bin/bash busybox:/usr/bin/busybox openssh:/usr/sbin/sshd systemd:/usr/lib/systemd/systemd; do
+  name=${package%%:*}
+  path=${package#*:}
+  set -- $(/usr/bin/busybox sha256sum "$path")
+  printf 'package.%s.sha256=%s\n' "$name" "$1"
+done
+if systemctl is-enabled --quiet sshd.service; then
+  printf 'service.sshd.enabled=yes\n'
+else
+  printf 'service.sshd.enabled=no\n'
+fi
+if systemctl is-active --quiet sshd.service; then
+  printf 'service.sshd.active=yes\n'
+else
+  printf 'service.sshd.active=no\n'
+fi
+if /usr/bin/busybox ip route | /usr/bin/busybox grep -q '^default '; then
+  printf 'network.default-route=present\n'
+else
+  printf 'network.default-route=missing\n'
+fi
+if /usr/bin/busybox grep -Eq '^nameserver[[:space:]]+[^[:space:]]+' /etc/resolv.conf; then
+  printf 'network.resolver=configured\n'
+else
+  printf 'network.resolver=missing\n'
+fi
+response=$(/usr/bin/bash --noprofile --norc -c 'printf REPROOS_RUNTIME_OK')
+printf 'application.ssh-response=%s\n' "$response"
+if /usr/bin/busybox grep -q '^REPROOS_HEALTH:PASS$' /var/lib/reproos/health-status 2>/dev/null ||
+   /usr/bin/busybox grep -q '^REPROOS_INCUS_HEALTH:PASS$' /run/reproos/healthy 2>/dev/null; then
+  printf 'health=pass\n'
+else
+  printf 'health=fail\n'
+fi
 EOF
 
 if ! "$vm_harness" probe | python3 -c '

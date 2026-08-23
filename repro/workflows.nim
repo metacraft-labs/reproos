@@ -204,6 +204,18 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3", "bash"])
     discard target("test-incus-helper", testIncusHelper)
 
+    let testVmIncusParityChecker = shell(
+      command = "python3 tests/test_vm_incus_parity_checker.py",
+      actionId = "reproos.test-vm-incus-parity-checker",
+      extraInputs = @[
+        "tests/test_vm_incus_parity_checker.py",
+        "tests/check_vm_incus_parity.py",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tests/golden/installer-artifacts",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test-vm-incus-parity-checker", testVmIncusParityChecker)
+
     let importIncus = shell(
       command = "bash tools/reproos-incus.sh import",
       actionId = "reproos.incus-import",
@@ -440,6 +452,7 @@ package reproosWorkflows:
     discard collect("incus-acceptance", actions = @[
       testIncusProjection,
       testIncusHelper,
+      testVmIncusParityChecker,
       testIncusReproducibility,
       testIncusLifecycle,
       testVmIncusParity,

@@ -291,6 +291,7 @@ def main() -> None:
                 "test-cache-backfill",
                 "test-incus-projection",
                 "test-incus-helper",
+                "test-vm-incus-parity-checker",
                 "test-incus-lifecycle",
                 "test-incus-reproducibility",
                 "test-vm-incus-parity",
@@ -340,6 +341,7 @@ def main() -> None:
             "tests/test-incus-image-reproducibility.sh",
             "tests/test-vm-incus-parity.sh",
             "tests/check_vm_incus_parity.py",
+            "tests/test_vm_incus_parity_checker.py",
             "tools/reproos-incus.sh",
             "tools/cache_reproos_packages.py",
             "tests/test-installed-image-health.sh",
@@ -555,8 +557,26 @@ def main() -> None:
             )
     require_contains(
         ROOT / "tests/test-vm-incus-parity.sh",
-        ['"$vm_harness" instance exec', "--backend incus"],
+        [
+            '"$vm_harness" instance exec',
+            "--backend incus",
+            "bash:/usr/bin/bash",
+            "openssh:/usr/sbin/sshd",
+            "package.%s.sha256",
+            "service.sshd.enabled",
+            "network.default-route",
+            "application.ssh-response",
+            "REPROOS_INCUS_HEALTH:PASS",
+        ],
         "vm-harness-owned Incus parity probe",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
+        [
+            'CONFIGURATION_SHA256="$(sha256sum "$CFG"',
+            '"$MNT_DIR/etc/repro/generation"',
+        ],
+        "installed VM generation identity",
     )
     require_contains(
         ROOT / "tests/test_reproos_incus_helper.py",

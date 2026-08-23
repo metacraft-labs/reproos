@@ -353,6 +353,12 @@ def main() -> None:
     )
 
     require_contains(
+        ROOT / "tests/test-vm-incus-parity.sh",
+        ["test -s /run/reproos/healthy"],
+        "VM and Incus parity health contract",
+    )
+
+    require_contains(
         INSTALLED_SSH_TEST,
         [
             "--guest linux",

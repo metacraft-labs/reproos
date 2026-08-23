@@ -27,6 +27,10 @@ require_host() {
 }
 
 setup_project() {
+  if (( ${#network} > 15 )); then
+    echo "Incus bridge name exceeds the Linux maximum of 15 characters: $network" >&2
+    exit 2
+  fi
   if ! incus_global project show "$project" >/dev/null 2>&1; then
     incus_global project create "$project" \
       -c features.images=true \

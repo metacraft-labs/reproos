@@ -462,8 +462,17 @@ def main() -> None:
     )
     require_contains(
         ROOT / "tools/reproos-incus.sh",
-        ["--type=bridge", 'incus_global project delete "$project"'],
+        [
+            "--type=bridge",
+            "Linux maximum of 15 characters",
+            'incus_global project delete "$project"',
+        ],
         "isolated Incus bridge and non-interactive cleanup",
+    )
+    require_contains(
+        INCUS_LIFECYCLE_TEST,
+        ['network="ro-${tag:0:12}"'],
+        "bounded Incus test bridge name",
     )
     require_contains(
         ROOT / "recipes/reproos-container/scripts/project-incus-config.py",

@@ -498,6 +498,79 @@ def download_image(
         temporary.unlink(missing_ok=True)
 
 
+def ensure_incus_image(
+    command: list[str], project: str, image_path: Path, alias: str, fingerprint: str
+) -> bool:
+    listed = subprocess.run(
+        command + ["--project", project, "image", "list", "--format=json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        raise PublicationError("cannot inspect Incus image state")
+    try:
+        images = json.loads(listed.stdout)
+    except json.JSONDecodeError as error:
+        raise PublicationError("Incus image inventory is not valid JSON") from error
+    if not isinstance(images, list):
+        raise PublicationError("Incus image inventory is not a list")
+
+    matching_image = None
+    alias_fingerprint = None
+    for image in images:
+        if not isinstance(image, dict) or not isinstance(image.get("fingerprint"), str):
+            raise PublicationError("Incus image inventory entry is invalid")
+        current_fingerprint = image["fingerprint"]
+        if current_fingerprint == fingerprint:
+            matching_image = image
+        aliases = image.get("aliases", [])
+        if not isinstance(aliases, list):
+            raise PublicationError("Incus image alias inventory is invalid")
+        for current_alias in aliases:
+            if isinstance(current_alias, dict) and current_alias.get("name") == alias:
+                alias_fingerprint = current_fingerprint
+
+    if alias_fingerprint is not None and alias_fingerprint != fingerprint:
+        raise PublicationError("generation alias points to a different Incus image")
+    if alias_fingerprint == fingerprint:
+        return False
+    if matching_image is not None:
+        created = subprocess.run(
+            command
+            + [
+                "--project",
+                project,
+                "image",
+                "alias",
+                "create",
+                alias,
+                fingerprint,
+            ],
+            check=False,
+        )
+        if created.returncode != 0:
+            raise PublicationError("Incus image alias recovery failed")
+        return False
+
+    imported = subprocess.run(
+        command
+        + [
+            "--project",
+            project,
+            "image",
+            "import",
+            str(image_path),
+            "--alias",
+            alias,
+        ],
+        check=False,
+    )
+    if imported.returncode != 0:
+        raise PublicationError("Incus image import failed")
+    return True
+
+
 def pull(args: argparse.Namespace) -> None:
     base_url = args.base_url or os.environ.get("REPROOS_INCUS_PUBLICATION_URL")
     trusted_key_value = args.trusted_key or os.environ.get(
@@ -556,6 +629,7 @@ def pull(args: argparse.Namespace) -> None:
     else:
         temporary_context = tempfile.TemporaryDirectory(prefix="reproos-incus-pull-")
         output_dir = Path(temporary_context.name)
+    imported = False
     try:
         image_path = output_dir / f"reproos-incus-{generation}.tar.xz"
         download_image(
@@ -574,21 +648,13 @@ def pull(args: argparse.Namespace) -> None:
             command = shlex.split(incus_command)
             if not command:
                 raise PublicationError("Incus command is empty")
-            result = subprocess.run(
-                command
-                + [
-                    "--project",
-                    args.project,
-                    "image",
-                    "import",
-                    str(image_path),
-                    "--alias",
-                    manifest["alias"],
-                ],
-                check=False,
+            imported = ensure_incus_image(
+                command,
+                args.project,
+                image_path,
+                manifest["alias"],
+                manifest["image"]["sha256"],
             )
-            if result.returncode != 0:
-                raise PublicationError("Incus image import failed")
     finally:
         if temporary_context is not None:
             temporary_context.cleanup()
@@ -598,7 +664,7 @@ def pull(args: argparse.Namespace) -> None:
             {
                 "alias": manifest["alias"],
                 "generation": generation,
-                "imported": not args.no_import,
+                "imported": imported,
                 "project": args.project,
             },
             sort_keys=True,

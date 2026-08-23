@@ -146,14 +146,34 @@ def main() -> None:
         fake_incus = temp / "incus"
         fake_incus.write_text(
             "#!/usr/bin/env python3\n"
-            "import os, pathlib, sys\n"
-            "pathlib.Path(os.environ['FAKE_INCUS_LOG']).write_text("
-            "' '.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n",
+            "import json, os, pathlib, sys\n"
+            "args = sys.argv[1:]\n"
+            "log = pathlib.Path(os.environ['FAKE_INCUS_LOG'])\n"
+            "with log.open('a', encoding='utf-8') as output:\n"
+            "    output.write(' '.join(args) + '\\n')\n"
+            "state = pathlib.Path(os.environ['FAKE_INCUS_STATE'])\n"
+            "fingerprint = os.environ['FAKE_INCUS_FINGERPRINT']\n"
+            "alias = os.environ['FAKE_INCUS_ALIAS']\n"
+            "if args[-3:] == ['image', 'list', '--format=json']:\n"
+            "    images = []\n"
+            "    if state.exists():\n"
+            "        aliases = [{'name': alias}] if state.read_text() == 'aliased' else []\n"
+            "        images = [{'fingerprint': fingerprint, 'aliases': aliases}]\n"
+            "    print(json.dumps(images))\n"
+            "elif 'import' in args:\n"
+            "    state.write_text('aliased', encoding='utf-8')\n"
+            "elif args[-4:-2] == ['alias', 'create']:\n"
+            "    state.write_text('aliased', encoding='utf-8')\n",
             encoding="utf-8",
         )
         fake_incus.chmod(0o755)
         env = os.environ.copy()
         env["FAKE_INCUS_LOG"] = str(fake_log)
+        env["FAKE_INCUS_STATE"] = str(temp / "incus.state")
+        env["FAKE_INCUS_FINGERPRINT"] = hashlib.sha256(
+            (generation_dir / "reproos-incus.tar.xz").read_bytes()
+        ).hexdigest()
+        env["FAKE_INCUS_ALIAS"] = GENERATION_A
 
         handler = functools.partial(QuietHandler, directory=str(publication))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -181,11 +201,29 @@ def main() -> None:
             assert result["generation"] == GENERATION_A
             assert result["alias"] == GENERATION_A
             assert len(result["alias"]) <= 64
-            logged = fake_log.read_text(encoding="utf-8")
-            assert logged.startswith("--project remote-test image import ")
-            assert logged.rstrip().endswith(
+            logged = fake_log.read_text(encoding="utf-8").splitlines()
+            assert logged[0] == "--project remote-test image list --format=json"
+            assert logged[1].startswith("--project remote-test image import ")
+            assert logged[1].endswith(
                 f"--alias {GENERATION_A}"
             )
+
+            fake_log.unlink()
+            repeated = run_tool(*pull_args, env=env)
+            assert json.loads(repeated.stdout)["imported"] is False
+            assert fake_log.read_text(encoding="utf-8").splitlines() == [
+                "--project remote-test image list --format=json"
+            ]
+
+            fake_log.unlink()
+            Path(env["FAKE_INCUS_STATE"]).write_text("unaliased", encoding="utf-8")
+            recovered = run_tool(*pull_args, env=env)
+            assert json.loads(recovered.stdout)["imported"] is False
+            assert fake_log.read_text(encoding="utf-8").splitlines() == [
+                "--project remote-test image list --format=json",
+                f"--project remote-test image alias create {GENERATION_A} "
+                f"{env['FAKE_INCUS_FINGERPRINT']}",
+            ]
 
             protected = [
                 publication / "index.json",

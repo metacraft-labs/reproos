@@ -91,6 +91,9 @@ repro run incus-pull -- \
 image digest, generation-addressed paths and alias, and the generation embedded
 in `metadata.yaml` before it runs `incus image import`. Use `--no-import` for a
 verification-only pull or `--output-dir` to retain the authenticated archive.
+Repeated pulls are idempotent. If a prior attempt imported the signed
+fingerprint but stopped before assigning its alias, the pull repairs that alias;
+an alias that points to a different fingerprint is rejected.
 `REPROOS_INCUS_PUBLICATION_URL`, `REPROOS_INCUS_TRUSTED_KEY`,
 `REPROOS_INCUS_GENERATION`, and `VMH_INCUS_CMD` provide environment-based
 configuration for remote acceptance automation.

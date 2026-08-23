@@ -271,6 +271,28 @@ package reproosWorkflows:
       ])
     discard target("test-incus-reproducibility", testIncusReproducibility)
 
+    let testVmIncusParity = shell(
+      command = withHostVmRuntime(
+        "bash tests/test-vm-incus-parity.sh"),
+      actionId = "reproos.test-vm-incus-parity",
+      deps = @[
+        imagePackage.ReproosImageBuildActionId,
+        containerPackage.ReproosIncusImageActionId,
+      ],
+      extraInputs = @[
+        "tests/test-vm-incus-parity.sh",
+        "tests/check_vm_incus_parity.py",
+        "tests/test-installed-ssh.sh",
+        "tools/reproos-incus.sh",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tests/golden/installer-artifacts",
+        containerPackage.ReproosIncusProjectionOutput,
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "python3", "vm-harness", "openssh",
+      ])
+    discard target("test-vm-incus-parity", testVmIncusParity)
+
     let bootIso = shell(
       command = withHostVmRuntime(
         "vm-harness boot --backend auto --source-image \"" &
@@ -417,4 +439,5 @@ package reproosWorkflows:
       testIncusHelper,
       testIncusReproducibility,
       testIncusLifecycle,
+      testVmIncusParity,
     ])

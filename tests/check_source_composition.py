@@ -263,7 +263,7 @@ def main() -> None:
         )
 
     workflow_content = source(WORKFLOW_RECIPE)
-    if workflow_content.count("withHostVmRuntime(") != 9:
+    if workflow_content.count("withHostVmRuntime(") != 10:
         raise AssertionError(
             "all VM-backed workflows must select the available libvirt runtime"
         )
@@ -291,6 +291,7 @@ def main() -> None:
                 "test-incus-helper",
                 "test-incus-lifecycle",
                 "test-incus-reproducibility",
+                "test-vm-incus-parity",
                 "test-iso",
                 "test-image-health",
                 "test-installed-desktop",
@@ -335,6 +336,8 @@ def main() -> None:
             "tests/test_reproos_incus_helper.py",
             "tests/test-incus-lifecycle.sh",
             "tests/test-incus-image-reproducibility.sh",
+            "tests/test-vm-incus-parity.sh",
+            "tests/check_vm_incus_parity.py",
             "tools/reproos-incus.sh",
             "tools/cache_reproos_packages.py",
             "tests/test-installed-image-health.sh",

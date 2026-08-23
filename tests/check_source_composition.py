@@ -355,6 +355,7 @@ def main() -> None:
     require_contains(
         INSTALLED_SSH_TEST,
         [
+            "--guest linux",
             "--graphics vnc",
             "--video virtio",
             "--expect 'REPROOS_HEALTH:PASS'",

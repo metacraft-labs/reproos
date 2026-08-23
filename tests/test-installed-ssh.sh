@@ -36,6 +36,7 @@ mkdir -p "$output_dir"
 
 "$vm_harness" boot \
   --backend auto \
+  --guest linux \
   --source-image "$harness_image" \
   --kind qcow2 \
   --generation 2 \

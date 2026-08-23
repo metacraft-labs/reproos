@@ -47,6 +47,18 @@ done
 systemctl is-active --quiet sshd.service
 EOF
 
+if ! "$vm_harness" probe | python3 -c '
+import json, sys
+backends = {backend["id"]: backend for backend in json.load(sys.stdin)}
+raise SystemExit(0 if backends.get("libvirt", {}).get("available") else 1)
+'; then
+  echo "vm-harness cannot reach the libvirt backend" >&2
+  echo "LIBVIRT_DEFAULT_URI=${LIBVIRT_DEFAULT_URI:-<unset>}" >&2
+  echo "PATH=$PATH" >&2
+  command -v virsh >&2 || echo "virsh is not on PATH" >&2
+  exit 1
+fi
+
 REPROOS_IMAGE="${REPROOS_IMAGE:-$repo_root/recipes/reproos-image/build/reproos-installed.qcow2}" \
 VM_HARNESS_BIN="$vm_harness" \
   bash "$repo_root/tests/test-installed-ssh.sh" \

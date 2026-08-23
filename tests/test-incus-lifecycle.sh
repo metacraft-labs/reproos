@@ -20,6 +20,21 @@ vmh_instance() {
 vmh_exec() {
   vmh_instance exec "$instance" -- "$@"
 }
+wait_for_reboot() {
+  local previous_boot_id=$1
+  local deadline=$((SECONDS + 120))
+  local boot_id=""
+  while (( SECONDS < deadline )); do
+    boot_id="$(vmh_exec cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r' || true)"
+    if [[ -n "$boot_id" && "$boot_id" != "$previous_boot_id" ]]; then
+      vmh_instance wait "$instance"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ReproOS container did not complete a distinct reboot" >&2
+  return 1
+}
 
 if ! command -v "${incus_cmd[0]}" >/dev/null || \
    ! incus_global info >/dev/null 2>&1; then
@@ -131,13 +146,47 @@ ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no \
 
 VMH_INCUS_CMD="$vmh_env" "$vm_harness" snapshot create \
   --backend incus "$instance" generation-clean >/dev/null
-generation="$(vmh_exec cat /etc/repro/generation | tr -d '\r')"
-vmh_exec sh -c 'echo mutated >/etc/repro/generation'
+vmh_exec touch /var/lib/reproos/snapshot-probe
 vmh_instance stop "$instance"
 VMH_INCUS_CMD="$vmh_env" "$vm_harness" snapshot restore \
   --backend incus "$instance" generation-clean
 vmh_instance start "$instance"
-restored="$(vmh_exec cat /etc/repro/generation | tr -d '\r')"
-test "$restored" = "$generation"
+vmh_exec test ! -e /var/lib/reproos/snapshot-probe
 
-echo "ReproOS Incus lifecycle, SSH, snapshot, and cleanup: PASS"
+generation="$(vmh_exec /usr/sbin/reproos-generation current | tr -d '\r')"
+next_generation="acceptance-$tag"
+vmh_exec rm -rf /tmp/repro-next-generation
+vmh_exec mkdir -p /tmp/repro-next-generation
+vmh_exec cp -a /etc/repro/. /tmp/repro-next-generation/
+vmh_exec chmod -R u+w /tmp/repro-next-generation
+vmh_exec /usr/bin/busybox sh -c \
+  "echo '$next_generation' > /tmp/repro-next-generation/generation; echo '# lifecycle-generation-$tag' >> /tmp/repro-next-generation/system.nim"
+vmh_exec /usr/sbin/reproos-generation stage \
+  "$next_generation" /tmp/repro-next-generation
+vmh_exec /usr/sbin/reproos-generation switch "$next_generation"
+test "$(vmh_exec /usr/sbin/reproos-generation current | tr -d '\r')" = "$next_generation"
+vmh_exec /usr/bin/busybox grep -Fq "lifecycle-generation-$tag" /etc/repro/system.nim
+
+boot_id="$(vmh_exec cat /proc/sys/kernel/random/boot_id | tr -d '\r')"
+vmh_exec systemctl reboot >/dev/null 2>&1 || true
+wait_for_reboot "$boot_id"
+vmh_exec /usr/bin/busybox grep -Fx "generation=$next_generation" /run/reproos/healthy
+test "$(vmh_exec /usr/sbin/reproos-generation current | tr -d '\r')" = "$next_generation"
+
+vmh_exec /usr/sbin/reproos-generation rollback
+test "$(vmh_exec /usr/sbin/reproos-generation current | tr -d '\r')" = "$generation"
+boot_id="$(vmh_exec cat /proc/sys/kernel/random/boot_id | tr -d '\r')"
+vmh_exec systemctl reboot >/dev/null 2>&1 || true
+wait_for_reboot "$boot_id"
+vmh_exec /usr/bin/busybox grep -Fx "generation=$generation" /run/reproos/healthy
+if vmh_exec /usr/bin/busybox grep -Fq \
+    "lifecycle-generation-$tag" /etc/repro/system.nim; then
+  echo "rolled-back generation still contains the staged marker" >&2
+  exit 1
+fi
+
+ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 \
+  "repro@$ip" "test \"\$(cat /etc/repro/generation)\" = '$generation'"
+
+echo "ReproOS Incus lifecycle, SSH, generation rollback, reboot, snapshot, and cleanup: PASS"

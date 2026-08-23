@@ -540,6 +540,10 @@ def main() -> None:
             'monitor --type=lifecycle',
             '"$output/address.json"',
             '"$output/generation.txt"',
+            "reproos-generation stage",
+            "reproos-generation switch",
+            "reproos-generation rollback",
+            "/proc/sys/kernel/random/boot_id",
         ],
         "isolated vm-harness lifecycle and failure evidence",
     )
@@ -584,6 +588,9 @@ def main() -> None:
         [
             "REPROOS_INCUS_IPV4",
             "Privilege-separated SSH",
+            "current-generation",
+            "previous-generation",
+            "reproos-generation {current|list|stage|switch|rollback}",
         ],
         "container static-network and SSH runtime",
     )

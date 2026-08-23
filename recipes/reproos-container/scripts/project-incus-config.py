@@ -10,6 +10,7 @@ import os
 from enum import Enum
 from pathlib import Path
 import shutil
+import textwrap
 import tomllib
 
 
@@ -134,6 +135,134 @@ def write_text(path: Path, content: str, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
+def replace_symlink(path: Path, target: str) -> None:
+    if path.is_symlink() or path.exists():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+
+
+def make_tree_read_only(root: Path) -> None:
+    for path in root.rglob("*"):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    root.chmod(0o555)
+
+
+def generation_tool_script() -> str:
+    return textwrap.dedent(
+        """\
+        #!/usr/bin/busybox sh
+        set -eu
+        state=${REPROOS_GENERATION_STATE_ROOT:-/var/lib/reproos}
+        generations=$state/generations
+        current=$state/current-generation
+        previous=$state/previous-generation
+        required='auto-config.toml system.nim home.nim hardware.nim realization.json generation'
+
+        die() { echo "reproos-generation: $*" >&2; exit 2; }
+        valid_id() {
+          case "$1" in
+            ''|.|..|*[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) return 1 ;;
+          esac
+        }
+        verify_generation() {
+          id=$1
+          dir=$generations/$id
+          valid_id "$id" || die "invalid generation id: $id"
+          test -d "$dir" || die "generation does not exist: $id"
+          for name in $required; do
+            test -f "$dir/$name" && test ! -L "$dir/$name" ||
+              die "generation $id is missing regular file $name"
+          done
+          test "$(cat "$dir/generation")" = "$id" ||
+            die "generation identity mismatch: $id"
+        }
+        link_target() { readlink "$1" 2>/dev/null || true; }
+        link_id() {
+          target=$(link_target "$1")
+          echo "${target##*/}"
+        }
+        set_link() {
+          destination=$1
+          target=$2
+          temporary=$destination.tmp.$$
+          rm -f "$temporary"
+          ln -s "$target" "$temporary"
+          /usr/bin/busybox mv -Tf "$temporary" "$destination"
+        }
+
+        command=${1:-}
+        shift || true
+        case "$command" in
+          current)
+            id=$(link_id "$current")
+            test -n "$id" || die 'no current generation'
+            verify_generation "$id"
+            echo "$id"
+            ;;
+          list)
+            for dir in "$generations"/*; do
+              test -d "$dir" && basename "$dir"
+            done
+            ;;
+          stage)
+            test "$#" -eq 2 || die 'usage: stage <id> <source-directory>'
+            id=$1
+            source=$2
+            valid_id "$id" || die "invalid generation id: $id"
+            test -d "$source" && test ! -L "$source" ||
+              die 'source must be a directory'
+            destination=$generations/$id
+            test ! -e "$destination" || die "generation already exists: $id"
+            temporary=$generations/.stage-$id-$$
+            trap 'rm -rf "$temporary"' EXIT INT TERM
+            mkdir -p "$temporary"
+            cp -a "$source/." "$temporary/"
+            for name in $required; do
+              test -f "$temporary/$name" &&
+                test ! -L "$temporary/$name" ||
+                die "staged generation is missing regular file $name"
+            done
+            test "$(cat "$temporary/generation")" = "$id" ||
+              die 'staged identity mismatch'
+            find "$temporary" -type f -exec chmod 0444 {} \\;
+            find "$temporary" -type d -exec chmod 0555 {} \\;
+            mv "$temporary" "$destination"
+            trap - EXIT INT TERM
+            ;;
+          switch)
+            test "$#" -eq 1 || die 'usage: switch <id>'
+            id=$1
+            verify_generation "$id"
+            old_target=$(link_target "$current")
+            old_id=${old_target##*/}
+            test "$old_id" = "$id" && exit 0
+            test -n "$old_target" || die 'no current generation'
+            set_link "$previous" "$old_target"
+            set_link "$current" "generations/$id"
+            rm -f /run/reproos/healthy
+            ;;
+          rollback)
+            test "$#" -eq 0 || die 'usage: rollback'
+            old_target=$(link_target "$current")
+            rollback_target=$(link_target "$previous")
+            test -n "$old_target" && test -n "$rollback_target" ||
+              die 'no rollback generation'
+            rollback_id=${rollback_target##*/}
+            verify_generation "$rollback_id"
+            set_link "$current" "$rollback_target"
+            set_link "$previous" "$old_target"
+            rm -f /run/reproos/healthy
+            ;;
+          *) die 'usage: reproos-generation {current|list|stage|switch|rollback}' ;;
+        esac
+        """
+    )
+
+
 def upsert_account_record(path: Path, name: str, record: str, mode: int = 0o644) -> None:
     rows = []
     if path.exists():
@@ -225,13 +354,19 @@ def configure_accounts(rootfs: Path, config: dict) -> None:
 
 def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, report: dict) -> None:
     hostname = str(config["hostname"])
-    repro = rootfs / "etc" / "repro"
+    generation_id = report["configuration_sha256"]
+    state = rootfs / "var" / "lib" / "reproos"
+    generations = state / "generations"
+    repro = generations / generation_id
     repro.mkdir(parents=True, exist_ok=True)
     for name in ("auto-config.toml", "system.nim", "home.nim"):
         shutil.copyfile(artifacts / name, repro / name)
     shutil.copyfile(output / "hardware.nim", repro / "hardware.nim")
     shutil.copyfile(output / "projection-report.json", repro / "realization.json")
-    write_text(repro / "generation", report["configuration_sha256"] + "\n")
+    write_text(repro / "generation", generation_id + "\n")
+    make_tree_read_only(repro)
+    replace_symlink(state / "current-generation", f"generations/{generation_id}")
+    replace_symlink(rootfs / "etc" / "repro", "/var/lib/reproos/current-generation")
 
     write_text(rootfs / "etc" / "hostname", hostname + "\n")
     write_text(
@@ -287,6 +422,11 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
         "    for server in ${dns:-}; do echo \"nameserver $server\" >> /etc/resolv.conf; done\n"
         "    ;;\n"
         "esac\n",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr" / "sbin" / "reproos-generation",
+        generation_tool_script(),
         0o755,
     )
     write_text(
@@ -349,8 +489,11 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
         "#!/usr/bin/busybox sh\nset -eu\n"
         f"[ \"$(hostname)\" = \"{hostname}\" ]\n"
         "test -s /etc/repro/system.nim\ntest -s /etc/repro/realization.json\n"
-        "test -s /etc/repro/generation\nmkdir -p /run/reproos /var/lib/reproos/health\n"
-        "echo REPROOS_INCUS_HEALTH:PASS > /run/reproos/healthy\n"
+        "test -s /etc/repro/generation\n"
+        "generation=$(/usr/sbin/reproos-generation current)\n"
+        "test \"$(cat /etc/repro/generation)\" = \"$generation\"\n"
+        "mkdir -p /run/reproos /var/lib/reproos/health\n"
+        "printf 'REPROOS_INCUS_HEALTH:PASS\\ngeneration=%s\\n' \"$generation\" > /run/reproos/healthy\n"
         "cp /run/reproos/healthy /var/lib/reproos/health/last-pass\n",
         0o755,
     )

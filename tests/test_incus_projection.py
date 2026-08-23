@@ -83,6 +83,26 @@ def main() -> int:
         assert "/proc/1/environ" in network
         assert "init_environment REPROOS_INCUS_GATEWAY" in network
         assert "udhcpc" in network
+        generation = report["configuration_sha256"]
+        assert (rootfs / "etc" / "repro").is_symlink()
+        current = rootfs / "var" / "lib" / "reproos" / "current-generation"
+        assert current.readlink() == Path(f"generations/{generation}")
+        generation_root = (
+            rootfs / "var" / "lib" / "reproos" / "generations" / generation
+        )
+        assert (generation_root / "generation").read_text().strip() == generation
+        assert (generation_root / "system.nim").is_file()
+        generation_tool = (
+            rootfs / "usr" / "sbin" / "reproos-generation"
+        ).read_text()
+        for command in ("stage)", "switch)", "rollback)", "current)"):
+            assert command in generation_tool
+        assert "mv -Tf" in generation_tool
+        health = (
+            rootfs / "usr" / "lib" / "reproos" / "container-health"
+        ).read_text()
+        assert "reproos-generation current" in health
+        assert "generation=%s" in health
 
         unsupported = work / "unsupported.toml"
         shutil.copyfile(FIXTURE, unsupported)

@@ -149,7 +149,9 @@ bridge. The generated profile gives the container a deterministic address with
 DHCP fallback, while leaving the host's default project and networks untouched.
 `incus-launch` imports the source-built image and keeps the container running;
 use `incus-shell` or `incus-logs` to inspect it and `incus-destroy` to remove the
-instance, image, bridge, and project. See
+instance, image, bridge, and project. Container configuration is selected from
+immutable `/var/lib/reproos/generations` entries with the
+`reproos-generation` switch and rollback command. See
 `recipes/reproos-container/README.md` for overrides and acceptance details.
 
 `repro tasks` lists every interactive workflow. See

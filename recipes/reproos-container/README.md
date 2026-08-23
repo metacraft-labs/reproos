@@ -49,6 +49,31 @@ The following environment variables select non-default resources:
 - `VM_HARNESS_BIN` selects the `vm-harness` executable.
 - `VMH_INCUS_CMD` selects the Incus client command.
 
+## Configuration Generations
+
+Container configuration lives in immutable directories under
+`/var/lib/reproos/generations`. `/var/lib/reproos/current-generation` selects
+the active directory atomically, and `/etc/repro` resolves through that link.
+The image starts with the unattended configuration hash as its generation ID.
+
+Inside a running container, root can manage prepared configuration generations
+with:
+
+```console
+reproos-generation current
+reproos-generation list
+reproos-generation stage <id> <source-directory>
+reproos-generation switch <id>
+reproos-generation rollback
+```
+
+A staged directory must contain `auto-config.toml`, `system.nim`, `home.nim`,
+`hardware.nim`, `realization.json`, and a `generation` file whose content is
+the requested ID. Staging copies and makes the directory read-only. Switching
+records the former target as `previous-generation`; rollback atomically swaps
+the two links. Reboot after switch or rollback to exercise the complete boot
+and health path.
+
 ## Acceptance
 
 Run the complete gate on a Linux host with Incus and libvirt available:
@@ -60,6 +85,7 @@ repro build incus-acceptance
 Focused targets are `test-incus-projection`, `test-incus-helper`,
 `test-incus-reproducibility`, `test-incus-lifecycle`, and
 `test-vm-incus-parity`. The lifecycle test validates import, boot health, SSH,
-snapshot restore, generation rollback, and cleanup. The parity test verifies
+snapshot restore, generation switch and rollback across real reboots, and
+cleanup. The parity test verifies
 that the installed VM and container realize the same configuration contract,
 with only declared realization-specific capabilities.

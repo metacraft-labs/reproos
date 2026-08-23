@@ -228,8 +228,8 @@ def generation_tool_script() -> str:
             done
             test "$(cat "$temporary/generation")" = "$id" ||
               die 'staged identity mismatch'
-            find "$temporary" -type f -exec chmod 0444 {} \\;
-            find "$temporary" -type d -exec chmod 0555 {} \\;
+            /usr/bin/busybox find "$temporary" -type f -exec chmod 0444 {} \\;
+            /usr/bin/busybox find "$temporary" -type d -exec chmod 0555 {} \\;
             mv "$temporary" "$destination"
             trap - EXIT INT TERM
             ;;

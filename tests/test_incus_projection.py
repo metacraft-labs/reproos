@@ -98,6 +98,7 @@ def main() -> int:
         for command in ("stage)", "switch)", "rollback)", "current)"):
             assert command in generation_tool
         assert "mv -Tf" in generation_tool
+        assert "/usr/bin/busybox find" in generation_tool
         health = (
             rootfs / "usr" / "lib" / "reproos" / "container-health"
         ).read_text()

@@ -292,6 +292,7 @@ def main() -> None:
                 "test-incus-projection",
                 "test-incus-helper",
                 "test-incus-publication",
+                "test-incus-second-host",
                 "test-vm-incus-parity-checker",
                 "test-incus-lifecycle",
                 "test-incus-parallel-isolation",
@@ -321,6 +322,7 @@ def main() -> None:
                 "incus-pull",
             ]],
             'collect("lint"',
+            'collect("incus-remote-acceptance"',
         ],
         "workflow module",
     )
@@ -342,6 +344,8 @@ def main() -> None:
             "tests/test_incus_projection.py",
             "tests/test_reproos_incus_helper.py",
             "tests/test_incus_publication.py",
+            "tests/test-incus-second-host.sh",
+            "tests/remote-incus-acceptance.sh",
             "tests/test-incus-lifecycle.sh",
             "tests/test-incus-parallel-isolation.sh",
             "tests/test-incus-image-reproducibility.sh",
@@ -395,6 +399,7 @@ def main() -> None:
         [
             "repro build incus-image",
             "repro build incus-acceptance",
+            "repro build incus-remote-acceptance",
             "repro run incus-launch",
             "repro run incus-publish",
             "incus-destroy",
@@ -407,6 +412,7 @@ def main() -> None:
             "repro build incus-projection",
             "repro build incus-image",
             "repro build incus-acceptance",
+            "repro build incus-remote-acceptance",
             "repro run incus-launch",
             "repro run incus-publish",
             "repro run incus-pull",
@@ -422,9 +428,23 @@ def main() -> None:
             "VMH_INCUS_CMD",
             "test-incus-reproducibility",
             "test-incus-publication",
+            "test-incus-second-host",
             "test-vm-incus-parity",
         ],
         "Incus operator guide",
+    )
+    require_contains(
+        ROOT / "tests/remote-incus-acceptance.sh",
+        [
+            "user.reproos.acceptance",
+            "/etc/subuid",
+            "config device override",
+            "busybox ping",
+            "http://$server_ip:8080/response",
+            "undeclared application port 8081 is reachable",
+            "remote_host=",
+        ],
+        "second-host Incus acceptance",
     )
     require_contains(README, ["repro lint"], "README quality command")
     require_contains(

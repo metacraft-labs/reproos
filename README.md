@@ -68,10 +68,12 @@ repro build test-unattended-install
 repro build test-incus-projection
 repro build test-incus-helper
 repro build test-incus-publication
+repro build test-incus-second-host
 repro build test-incus-reproducibility
 repro build test-incus-lifecycle
 repro build test-vm-incus-parity
 repro build incus-acceptance
+repro build incus-remote-acceptance
 ```
 
 The unattended test compares the wizard's generated configuration with the
@@ -168,6 +170,14 @@ the selected Incus daemon. The corresponding environment variables are
 `REPROOS_INCUS_PUBLICATION_DIR`, `REPROOS_INCUS_SIGNING_KEY`,
 `REPROOS_INCUS_SIGNING_KEY_ID`, `REPROOS_INCUS_PUBLICATION_URL`, and
 `REPROOS_INCUS_TRUSTED_KEY`.
+
+`incus-remote-acceptance` adds a clean-host gate over SSH. It uploads only the
+pull client and trusted public key, imports an exact signed generation, launches
+two containers on owned temporary resources, and verifies generation health,
+SSH, peer reachability, an exact application response, closed undeclared ports,
+and cleanup. Configure `REPROOS_INCUS_SECOND_HOST_SSH`,
+`REPROOS_INCUS_PUBLICATION_URL`, `REPROOS_INCUS_TRUSTED_KEY`,
+`REPROOS_INCUS_SIGNING_KEY_ID`, and `REPROOS_INCUS_GENERATION`.
 
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.

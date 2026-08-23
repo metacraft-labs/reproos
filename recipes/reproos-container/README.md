@@ -98,6 +98,41 @@ an alias that points to a different fingerprint is rejected.
 `REPROOS_INCUS_GENERATION`, and `VMH_INCUS_CMD` provide environment-based
 configuration for remote acceptance automation.
 
+### Independent Host Acceptance
+
+Use an SSH-accessible host with an initialized Incus daemon to exercise the
+complete publication and multi-container path:
+
+```console
+REPROOS_INCUS_SECOND_HOST_SSH='ssh -i KEY root@HOST' \
+REPROOS_INCUS_PUBLICATION_URL='https://images.example.test/reproos/incus' \
+REPROOS_INCUS_TRUSTED_KEY='/etc/reproos/release-key.pub' \
+REPROOS_INCUS_SIGNING_KEY_ID='reproos-release' \
+REPROOS_INCUS_GENERATION='GENERATION' \
+  repro build incus-remote-acceptance
+```
+
+The transport value is tokenized as an SSH command and must end in its
+destination host. The remote needs `incus`, `python3`, and an initialized
+daemon; it does not need Reprobuild, the ReproOS checkout, package sources, or
+the image build closure. The gate copies only the pull utility and public key,
+creates a uniquely owned project, bridge, storage pool, and two instances,
+verifies distinct peer addressing and an exact server-to-client response, then
+removes its resources. Run `test-incus-second-host` to iterate on only this live
+gate.
+
+The SSH user is expected to be root, with functional subordinate UID and GID
+ranges for unprivileged containers. Minimal distro images may require:
+
+```console
+usermod --add-subuids 1000000-1065535 \
+  --add-subgids 1000000-1065535 root
+```
+
+Restart `incusd` after changing `/etc/subuid` or `/etc/subgid`; Incus reads the
+maps during daemon startup. The acceptance gate fails in preflight when either
+range is absent and never falls back to privileged containers.
+
 ## Configuration Generations
 
 Container configuration lives in immutable directories under
@@ -132,7 +167,8 @@ repro build incus-acceptance
 ```
 
 Focused targets are `test-incus-projection`, `test-incus-helper`,
-`test-incus-publication`, `test-vm-incus-parity-checker`,
+`test-incus-publication`, `test-incus-second-host`,
+`test-vm-incus-parity-checker`,
 `test-incus-reproducibility`,
 `test-incus-lifecycle`, `test-incus-parallel-isolation`, and
 `test-vm-incus-parity`. The lifecycle test validates import, boot health, SSH,

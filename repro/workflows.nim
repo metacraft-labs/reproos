@@ -214,6 +214,17 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3", "openssh"])
     discard target("test-incus-publication", testIncusPublication)
 
+    let testIncusSecondHost = shell(
+      command = "bash tests/test-incus-second-host.sh",
+      actionId = "reproos.test-incus-second-host",
+      extraInputs = @[
+        "tests/test-incus-second-host.sh",
+        "tests/remote-incus-acceptance.sh",
+        "tools/reproos-incus-publication.py",
+      ],
+      cacheable = false).withToolIdentities(["bash", "openssh"])
+    discard target("test-incus-second-host", testIncusSecondHost)
+
     let testVmIncusParityChecker = shell(
       command = "python3 tests/test_vm_incus_parity_checker.py",
       actionId = "reproos.test-vm-incus-parity-checker",
@@ -499,4 +510,9 @@ package reproosWorkflows:
       testIncusLifecycle,
       testIncusParallelIsolation,
       testVmIncusParity,
+    ])
+
+    discard collect("incus-remote-acceptance", actions = @[
+      testIncusPublication,
+      testIncusSecondHost,
     ])

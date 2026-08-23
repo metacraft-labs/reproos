@@ -42,6 +42,9 @@ Use Reprobuild as the only contributor command surface:
 - `repro run incus-publish` publishes the built image as an immutable signed
   generation. `repro run incus-pull` verifies and imports one published
   generation into a selected Incus project.
+- `repro build incus-remote-acceptance` pulls an exact signed generation onto
+  an SSH-accessible independent Incus daemon and verifies a two-container
+  network before cleaning its owned resources.
 - `repro tasks` lists interactive workflows.
 
 Use the local installer run edge for routine design work. Reserve VM boots for

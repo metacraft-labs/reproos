@@ -272,6 +272,7 @@ CFG="$CONFIG_BUNDLE_DIR/auto-config.toml"
 
 HOSTNAME_VAL="$(toml_get "$CFG" "" "hostname")"
 USER_NAME="$(toml_get "$CFG" "user" "name")"
+USER_FULL_NAME="$(toml_get "$CFG" "user" "full_name")"
 USER_PWHASH="$(toml_get "$CFG" "user" "password_hash")"
 USER_SHELL="$(toml_get "$CFG" "user" "shell")"
 DISK_SIZE_GB="$(toml_get "$CFG" "disk" "size_gb")"
@@ -283,6 +284,7 @@ NET_IPV4="$(toml_get "$CFG" "network" "ipv4")"
 # Defaults / validation.
 HOSTNAME_VAL="${HOSTNAME_VAL:-reproos}"
 USER_NAME="${USER_NAME:-repro}"
+USER_FULL_NAME="${USER_FULL_NAME:-$USER_NAME}"
 USER_SHELL="${USER_SHELL:-/bin/bash}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-8}"
 DISK_TYPE="${DISK_TYPE:-uefi-ext4}"
@@ -610,7 +612,7 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
   # (M9.R.56.6 UID-collision cleanup) --- the stage baseline live user shares
   # uid=1000 with our repro user and shadows autologin.
   awk -v u='$USER_NAME' -v uid='$USER_UID' -F: '\$1 != u && \$3 != uid' '$MNT_DIR/etc/passwd' > '$MNT_DIR/etc/passwd.new'
-  echo '$USER_NAME:x:$USER_UID:$USER_GID::$USER_HOME:$USER_SHELL' >> '$MNT_DIR/etc/passwd.new'
+  echo '$USER_NAME:x:$USER_UID:$USER_GID:$USER_FULL_NAME:$USER_HOME:$USER_SHELL' >> '$MNT_DIR/etc/passwd.new'
   mv '$MNT_DIR/etc/passwd.new' '$MNT_DIR/etc/passwd'
   chmod 0644 '$MNT_DIR/etc/passwd'
 
@@ -628,8 +630,21 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
   if [ ! -f '$MNT_DIR/etc/group' ]; then
     echo 'root:x:0:' > '$MNT_DIR/etc/group'
   fi
-  # Remove any pre-existing entry for the primary group, then re-add.
-  awk -v g='$USER_NAME' -F: '\$1 != g' '$MNT_DIR/etc/group' > '$MNT_DIR/etc/group.new'
+  # Remove live-media aliases, colliding primary groups, and stale target/live
+  # memberships before applying the configured group set.
+  awk -v g='$USER_NAME' -v gid='$USER_GID' -v u='$USER_NAME' -F: '
+    BEGIN { OFS=\":\" }
+    \$1 != g && \$1 != \"live\" && \$3 != gid {
+      kept=\"\"
+      count=split(\$4, members, \",\")
+      for (i=1; i<=count; i++) {
+        if (members[i] == \"\" || members[i] == u || members[i] == \"live\") continue
+        kept=(kept == \"\" ? members[i] : kept \",\" members[i])
+      }
+      \$4=kept
+      print
+    }
+  ' '$MNT_DIR/etc/group' > '$MNT_DIR/etc/group.new'
   echo '$USER_NAME:x:$USER_GID:' >> '$MNT_DIR/etc/group.new'
   # Add user to each secondary group (append user to member list;
   # create group with gid+100 if it doesn't exist).
@@ -641,7 +656,13 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
       awk -v g=\"\$g\" -v u='$USER_NAME' -F: 'BEGIN{OFS=\":\"} { if (\$1==g) { if (\$4==\"\") { \$4=u } else if (index(\$4,u)==0) { \$4=\$4\",\"u } } print }' '$MNT_DIR/etc/group.new' > '$MNT_DIR/etc/group.new2'
       mv '$MNT_DIR/etc/group.new2' '$MNT_DIR/etc/group.new'
     else
-      # Group missing: create with next available gid.
+      # Group missing: create with the next genuinely unused gid.
+      while awk -F: -v gid=\"\$next_gid\" '
+        \$3 == gid { found=1 }
+        END { exit(found ? 0 : 1) }
+      ' '$MNT_DIR/etc/group.new'; do
+        next_gid=\$((next_gid+1))
+      done
       echo \"\$g:x:\$next_gid:$USER_NAME\" >> '$MNT_DIR/etc/group.new'
       next_gid=\$((next_gid+1))
     fi
@@ -653,13 +674,24 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
   if [ ! -f '$MNT_DIR/etc/gshadow' ]; then
     echo 'root:*::' > '$MNT_DIR/etc/gshadow'
   fi
-  awk -v g='$USER_NAME' -F: '\$1 != g' '$MNT_DIR/etc/gshadow' > '$MNT_DIR/etc/gshadow.new'
+  awk -v g='$USER_NAME' -v u='$USER_NAME' -F: '
+    BEGIN { OFS=\":\" }
+    \$1 != g && \$1 != \"live\" {
+      kept=\"\"
+      count=split(\$4, members, \",\")
+      for (i=1; i<=count; i++) {
+        if (members[i] == \"\" || members[i] == u || members[i] == \"live\") continue
+        kept=(kept == \"\" ? members[i] : kept \",\" members[i])
+      }
+      \$4=kept
+      print
+    }
+  ' '$MNT_DIR/etc/gshadow' > '$MNT_DIR/etc/gshadow.new'
   echo '$USER_NAME:!::' >> '$MNT_DIR/etc/gshadow.new'
   for g in $USER_GROUPS_SPACED; do
     [ -z \"\$g\" ] && continue
-    if grep -qE \"^\$g:\" '$MNT_DIR/etc/gshadow.new'; then
-      continue
-    fi
+    awk -v g=\"\$g\" -F: '\$1 != g' '$MNT_DIR/etc/gshadow.new' > '$MNT_DIR/etc/gshadow.new2'
+    mv '$MNT_DIR/etc/gshadow.new2' '$MNT_DIR/etc/gshadow.new'
     echo \"\$g:!::$USER_NAME\" >> '$MNT_DIR/etc/gshadow.new'
   done
   mv '$MNT_DIR/etc/gshadow.new' '$MNT_DIR/etc/gshadow'

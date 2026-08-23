@@ -437,12 +437,21 @@ def main() -> None:
         "REPROOS_DISK_INITRD",
         '--kernel "$SOURCE_KERNEL"',
         '--initrd "$DISK_INITRD"',
+        'USER_FULL_NAME="$(toml_get "$CFG" "user" "full_name")"',
+        '\\$1 != g && \\$1 != \\"live\\" && \\$3 != gid',
+        'END { exit(found ? 0 : 1) }',
     ]:
         if value not in image_script:
             raise AssertionError(f"image driver is missing graph input: {value}")
     for legacy in ["REPRO_FORCE_RESTAGE", "stage-de-rootfs.sh \"$STAGE_DIR\""]:
         if legacy in image_script:
             raise AssertionError(f"image driver retains private stage cache: {legacy}")
+
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-health-check",
+        ["account_gecos", "group:$expected_group", "groups:unique-gids"],
+        "installed account health checks",
+    )
 
     require_contains(
         CONTAINER_RECIPE,

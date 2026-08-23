@@ -65,10 +65,16 @@ else
 fi
 
 expected_user="$(toml_string user name || true)"
+expected_full_name="$(toml_string user full_name || true)"
+expected_shell="$(toml_string user shell || true)"
 user_record_found=0
-while IFS=: read -r account_name _ account_uid account_gid _; do
+while IFS=: read -r account_name _ account_uid account_gid account_gecos \
+    account_home account_shell; do
   if [[ "$account_name" == "$expected_user" &&
-        "$account_uid" == 1000 && "$account_gid" == 1000 ]]; then
+        "$account_uid" == 1000 && "$account_gid" == 1000 &&
+        "$account_gecos" == "$expected_full_name" &&
+        "$account_home" == "/home/$expected_user" &&
+        "$account_shell" == "$expected_shell" ]]; then
     user_record_found=1
     break
   fi
@@ -77,6 +83,47 @@ if [[ -n "$expected_user" && "$user_record_found" == 1 ]]; then
   pass "user:$expected_user"
 else
   fail "user:$expected_user"
+fi
+
+expected_groups="$({
+  awk '
+    BEGIN { section="" }
+    /^[[:space:]]*\[/ {
+      section=$0
+      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "user" && /^[[:space:]]*groups[[:space:]]*=/ {
+      value=$0
+      sub(/^[^=]*=/, "", value)
+      gsub(/[\[\]",]/, " ", value)
+      print value
+      exit
+    }
+  ' /etc/repro/auto-config.toml
+} || true)"
+for expected_group in $expected_groups; do
+  if awk -F: -v wanted_group="$expected_group" -v wanted_user="$expected_user" '
+    $1 == wanted_group {
+      count=split($4, members, ",")
+      for (i=1; i<=count; i++) if (members[i] == wanted_user) found=1
+    }
+    END { exit(found ? 0 : 1) }
+  ' /etc/group; then
+    pass "group:$expected_group:$expected_user"
+  else
+    fail "group:$expected_group:$expected_user"
+  fi
+done
+
+duplicate_group_ids="$(awk -F: '
+  $3 ~ /^[0-9]+$/ { count[$3]++; names[$3]=(names[$3] ? names[$3] "," $1 : $1) }
+  END { for (gid in count) if (count[gid] > 1) print gid ":" names[gid] }
+' /etc/group)"
+if [[ -z "$duplicate_group_ids" ]]; then
+  pass "groups:unique-gids"
+else
+  fail "groups:duplicate-gids=$duplicate_group_ids"
 fi
 
 if touch "$status_dir/root-write-check" && rm -f "$status_dir/root-write-check"; then

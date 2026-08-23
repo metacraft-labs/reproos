@@ -74,6 +74,33 @@ def expected_contract(config_path: Path, artifacts: Path) -> dict[str, str]:
     return expected
 
 
+def check_realization_contract(
+    label: str,
+    contract: dict[str, str],
+    expected: dict[str, str],
+    realization_groups: set[str],
+) -> None:
+    expected_without_groups = {
+        key: value for key, value in expected.items() if key != "groups"
+    }
+    actual_without_groups = {
+        key: value for key, value in contract.items() if key != "groups"
+    }
+    if actual_without_groups != expected_without_groups:
+        raise ValueError(
+            f"{label} contract differs from reviewed intent: {contract!r}"
+        )
+
+    configured_groups = set(expected["groups"].split(","))
+    actual_groups = set(contract.get("groups", "").split(","))
+    wanted_groups = configured_groups | realization_groups
+    if actual_groups != wanted_groups:
+        raise ValueError(
+            f"{label} groups differ from reviewed intent: "
+            f"expected={sorted(wanted_groups)!r} actual={sorted(actual_groups)!r}"
+        )
+
+
 def check_report(report_path: Path, config_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if report.get("configuration_sha256") != sha256(config_path):
@@ -113,10 +140,8 @@ def main() -> int:
     vm = load_contract(args.vm)
     container = load_contract(args.container)
     expected = expected_contract(args.config, args.artifacts)
-    if vm != expected:
-        raise ValueError(f"VM contract differs from reviewed intent: {vm!r}")
-    if container != expected:
-        raise ValueError(f"Incus contract differs from reviewed intent: {container!r}")
+    check_realization_contract("VM", vm, expected, {"seat"})
+    check_realization_contract("Incus", container, expected, set())
     check_report(args.report, args.config)
     print("ReproOS VM and Incus shared realization contract: PASS")
     return 0

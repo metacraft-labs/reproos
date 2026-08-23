@@ -536,7 +536,7 @@ def main() -> None:
             'network="ro-${tag:0:12}"',
             "default-networks.before",
             "default-networks.after",
-            '"$vm_harness" instance "$@" --backend incus',
+            '"$operation" --backend incus "$@"',
             'monitor --type=lifecycle',
             '"$output/address.json"',
             '"$output/generation.txt"',

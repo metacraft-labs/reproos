@@ -15,7 +15,10 @@ incus_global() { "${incus_cmd[@]}" "$@"; }
 incus_test() { "${incus_cmd[@]}" --project "$project" "$@"; }
 vmh_env="${incus_cmd[*]} --project $project"
 vmh_instance() {
-  VMH_INCUS_CMD="$vmh_env" "$vm_harness" instance "$@" --backend incus
+  local operation=$1
+  shift
+  VMH_INCUS_CMD="$vmh_env" "$vm_harness" instance \
+    "$operation" --backend incus "$@"
 }
 vmh_exec() {
   vmh_instance exec "$instance" -- "$@"

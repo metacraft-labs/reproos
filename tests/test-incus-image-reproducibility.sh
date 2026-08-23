@@ -10,7 +10,7 @@ trap 'rm -rf "$work"' EXIT
 
 for pass in first second; do
   mkdir -p "$work/$pass"
-  SOURCE_DATE_EPOCH=1735689600 "$builder" \
+  SOURCE_DATE_EPOCH=1735689600 bash "$builder" \
     "$rootfs" "$projection" \
     "$work/$pass/reproos-incus.tar.xz" \
     "$work/$pass/incus-baseline.manifest"

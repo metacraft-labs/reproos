@@ -503,6 +503,11 @@ def main() -> None:
         "bounded and cleanup-verified Incus test bridge",
     )
     require_contains(
+        ROOT / "tests/test-incus-image-reproducibility.sh",
+        ['bash "$builder"'],
+        "portable Incus reproducibility builder invocation",
+    )
+    require_contains(
         ROOT / "recipes/reproos-container/scripts/project-incus-config.py",
         [
             'class FieldClass(str, Enum)',

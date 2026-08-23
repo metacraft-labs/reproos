@@ -13,6 +13,11 @@ read -r -a incus_cmd <<<"${VMH_INCUS_CMD:-incus}"
 
 incus_global() { "${incus_cmd[@]}" "$@"; }
 incus_test() { "${incus_cmd[@]}" --project "$project" "$@"; }
+vmh_env="${incus_cmd[*]} --project $project"
+vmh_exec() {
+  VMH_INCUS_CMD="$vmh_env" "$vm_harness" instance exec \
+    --backend incus "$instance" -- "$@"
+}
 
 if ! command -v "${incus_cmd[0]}" >/dev/null ||
    ! incus_global info >/dev/null 2>&1; then
@@ -73,14 +78,14 @@ VM_HARNESS_BIN="$vm_harness" \
   bash "$tool" launch >/dev/null
 
 deadline=$((SECONDS + 120))
-until incus_test exec "$instance" -- test -s /run/reproos/healthy >/dev/null 2>&1; do
+until vmh_exec test -s /run/reproos/healthy >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
     echo "ReproOS container did not reach its health marker" >&2
     exit 1
   fi
   sleep 1
 done
-incus_test exec "$instance" -- /usr/bin/busybox sh -c "$probe" \
+vmh_exec /usr/bin/busybox sh -c "$probe" \
   >"$output/container.contract"
 
 python3 "$repo_root/tests/check_vm_incus_parity.py" \

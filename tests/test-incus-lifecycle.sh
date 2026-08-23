@@ -13,6 +13,13 @@ read -r -a incus_cmd <<<"${VMH_INCUS_CMD:-incus}"
 
 incus_global() { "${incus_cmd[@]}" "$@"; }
 incus_test() { "${incus_cmd[@]}" --project "$project" "$@"; }
+vmh_env="${incus_cmd[*]} --project $project"
+vmh_instance() {
+  VMH_INCUS_CMD="$vmh_env" "$vm_harness" instance "$@" --backend incus
+}
+vmh_exec() {
+  vmh_instance exec "$instance" -- "$@"
+}
 
 if ! command -v "${incus_cmd[0]}" >/dev/null || \
    ! incus_global info >/dev/null 2>&1; then
@@ -25,6 +32,8 @@ if ! command -v "$vm_harness" >/dev/null; then
 fi
 
 mkdir -p "$output"
+"${incus_cmd[@]}" monitor --type=lifecycle >"$output/events.log" 2>&1 &
+events_pid=$!
 incus_global list --project default --format csv -c n | sort >"$output/default-instances.before"
 incus_global image list --project default --format csv -c f | sort >"$output/default-images.before"
 incus_global network list --project default --format csv -c n | sort >"$output/default-networks.before"
@@ -33,10 +42,17 @@ capture_evidence() {
   incus_test config show "$instance" --expanded >"$output/config.yaml" 2>&1 || true
   incus_test info "$instance" --show-log >"$output/info.log" 2>&1 || true
   incus_test console "$instance" --show-log >"$output/console.log" 2>&1 || true
-  incus_test exec "$instance" -- journalctl -b --no-pager >"$output/journal.log" 2>&1 || true
+  incus_test list "$instance" --format json >"$output/address.json" 2>&1 || true
+  incus_global project show "$project" >"$output/project.yaml" 2>&1 || true
+  vmh_exec journalctl -b --no-pager >"$output/journal.log" 2>&1 || true
+  vmh_exec cat /etc/repro/generation >"$output/generation.txt" 2>&1 || true
 }
 cleanup() {
   local status=$?
+  if kill -0 "$events_pid" >/dev/null 2>&1; then
+    kill "$events_pid" >/dev/null 2>&1 || true
+    wait "$events_pid" >/dev/null 2>&1 || true
+  fi
   if [[ "$status" -ne 0 ]]; then
     capture_evidence
   fi
@@ -66,7 +82,7 @@ VM_HARNESS_BIN="$vm_harness" \
   bash "$tool" launch
 
 deadline=$((SECONDS + 120))
-until incus_test exec "$instance" -- test -s /run/reproos/healthy >/dev/null 2>&1; do
+until vmh_exec test -s /run/reproos/healthy >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
     echo "ReproOS container did not reach its health marker" >&2
     exit 1
@@ -74,23 +90,23 @@ until incus_test exec "$instance" -- test -s /run/reproos/healthy >/dev/null 2>&
   sleep 1
 done
 
-incus_test exec "$instance" -- /usr/bin/busybox grep -Fx REPROOS_INCUS_HEALTH:PASS /run/reproos/healthy
-incus_test exec "$instance" -- test "$(incus_test exec "$instance" -- hostname | tr -d '\r')" = reproos-smoke
-incus_test exec "$instance" -- test -s /etc/repro/system.nim
-incus_test exec "$instance" -- test -s /etc/repro/hardware.nim
-incus_test exec "$instance" -- test -s /etc/repro/home.nim
-incus_test exec "$instance" -- /usr/bin/busybox grep -Fq '"kind": "incus-system-container"' /etc/repro/realization.json
-incus_test exec "$instance" -- test ! -e /boot/vmlinuz
-incus_test exec "$instance" -- systemctl is-active sshd.service
-incus_test exec "$instance" -- systemctl is-active reproos-incus-network.service
-incus_test exec "$instance" -- systemctl is-active reproos-container-health.service
+vmh_exec /usr/bin/busybox grep -Fx REPROOS_INCUS_HEALTH:PASS /run/reproos/healthy
+test "$(vmh_exec hostname | tr -d '\r')" = reproos-smoke
+vmh_exec test -s /etc/repro/system.nim
+vmh_exec test -s /etc/repro/hardware.nim
+vmh_exec test -s /etc/repro/home.nim
+vmh_exec /usr/bin/busybox grep -Fq '"kind": "incus-system-container"' /etc/repro/realization.json
+vmh_exec test ! -e /boot/vmlinuz
+vmh_exec systemctl is-active sshd.service
+vmh_exec systemctl is-active reproos-incus-network.service
+vmh_exec systemctl is-active reproos-container-health.service
 
 key="$output/id_ed25519"
 ssh-keygen -q -t ed25519 -N '' -f "$key"
-incus_test exec "$instance" -- mkdir -p /home/repro/.ssh
-incus_test file push --uid 1000 --gid 1000 --mode 0600 \
-  "$key.pub" "$instance/home/repro/.ssh/authorized_keys"
-incus_test exec "$instance" -- chown 1000:1000 /home/repro/.ssh
+vmh_exec mkdir -p /home/repro/.ssh
+vmh_instance copy-to "$instance" "$key.pub" /tmp/repro-authorized-key
+vmh_exec /usr/bin/busybox sh -c \
+  'cp /tmp/repro-authorized-key /home/repro/.ssh/authorized_keys; chown -R 1000:1000 /home/repro/.ssh; chmod 0600 /home/repro/.ssh/authorized_keys'
 
 ip=""
 deadline=$((SECONDS + 60))
@@ -113,21 +129,15 @@ ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 \
   "repro@$ip" 'test "$(hostname)" = reproos-smoke && test -s /etc/repro/system.nim'
 
-vmh_env="${incus_cmd[*]} --project $project"
 VMH_INCUS_CMD="$vmh_env" "$vm_harness" snapshot create \
   --backend incus "$instance" generation-clean >/dev/null
-generation="$(incus_test exec "$instance" -- cat /etc/repro/generation | tr -d '\r')"
-incus_test exec "$instance" -- sh -c 'echo mutated >/etc/repro/generation'
-incus_test stop "$instance"
+generation="$(vmh_exec cat /etc/repro/generation | tr -d '\r')"
+vmh_exec sh -c 'echo mutated >/etc/repro/generation'
+vmh_instance stop "$instance"
 VMH_INCUS_CMD="$vmh_env" "$vm_harness" snapshot restore \
   --backend incus "$instance" generation-clean
-incus_test start "$instance"
-deadline=$((SECONDS + 60))
-until incus_test exec "$instance" -- true >/dev/null 2>&1; do
-  (( SECONDS < deadline )) || exit 1
-  sleep 1
-done
-restored="$(incus_test exec "$instance" -- cat /etc/repro/generation | tr -d '\r')"
+vmh_instance start "$instance"
+restored="$(vmh_exec cat /etc/repro/generation | tr -d '\r')"
 test "$restored" = "$generation"
 
 echo "ReproOS Incus lifecycle, SSH, snapshot, and cleanup: PASS"

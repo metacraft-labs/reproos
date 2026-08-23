@@ -518,6 +518,10 @@ def main() -> None:
         [
             "--type=bridge",
             "features.networks=false",
+            "user.reproos.managed=true",
+            'user.reproos.project="$project"',
+            "refusing to manage the default Incus project",
+            "refusing to modify unowned Incus project",
             "environment.REPROOS_INCUS_IPV4",
             'network="$network"',
             'incus_global network delete "$network"',
@@ -532,8 +536,32 @@ def main() -> None:
             'network="ro-${tag:0:12}"',
             "default-networks.before",
             "default-networks.after",
+            '"$vm_harness" instance "$@" --backend incus',
+            'monitor --type=lifecycle',
+            '"$output/address.json"',
+            '"$output/generation.txt"',
         ],
-        "bounded and cleanup-verified Incus test bridge",
+        "isolated vm-harness lifecycle and failure evidence",
+    )
+    lifecycle_content = source(INCUS_LIFECYCLE_TEST)
+    for direct_operation in ["incus_test exec", "incus_test file"]:
+        if direct_operation in lifecycle_content:
+            raise AssertionError(
+                f"Incus lifecycle bypasses vm-harness: {direct_operation}"
+            )
+    require_contains(
+        ROOT / "tests/test-vm-incus-parity.sh",
+        ['"$vm_harness" instance exec', "--backend incus"],
+        "vm-harness-owned Incus parity probe",
+    )
+    require_contains(
+        ROOT / "tests/test_reproos_incus_helper.py",
+        [
+            "refusing to manage the default Incus project",
+            "refusing to manage reserved Incus bridge",
+            "refusing to modify unowned Incus project",
+        ],
+        "Incus resource refusal regressions",
     )
     require_contains(
         ROOT / "tests/test-incus-image-reproducibility.sh",

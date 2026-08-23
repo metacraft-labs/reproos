@@ -14,6 +14,37 @@ read -r -a incus_cmd <<<"${VMH_INCUS_CMD:-incus}"
 incus_global() { "${incus_cmd[@]}" "$@"; }
 incus_project() { "${incus_cmd[@]}" --project "$project" "$@"; }
 
+validate_resource_names() {
+  if [[ -z "$project" || "$project" == "default" ]]; then
+    echo "refusing to manage the default Incus project" >&2
+    exit 2
+  fi
+  case "$network" in
+    ""|incusbr0|lxdbr0)
+      echo "refusing to manage reserved Incus bridge: ${network:-<empty>}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+require_managed_project() {
+  local managed
+  managed="$(incus_global project get "$project" user.reproos.managed 2>/dev/null || true)"
+  if [[ "$managed" != "true" ]]; then
+    echo "refusing to modify unowned Incus project: $project" >&2
+    exit 2
+  fi
+}
+
+require_managed_network() {
+  local owner
+  owner="$(incus_global network get "$network" user.reproos.project 2>/dev/null || true)"
+  if [[ "$owner" != "$project" ]]; then
+    echo "refusing to modify unowned Incus network: $network" >&2
+    exit 2
+  fi
+}
+
 require_host() {
   command -v "${incus_cmd[0]}" >/dev/null || {
     echo "Incus client missing: ${incus_cmd[0]}" >&2
@@ -35,7 +66,10 @@ setup_project() {
     incus_global project create "$project" \
       -c features.images=true \
       -c features.networks=false \
-      -c features.profiles=true
+      -c features.profiles=true \
+      -c user.reproos.managed=true
+  else
+    require_managed_project
   fi
   incus_project profile show default >/dev/null 2>&1 || \
     incus_project profile create default
@@ -44,7 +78,10 @@ setup_project() {
   fi
   if ! incus_global network show "$network" >/dev/null 2>&1; then
     incus_global network create "$network" --type=bridge \
-      ipv4.address=auto ipv4.nat=true ipv6.address=none
+      ipv4.address=auto ipv4.nat=true ipv6.address=none \
+      user.reproos.project="$project"
+  else
+    require_managed_network
   fi
   local network_cidr gateway network_prefix prefix_length container_ipv4
   network_cidr="$(incus_global network get "$network" ipv4.address)"
@@ -92,6 +129,7 @@ launch() {
 
 destroy() {
   if incus_global project show "$project" >/dev/null 2>&1; then
+    require_managed_project
     if incus_project list "$instance" --format csv -c n | grep -Fxq "$instance"; then
       VMH_INCUS_CMD="${incus_cmd[*]} --project $project" \
         "$vm_harness" ephemeral-destroy --backend incus \
@@ -101,6 +139,7 @@ destroy() {
       incus_project profile device remove default eth0
     fi
     if incus_global network show "$network" >/dev/null 2>&1; then
+      require_managed_network
       incus_global network delete "$network"
     fi
     local fingerprint
@@ -119,6 +158,7 @@ usage() {
 }
 
 require_host
+validate_resource_names
 case "${1:-}" in
   import)
     setup_project
@@ -128,9 +168,11 @@ case "${1:-}" in
     launch
     ;;
   shell)
+    require_managed_project
     incus_project exec "$instance" -- su -l repro
     ;;
   logs)
+    require_managed_project
     incus_project console "$instance" --show-log || true
     incus_project exec "$instance" -- journalctl -b --no-pager
     ;;

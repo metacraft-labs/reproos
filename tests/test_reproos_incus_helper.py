@@ -28,6 +28,10 @@ if args == ["info"]:
     raise SystemExit(0)
 if args == ["project", "show", project]:
     raise SystemExit(1 if phase == "import" else 0)
+if args == ["project", "get", project, "user.reproos.managed"]:
+    if phase != "unowned":
+        print("true")
+    raise SystemExit(0)
 if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "show", "default"]:
     print("root:")
     if phase == "destroy":
@@ -35,7 +39,11 @@ if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "sho
     raise SystemExit(0)
 if args[:2] == ["network", "show"] and args[2:] == [os.environ["REPROOS_INCUS_NETWORK"]]:
     raise SystemExit(1 if phase == "import" else 0)
-if args[:2] == ["network", "get"]:
+if args == ["network", "get", os.environ["REPROOS_INCUS_NETWORK"], "user.reproos.project"]:
+    if phase != "unowned":
+        print(project)
+    raise SystemExit(0)
+if args == ["network", "get", os.environ["REPROOS_INCUS_NETWORK"], "ipv4.address"]:
     print("10.231.44.1/24")
     raise SystemExit(0)
 if args[:3] == ["--project", project, "image"] and args[3] == "list":
@@ -51,7 +59,15 @@ raise SystemExit(0)
 """
 
 
-def run_helper(command: str, phase: str, temp: Path) -> list[str]:
+def run_helper(
+    command: str,
+    phase: str,
+    temp: Path,
+    *,
+    project: str = "test-project",
+    network: str = "test-network",
+    check: bool = True,
+) -> tuple[list[str], subprocess.CompletedProcess[str]]:
     log = temp / f"{phase}.log"
     image = temp / "reproos-incus.tar.xz"
     manifest = temp / "incus-baseline.manifest"
@@ -74,20 +90,26 @@ def run_helper(command: str, phase: str, temp: Path) -> list[str]:
             "REPROOS_INCUS_ALIAS": "test-image",
             "REPROOS_INCUS_IMAGE": str(image),
             "REPROOS_INCUS_INSTANCE": "test-instance",
-            "REPROOS_INCUS_NETWORK": "test-network",
-            "REPROOS_INCUS_PROJECT": "test-project",
+            "REPROOS_INCUS_NETWORK": network,
+            "REPROOS_INCUS_PROJECT": project,
             "VMH_INCUS_CMD": str(fake_incus),
             "VM_HARNESS_BIN": str(fake_vmh),
         }
     )
-    subprocess.run(["bash", str(HELPER), command], env=env, check=True)
-    return log.read_text(encoding="utf-8").splitlines()
+    completed = subprocess.run(
+        ["bash", str(HELPER), command],
+        env=env,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+    return log.read_text(encoding="utf-8").splitlines(), completed
 
 
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="reproos-incus-helper-") as raw_temp:
         temp = Path(raw_temp)
-        imported = run_helper("import", "import", temp)
+        imported, _ = run_helper("import", "import", temp)
         assert any(
             line.startswith(
                 "network create test-network --type=bridge "
@@ -97,14 +119,20 @@ def main() -> None:
         assert "-c features.networks=false" in next(
             line for line in imported if line.startswith("project create ")
         )
+        assert "-c user.reproos.managed=true" in next(
+            line for line in imported if line.startswith("project create ")
+        )
         assert any(
             "profile set default environment.REPROOS_INCUS_IPV4=10.231.44.2/24 "
             "environment.REPROOS_INCUS_GATEWAY=10.231.44.1" in line
             for line in imported
         ), imported
+        assert any(
+            "user.reproos.project=test-project" in line for line in imported
+        ), imported
         assert any("network=test-network name=eth0" in line for line in imported), imported
 
-        destroyed = run_helper("destroy", "destroy", temp)
+        destroyed, _ = run_helper("destroy", "destroy", temp)
         expected = {
             "--project test-project profile device remove default eth0",
             "network delete test-network",
@@ -113,6 +141,22 @@ def main() -> None:
         }
         assert expected.issubset(set(destroyed)), destroyed
         assert all("--force" not in line for line in destroyed), destroyed
+
+        _, default_project = run_helper(
+            "destroy", "destroy", temp, project="default", check=False
+        )
+        assert default_project.returncode == 2
+        assert "refusing to manage the default Incus project" in default_project.stderr
+
+        _, default_network = run_helper(
+            "destroy", "destroy", temp, network="incusbr0", check=False
+        )
+        assert default_network.returncode == 2
+        assert "refusing to manage reserved Incus bridge" in default_network.stderr
+
+        _, unowned = run_helper("destroy", "unowned", temp, check=False)
+        assert unowned.returncode == 2
+        assert "refusing to modify unowned Incus project" in unowned.stderr
 
     print("ReproOS Incus helper setup and cleanup: PASS")
 

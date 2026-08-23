@@ -55,12 +55,12 @@ for package in bash:/usr/bin/bash busybox:/usr/bin/busybox openssh:/usr/sbin/ssh
   set -- $(/usr/bin/busybox sha256sum "$path")
   printf 'package.%s.sha256=%s\n' "$name" "$1"
 done
-if systemctl is-enabled --quiet sshd.service; then
+if test -L /etc/systemd/system/multi-user.target.wants/sshd.service; then
   printf 'service.sshd.enabled=yes\n'
 else
   printf 'service.sshd.enabled=no\n'
 fi
-if systemctl is-active --quiet sshd.service; then
+if test -n "$(/usr/bin/busybox pidof sshd)"; then
   printf 'service.sshd.active=yes\n'
 else
   printf 'service.sshd.active=no\n'

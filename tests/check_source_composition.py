@@ -564,6 +564,8 @@ def main() -> None:
             "openssh:/usr/sbin/sshd",
             "package.%s.sha256",
             "service.sshd.enabled",
+            "multi-user.target.wants/sshd.service",
+            "busybox pidof sshd",
             "network.default-route",
             "application.ssh-response",
             "REPROOS_INCUS_HEALTH:PASS",

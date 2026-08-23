@@ -43,7 +43,7 @@ cleanup() {
   REPROOS_INCUS_INSTANCE="$instance" \
   REPROOS_INCUS_NETWORK="$network" \
   VM_HARNESS_BIN="$vm_harness" \
-    "$tool" destroy >/dev/null 2>&1 || true
+    bash "$tool" destroy >/dev/null 2>&1 || true
   incus_global list --project default --format csv -c n | sort >"$output/default-instances.after"
   incus_global image list --project default --format csv -c f | sort >"$output/default-images.after"
   cmp "$output/default-instances.before" "$output/default-instances.after"
@@ -60,7 +60,7 @@ REPROOS_INCUS_PROJECT="$project" \
 REPROOS_INCUS_INSTANCE="$instance" \
 REPROOS_INCUS_NETWORK="$network" \
 VM_HARNESS_BIN="$vm_harness" \
-  "$tool" launch
+  bash "$tool" launch
 
 deadline=$((SECONDS + 120))
 until incus_test exec "$instance" -- test -s /run/reproos/healthy >/dev/null 2>&1; do

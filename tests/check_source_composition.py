@@ -22,6 +22,7 @@ NORMALIZE_RUNTIME_SCRIPT = (
 CONTRIBUTOR_GUIDE = ROOT / "AGENTS.md"
 README = ROOT / "README.md"
 INSTALLED_SSH_TEST = ROOT / "tests/test-installed-ssh.sh"
+INCUS_LIFECYCLE_TEST = ROOT / "tests/test-incus-lifecycle.sh"
 
 
 def source(path: Path) -> str:
@@ -354,6 +355,11 @@ def main() -> None:
             "--ssh-forward-port auto",
         ],
         "installed SSH graphical boot contract",
+    )
+    require_contains(
+        INCUS_LIFECYCLE_TEST,
+        ['bash "$tool" launch', 'bash "$tool" destroy'],
+        "portable Incus helper invocation",
     )
 
     require_contains(

@@ -190,6 +190,16 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3"])
     discard target("test-incus-projection", testIncusProjection)
 
+    let testIncusHelper = shell(
+      command = "python3 tests/test_reproos_incus_helper.py",
+      actionId = "reproos.test-incus-helper",
+      extraInputs = @[
+        "tests/test_reproos_incus_helper.py",
+        "tools/reproos-incus.sh",
+      ],
+      cacheable = false).withToolIdentities(["python3", "bash"])
+    discard target("test-incus-helper", testIncusHelper)
+
     let importIncus = shell(
       command = "bash tools/reproos-incus.sh import",
       actionId = "reproos.incus-import",
@@ -390,6 +400,7 @@ package reproosWorkflows:
       testInstallerArtifacts,
       testCacheBackfill,
       testIncusProjection,
+      testIncusHelper,
       testIsoReproducibility,
       testIso,
       testImageHealth,
@@ -400,6 +411,7 @@ package reproosWorkflows:
 
     discard collect("incus-acceptance", actions = @[
       testIncusProjection,
+      testIncusHelper,
       testIncusReproducibility,
       testIncusLifecycle,
     ])

@@ -39,7 +39,7 @@ setup_project() {
     incus_project profile device add default root disk path=/ pool=default
   fi
   if ! incus_project network show "$network" >/dev/null 2>&1; then
-    incus_project network create "$network" \
+    incus_project network create "$network" --type=bridge \
       ipv4.address=auto ipv4.nat=true ipv6.address=none
   fi
   if ! incus_project profile device show default | grep -q '^eth0:'; then
@@ -84,7 +84,18 @@ destroy() {
         "$vm_harness" ephemeral-destroy --backend incus \
           --baseline "$instance" --base-image "$alias"
     fi
-    incus_global project delete "$project" --force
+    if incus_project profile device show default 2>/dev/null | grep -q '^eth0:'; then
+      incus_project profile device remove default eth0
+    fi
+    if incus_project network show "$network" >/dev/null 2>&1; then
+      incus_project network delete "$network"
+    fi
+    local fingerprint
+    fingerprint="$(incus_project image list "$alias" --format csv -c f | head -n1)"
+    if [[ -n "$fingerprint" ]]; then
+      incus_project image delete "$fingerprint"
+    fi
+    incus_global project delete "$project"
   fi
   echo "destroyed Incus project $project"
 }

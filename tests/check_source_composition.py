@@ -288,6 +288,7 @@ def main() -> None:
                 "test-installer-artifacts",
                 "test-cache-backfill",
                 "test-incus-projection",
+                "test-incus-helper",
                 "test-incus-lifecycle",
                 "test-incus-reproducibility",
                 "test-iso",
@@ -331,6 +332,7 @@ def main() -> None:
             "tests/test-installer-artifacts.sh",
             "tests/test_cache_reproos_packages.py",
             "tests/test_incus_projection.py",
+            "tests/test_reproos_incus_helper.py",
             "tests/test-incus-lifecycle.sh",
             "tests/test-incus-image-reproducibility.sh",
             "tools/reproos-incus.sh",
@@ -457,6 +459,11 @@ def main() -> None:
             "projection-report.json",
         ],
         "deterministic Incus image driver",
+    )
+    require_contains(
+        ROOT / "tools/reproos-incus.sh",
+        ["--type=bridge", 'incus_global project delete "$project"'],
+        "isolated Incus bridge and non-interactive cleanup",
     )
     require_contains(
         ROOT / "recipes/reproos-container/scripts/project-incus-config.py",

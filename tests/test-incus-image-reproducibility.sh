@@ -17,12 +17,51 @@ for pass in first second; do
 done
 cmp "$work/first/reproos-incus.tar.xz" "$work/second/reproos-incus.tar.xz"
 cmp "$work/first/incus-baseline.manifest" "$work/second/incus-baseline.manifest"
-xz -dc "$work/first/reproos-incus.tar.xz" | tar -tf - >"$work/contents"
-grep -Fx metadata.yaml "$work/contents" >/dev/null
-grep -Fx rootfs/usr/sbin/init "$work/contents" >/dev/null
-grep -Fx rootfs/etc/repro/realization.json "$work/contents" >/dev/null
-if grep -Eq '^rootfs/(boot/|usr/lib/modules/)' "$work/contents"; then
-  echo "machine-only boot artifacts remain in the Incus image" >&2
-  exit 1
-fi
+python3 - "$work/first/reproos-incus.tar.xz" <<'PY'
+import posixpath
+import re
+import sys
+import tarfile
+
+
+archive = sys.argv[1]
+with tarfile.open(archive, mode="r:xz") as bundle:
+    members = {member.name: member for member in bundle.getmembers()}
+
+
+def require_member(name):
+    member = members.get(name)
+    if member is None:
+        raise SystemExit(f"Incus image member missing: {name}")
+    return member
+
+
+require_member("metadata.yaml")
+require_member("rootfs/usr/sbin/init")
+
+etc_repro = require_member("rootfs/etc/repro")
+if not etc_repro.issym() or etc_repro.linkname != "/var/lib/reproos/current-generation":
+    raise SystemExit("/etc/repro does not select the active configuration generation")
+
+current = require_member("rootfs/var/lib/reproos/current-generation")
+if not current.issym() or not re.fullmatch(r"generations/[0-9a-f]{64}", current.linkname):
+    raise SystemExit("current-generation does not select a content-addressed generation")
+
+generation_root = posixpath.normpath(
+    posixpath.join("rootfs/var/lib/reproos", current.linkname)
+)
+for artifact in (
+    "auto-config.toml",
+    "generation",
+    "hardware.nim",
+    "home.nim",
+    "realization.json",
+    "system.nim",
+):
+    require_member(posixpath.join(generation_root, artifact))
+
+machine_only_prefixes = ("rootfs/boot/", "rootfs/usr/lib/modules/")
+if any(name.startswith(machine_only_prefixes) for name in members):
+    raise SystemExit("machine-only boot artifacts remain in the Incus image")
+PY
 echo "ReproOS Incus image reproducibility: PASS"

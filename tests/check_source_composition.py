@@ -618,7 +618,12 @@ def main() -> None:
     )
     require_contains(
         ROOT / "tests/test-incus-image-reproducibility.sh",
-        ['bash "$builder"'],
+        [
+            'bash "$builder"',
+            'etc_repro.linkname != "/var/lib/reproos/current-generation"',
+            'r"generations/[0-9a-f]{64}"',
+            '"realization.json"',
+        ],
         "portable Incus reproducibility builder invocation",
     )
     require_contains(

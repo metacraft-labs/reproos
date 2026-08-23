@@ -179,11 +179,12 @@ def main() -> None:
             pulled = run_tool(*pull_args, env=env)
             result = json.loads(pulled.stdout)
             assert result["generation"] == GENERATION_A
-            assert result["alias"] == f"reproos-incus-{GENERATION_A}"
+            assert result["alias"] == GENERATION_A
+            assert len(result["alias"]) <= 64
             logged = fake_log.read_text(encoding="utf-8")
             assert logged.startswith("--project remote-test image import ")
             assert logged.rstrip().endswith(
-                f"--alias reproos-incus-{GENERATION_A}"
+                f"--alias {GENERATION_A}"
             )
 
             protected = [

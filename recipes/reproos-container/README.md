@@ -75,7 +75,8 @@ rejected. `index.json` identifies the current generation and retains every
 previous generation by its full SHA-256.
 
 On another Incus host, trust the public key and import either the signed current
-generation or an exact generation:
+generation or an exact generation. The immutable image alias is the complete
+64-character generation digest, which fits Incus's alias length limit:
 
 ```console
 repro run incus-pull -- \

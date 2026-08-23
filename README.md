@@ -158,8 +158,9 @@ from immutable `/var/lib/reproos/generations` entries with the
 `reproos-generation` switch and rollback command. See
 `recipes/reproos-container/README.md` for overrides and acceptance details.
 
-`incus-publish` writes an authenticated static catalog whose image paths and
-aliases include the complete configuration generation. It signs canonical JSON
+`incus-publish` writes an authenticated static catalog whose image paths include
+the complete configuration generation and whose immutable alias is that
+64-character digest. It signs canonical JSON
 with an OpenSSH Ed25519 key and refuses to replace an existing generation with
 different bytes. `incus-pull` verifies the signed index and generation manifest,
 then verifies the archive size, SHA-256, and embedded generation before invoking

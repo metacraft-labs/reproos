@@ -215,7 +215,9 @@ def parse_canonical_document(payload: bytes, schema: str, key_id: str) -> dict:
 def publication_document(
     generation: str, image_sha256: str, image_bytes: int, key_id: str
 ) -> dict:
-    alias = f"reproos-incus-{generation}"
+    # Incus aliases are limited to 64 characters. The complete generation
+    # digest is both collision-resistant and exactly within that limit.
+    alias = generation
     image_path = f"generations/{generation}/reproos-incus.tar.xz"
     return {
         "alias": alias,
@@ -248,7 +250,7 @@ def validate_publication(value: dict, expected_generation: str, key_id: str) -> 
     if generation != expected_generation:
         raise PublicationError("publication generation does not match its index entry")
     validate_signer(value.get("signer"), key_id)
-    if value.get("alias") != f"reproos-incus-{generation}":
+    if value.get("alias") != generation:
         raise PublicationError("publication alias is not generation-addressed")
     if value.get("architecture") != "x86_64":
         raise PublicationError("unsupported Incus image architecture")
@@ -404,7 +406,7 @@ def publish(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
-                "alias": f"reproos-incus-{generation}",
+                    "alias": generation,
                 "destination": str(destination),
                 "generation": generation,
             },
@@ -454,7 +456,7 @@ def validate_index(value: dict, key_id: str) -> None:
         if generation in seen:
             raise PublicationError("publication index repeats a generation")
         seen.add(generation)
-        if entry.get("alias") != f"reproos-incus-{generation}":
+        if entry.get("alias") != generation:
             raise PublicationError("publication index alias is not generation-addressed")
         manifest = entry.get("manifest")
         if not isinstance(manifest, dict) or set(manifest) != {"path", "sha256"}:

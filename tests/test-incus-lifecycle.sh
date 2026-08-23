@@ -27,6 +27,7 @@ fi
 mkdir -p "$output"
 incus_global list --project default --format csv -c n | sort >"$output/default-instances.before"
 incus_global image list --project default --format csv -c f | sort >"$output/default-images.before"
+incus_global network list --project default --format csv -c n | sort >"$output/default-networks.before"
 
 capture_evidence() {
   incus_test config show "$instance" --expanded >"$output/config.yaml" 2>&1 || true
@@ -46,8 +47,10 @@ cleanup() {
     bash "$tool" destroy >/dev/null 2>&1 || true
   incus_global list --project default --format csv -c n | sort >"$output/default-instances.after"
   incus_global image list --project default --format csv -c f | sort >"$output/default-images.after"
+  incus_global network list --project default --format csv -c n | sort >"$output/default-networks.after"
   cmp "$output/default-instances.before" "$output/default-instances.after"
   cmp "$output/default-images.before" "$output/default-images.after"
+  cmp "$output/default-networks.before" "$output/default-networks.after"
   if incus_global project show "$project" >/dev/null 2>&1; then
     echo "isolated Incus project survived cleanup: $project" >&2
     status=1

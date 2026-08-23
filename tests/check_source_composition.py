@@ -464,6 +464,9 @@ def main() -> None:
         ROOT / "tools/reproos-incus.sh",
         [
             "--type=bridge",
+            "features.networks=false",
+            "nictype=bridged",
+            'incus_global network delete "$network"',
             "Linux maximum of 15 characters",
             'incus_global project delete "$project"',
         ],
@@ -471,8 +474,12 @@ def main() -> None:
     )
     require_contains(
         INCUS_LIFECYCLE_TEST,
-        ['network="ro-${tag:0:12}"'],
-        "bounded Incus test bridge name",
+        [
+            'network="ro-${tag:0:12}"',
+            "default-networks.before",
+            "default-networks.after",
+        ],
+        "bounded and cleanup-verified Incus test bridge",
     )
     require_contains(
         ROOT / "recipes/reproos-container/scripts/project-incus-config.py",

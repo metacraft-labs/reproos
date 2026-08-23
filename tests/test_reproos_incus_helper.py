@@ -33,7 +33,7 @@ if args[:3] == ["--project", project, "profile"] and args[3:] == ["device", "sho
     if phase == "destroy":
         print("eth0:")
     raise SystemExit(0)
-if args[:3] == ["--project", project, "network"] and args[3:5] == ["show", os.environ["REPROOS_INCUS_NETWORK"]]:
+if args[:2] == ["network", "show"] and args[2:] == [os.environ["REPROOS_INCUS_NETWORK"]]:
     raise SystemExit(1 if phase == "import" else 0)
 if args[:3] == ["--project", project, "image"] and args[3] == "list":
     if phase == "destroy":
@@ -87,15 +87,22 @@ def main() -> None:
         imported = run_helper("import", "import", temp)
         assert any(
             line.startswith(
-                "--project test-project network create test-network --type=bridge "
+                "network create test-network --type=bridge "
             )
+            for line in imported
+        ), imported
+        assert "-c features.networks=false" in next(
+            line for line in imported if line.startswith("project create ")
+        )
+        assert any(
+            "nictype=bridged parent=test-network name=eth0" in line
             for line in imported
         ), imported
 
         destroyed = run_helper("destroy", "destroy", temp)
         expected = {
             "--project test-project profile device remove default eth0",
-            "--project test-project network delete test-network",
+            "network delete test-network",
             "--project test-project image delete fake-fingerprint",
             "project delete test-project",
         }

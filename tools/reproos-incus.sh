@@ -34,7 +34,7 @@ setup_project() {
   if ! incus_global project show "$project" >/dev/null 2>&1; then
     incus_global project create "$project" \
       -c features.images=true \
-      -c features.networks=true \
+      -c features.networks=false \
       -c features.profiles=true
   fi
   incus_project profile show default >/dev/null 2>&1 || \
@@ -42,13 +42,13 @@ setup_project() {
   if ! incus_project profile device show default | grep -q '^root:'; then
     incus_project profile device add default root disk path=/ pool=default
   fi
-  if ! incus_project network show "$network" >/dev/null 2>&1; then
-    incus_project network create "$network" --type=bridge \
+  if ! incus_global network show "$network" >/dev/null 2>&1; then
+    incus_global network create "$network" --type=bridge \
       ipv4.address=auto ipv4.nat=true ipv6.address=none
   fi
   if ! incus_project profile device show default | grep -q '^eth0:'; then
     incus_project profile device add default eth0 nic \
-      network="$network" name=eth0
+      nictype=bridged parent="$network" name=eth0
   fi
 }
 
@@ -91,8 +91,8 @@ destroy() {
     if incus_project profile device show default 2>/dev/null | grep -q '^eth0:'; then
       incus_project profile device remove default eth0
     fi
-    if incus_project network show "$network" >/dev/null 2>&1; then
-      incus_project network delete "$network"
+    if incus_global network show "$network" >/dev/null 2>&1; then
+      incus_global network delete "$network"
     fi
     local fingerprint
     fingerprint="$(incus_project image list "$alias" --format csv -c f | head -n1)"

@@ -354,7 +354,10 @@ def main() -> None:
 
     require_contains(
         ROOT / "tests/test-vm-incus-parity.sh",
-        ["test -s /run/reproos/healthy"],
+        [
+            "/var/lib/reproos/health-status",
+            "test -s /run/reproos/healthy",
+        ],
         "VM and Incus parity health contract",
     )
 

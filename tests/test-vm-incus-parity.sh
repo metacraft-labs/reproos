@@ -44,7 +44,7 @@ for artifact in auto-config.toml home.nim system.nim; do
   set -- $(/usr/bin/busybox sha256sum "/etc/repro/$artifact")
   printf '%s=%s\n' "$artifact" "$1"
 done
-test -s /run/reproos/healthy
+/usr/bin/busybox grep -Fx REPROOS_HEALTH:PASS /var/lib/reproos/health-status >/dev/null
 EOF
 
 if ! "$vm_harness" probe | python3 -c '

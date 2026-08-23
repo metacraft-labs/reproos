@@ -271,6 +271,7 @@ def main() -> None:
         WORKFLOW_RECIPE,
         [
             'export LIBVIRT_DEFAULT_URI=qemu:///session',
+            'unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH',
             '"boot-iso"',
             '"test-iso"',
             '"boot-image"',

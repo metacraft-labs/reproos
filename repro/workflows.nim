@@ -18,11 +18,14 @@ proc withHostVmRuntime(command: string): string =
   ## Prefer an available unprivileged libvirt session when no system daemon is
   ## running. This keeps local VM workflows usable on NixOS and WSL hosts while
   ## preserving explicit operator configuration and system-libvirt defaults.
+  ## Host VM tools must resolve libraries from the host ABI, not the source
+  ## package closure used by ReproOS build actions.
   "if [ -z \"${LIBVIRT_DEFAULT_URI:-}\" ] && " &
     "[ -S \"/run/user/$UID/libvirt/libvirt-sock\" ] && " &
     "[ ! -S /run/libvirt/libvirt-sock ] && " &
     "[ ! -S /run/libvirt/virtqemud-sock ]; then " &
-    "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " & command
+    "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " &
+    "unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH; " & command
 
 package reproosWorkflows:
   defaultToolProvisioning "from-source"

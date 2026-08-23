@@ -617,6 +617,16 @@ def main() -> None:
         "Incus resource refusal regressions",
     )
     require_contains(
+        ROOT / "tests/test-incus-lifecycle.sh",
+        [
+            "snapshot_unmanaged_resources",
+            'resource.get("config", {}).get("user.reproos.project")',
+            "assert_baseline_preserved network",
+            "assert_baseline_preserved storage",
+        ],
+        "concurrent Incus baseline preservation",
+    )
+    require_contains(
         ROOT / "tests/test-incus-image-reproducibility.sh",
         [
             'bash "$builder"',

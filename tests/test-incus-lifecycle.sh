@@ -24,6 +24,33 @@ vmh_instance() {
 vmh_exec() {
   vmh_instance exec "$instance" -- "$@"
 }
+snapshot_unmanaged_resources() {
+  local kind=$1
+  local destination=$2
+  incus_global "$kind" list --format json | python3 -c '
+import json
+import sys
+
+for resource in json.load(sys.stdin):
+    if not resource.get("config", {}).get("user.reproos.project"):
+        print(resource["name"])
+' | sort >"$destination"
+}
+assert_baseline_preserved() {
+  local label=$1
+  local before=$2
+  local after=$3
+  local resource
+  local failed=0
+  while IFS= read -r resource; do
+    [[ -n "$resource" ]] || continue
+    if ! grep -Fxq "$resource" "$after"; then
+      echo "pre-existing $label resource disappeared: $resource" >&2
+      failed=1
+    fi
+  done <"$before"
+  return "$failed"
+}
 wait_for_reboot() {
   local previous_boot_id=$1
   local deadline=$((SECONDS + 120))
@@ -55,8 +82,8 @@ mkdir -p "$output"
 events_pid=$!
 incus_global list --project default --format csv -c n | sort >"$output/default-instances.before"
 incus_global image list --project default --format csv -c f | sort >"$output/default-images.before"
-incus_global network list --project default --format csv -c n | sort >"$output/default-networks.before"
-incus_global storage list --format csv -c n | sort >"$output/storage-pools.before"
+snapshot_unmanaged_resources network "$output/default-networks.before"
+snapshot_unmanaged_resources storage "$output/storage-pools.before"
 
 capture_evidence() {
   incus_test config show "$instance" --expanded >"$output/config.yaml" 2>&1 || true
@@ -85,12 +112,20 @@ cleanup() {
     bash "$tool" destroy >/dev/null 2>&1 || true
   incus_global list --project default --format csv -c n | sort >"$output/default-instances.after"
   incus_global image list --project default --format csv -c f | sort >"$output/default-images.after"
-  incus_global network list --project default --format csv -c n | sort >"$output/default-networks.after"
-  incus_global storage list --format csv -c n | sort >"$output/storage-pools.after"
-  cmp "$output/default-instances.before" "$output/default-instances.after"
-  cmp "$output/default-images.before" "$output/default-images.after"
-  cmp "$output/default-networks.before" "$output/default-networks.after"
-  cmp "$output/storage-pools.before" "$output/storage-pools.after"
+  snapshot_unmanaged_resources network "$output/default-networks.after"
+  snapshot_unmanaged_resources storage "$output/storage-pools.after"
+  if ! cmp "$output/default-instances.before" "$output/default-instances.after"; then
+    echo "default Incus instance inventory changed" >&2
+    status=1
+  fi
+  if ! cmp "$output/default-images.before" "$output/default-images.after"; then
+    echo "default Incus image inventory changed" >&2
+    status=1
+  fi
+  assert_baseline_preserved network \
+    "$output/default-networks.before" "$output/default-networks.after" || status=1
+  assert_baseline_preserved storage \
+    "$output/storage-pools.before" "$output/storage-pools.after" || status=1
   if incus_global project show "$project" >/dev/null 2>&1; then
     echo "isolated Incus project survived cleanup: $project" >&2
     status=1

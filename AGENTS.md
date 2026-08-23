@@ -9,9 +9,9 @@ sources, boot assets, and product-specific tests.
 
 Use Reprobuild as the only contributor command surface:
 
-- `repro build installer`, `repro build rootfs`, `repro build iso`, and
-  `repro build image` produce
-  the named artifacts from source.
+- `repro build installer`, `repro build rootfs`, `repro build iso`,
+  `repro build image`, `repro build incus-projection`, and
+  `repro build incus-image` produce the named artifacts from source.
 - `repro build` produces the default artifact collection.
 - `repro test` runs the complete product test collection; focused tests are
   named `test-*` build targets. Use `repro build test-iso-reproducibility`
@@ -19,6 +19,9 @@ Use Reprobuild as the only contributor command surface:
   `repro build test-installed-desktop` after changing the graphical session.
   `repro build test-installed-ssh` boots the installed image and verifies an
   SSH command through a loopback-only forwarded port.
+- `repro build incus-acceptance` runs the projection, helper, reproducibility,
+  live lifecycle, and installed-VM/container parity gates. Use the focused
+  `test-incus-*` and `test-vm-incus-parity` targets while iterating.
 - `repro lint` enforces the project-graph structure and source-only package
   closure before review.
 - `repro run installer` opens the safe local installer preview.
@@ -33,6 +36,9 @@ Use Reprobuild as the only contributor command surface:
   acceptance.
 - `repro run image-ssh -- COMMAND...` boots a self-cleaning installed VM and
   runs a command over SSH; with no command it verifies the configured hostname.
+- `repro run incus-launch` imports and starts the source-built container in an
+  isolated Incus project. Use `incus-shell`, `incus-logs`, and `incus-destroy`
+  for inspection and cleanup; `incus-import` only refreshes the image.
 - `repro tasks` lists interactive workflows.
 
 Use the local installer run edge for routine design work. Reserve VM boots for

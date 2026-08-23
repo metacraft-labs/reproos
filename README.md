@@ -12,13 +12,19 @@ repro build installer
 repro build rootfs
 repro build iso
 repro build image
+repro build incus-projection
+repro build incus-image
 repro build
 ```
 
-`installer`, `rootfs`, `iso`, and `image` are named outputs. `rootfs` stages the
-source-built graphical filesystem as an independently cacheable directory; the
-`iso` output consumes it. The default target builds the installer, ISO, and
-image. The project defaults to `from-source` provisioning, so the explicit
+`installer`, `rootfs`, `iso`, `image`, `incus-projection`, and `incus-image` are
+named outputs. `rootfs` stages the source-built graphical filesystem as an
+independently cacheable directory; the ISO, installed image, and Incus image
+consume it. `incus-projection` translates the reviewed unattended configuration
+into a typed system-container profile. `incus-image` creates
+`recipes/reproos-container/build/reproos-incus.tar.xz` and its baseline manifest.
+The default target builds the installer, ISO, installed image, and Incus image.
+The project defaults to `from-source` provisioning, so the explicit
 `--tool-provisioning=from-source` flag is only needed when overriding another
 environment setting.
 
@@ -59,6 +65,12 @@ repro build test-image-health
 repro build test-installed-desktop
 repro build test-installed-ssh
 repro build test-unattended-install
+repro build test-incus-projection
+repro build test-incus-helper
+repro build test-incus-reproducibility
+repro build test-incus-lifecycle
+repro build test-vm-incus-parity
+repro build incus-acceptance
 ```
 
 The unattended test compares the wizard's generated configuration with the
@@ -66,6 +78,11 @@ reviewed fixture, applies it to the installed image build, waits for the boot
 health marker, and verifies the configured hostname over SSH. The
 installed-desktop gate captures the graphical session after that health marker
 and checks its readiness panel with GuiAssert.
+
+`incus-acceptance` runs the complete container gate: configuration projection,
+helper regressions, byte-reproducible image authoring, an isolated live Incus
+lifecycle, and the shared installed-VM/container contract. The live gates need
+a running Incus daemon and a libvirt-capable `vm-harness` host.
 
 ## Interactive Workflows
 
@@ -83,6 +100,11 @@ repro run cache-backfill -- --verify-only
 repro run cache-backfill -- --verify-only --resume --jobs 8
 repro run image-ssh
 repro run image-ssh -- uname -a
+repro run incus-import
+repro run incus-launch
+repro run incus-shell
+repro run incus-logs
+repro run incus-destroy
 ```
 
 Cache verification is sequential by default. Use `--jobs` for bounded parallel
@@ -122,6 +144,14 @@ build output is never modified.
 forwards a loopback-only host port to the guest, and runs the requested command
 through OpenSSH. Its default command verifies the smoke image hostname.
 
+The Incus workflows use an isolated `reproos-dev` project and a dedicated host
+bridge. The generated profile gives the container a deterministic address with
+DHCP fallback, while leaving the host's default project and networks untouched.
+`incus-launch` imports the source-built image and keeps the container running;
+use `incus-shell` or `incus-logs` to inspect it and `incus-destroy` to remove the
+instance, image, bridge, and project. See
+`recipes/reproos-container/README.md` for overrides and acceptance details.
+
 `repro tasks` lists every interactive workflow. See
 `tools/visual-review-brief.md` for the screenshot review process.
 
@@ -132,6 +162,8 @@ The root `repro.nim` composes focused package modules:
 - `apps/reproos-installer/package.nim` builds the Qt/QML installer.
 - `recipes/reproos-iso/package.nim` builds the live bootable ISO.
 - `recipes/reproos-image/package.nim` builds the installed QCOW2 image.
+- `recipes/reproos-container/package.nim` builds the native Incus image and
+  configuration projection.
 - `repro/workflows.nim` defines tests and interactive run edges.
 
 Reusable package interfaces and source recipes live in the sibling

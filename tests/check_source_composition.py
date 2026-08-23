@@ -21,6 +21,7 @@ NORMALIZE_RUNTIME_SCRIPT = (
 )
 CONTRIBUTOR_GUIDE = ROOT / "AGENTS.md"
 README = ROOT / "README.md"
+CONTAINER_GUIDE = ROOT / "recipes/reproos-container/README.md"
 INSTALLED_SSH_TEST = ROOT / "tests/test-installed-ssh.sh"
 INCUS_LIFECYCLE_TEST = ROOT / "tests/test-incus-lifecycle.sh"
 
@@ -379,6 +380,38 @@ def main() -> None:
         CONTRIBUTOR_GUIDE,
         ["repro lint", "stable action IDs", "executable identities"],
         "contributor graph-quality policy",
+    )
+    require_contains(
+        CONTRIBUTOR_GUIDE,
+        [
+            "repro build incus-image",
+            "repro build incus-acceptance",
+            "repro run incus-launch",
+            "incus-destroy",
+        ],
+        "contributor Incus workflow",
+    )
+    require_contains(
+        README,
+        [
+            "repro build incus-projection",
+            "repro build incus-image",
+            "repro build incus-acceptance",
+            "repro run incus-launch",
+            "repro run incus-destroy",
+        ],
+        "documented Incus command surface",
+    )
+    require_contains(
+        CONTAINER_GUIDE,
+        [
+            "REPRO_AUTO_CONFIG",
+            "REPROOS_INCUS_PROJECT",
+            "VMH_INCUS_CMD",
+            "test-incus-reproducibility",
+            "test-vm-incus-parity",
+        ],
+        "Incus operator guide",
     )
     require_contains(README, ["repro lint"], "README quality command")
     require_contains(

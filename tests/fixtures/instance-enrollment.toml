@@ -1,0 +1,5 @@
+schema_version = 1
+machine_id = "83fddb41-b072-45e1-8e44-7ef56f4463a7"
+
+[ssh]
+authorized_keys = ["ssh-ed25519 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE= reproos-test"]

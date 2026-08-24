@@ -211,6 +211,10 @@ private:
     QString m_password;
     QString m_passwordHash;
     QString m_userShell = "/bin/bash";
+    int m_schemaVersion = 1;
+    bool m_userLocked = false;
+    QString m_sudoPolicy;
+    QStringList m_sudoUsers;
     bool m_isAdmin = true;
     QString m_desktopKind = "sway";
     // Activity modules stay absent until their source package closures
@@ -229,6 +233,15 @@ private:
     int m_diskSizeGb = 8;
     int m_espSizeMib = 512;
     QString m_networkIpv4 = "dhcp";
+    bool m_sshEnabled = false;
+    bool m_sshPermitRootLogin = false;
+    bool m_sshPasswordAuthentication = false;
+    QString m_sshAuthorizedKeysSource;
+    QString m_firewallDefaultPolicy;
+    QStringList m_firewallAllowedTcpPorts;
+    QStringList m_firewallSshSourceCidrs;
+    QString m_firstBootEnrollment;
+    QString m_firstBootEnrollmentLabel;
 
     // M9.R.23 install runtime.
     QString m_installLog;

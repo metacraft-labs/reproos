@@ -31,6 +31,37 @@ for artifact in auto-config.toml system.nim hardware.nim disko.json home.nim; do
   fi
 done
 
+if [[ -s /etc/machine-id ]]; then
+  pass "machine-id:$(cat /etc/machine-id)"
+else
+  fail "machine-id"
+fi
+
+if [[ -s /etc/repro/generation ]]; then
+  pass "generation:$(cat /etc/repro/generation)"
+else
+  fail "generation"
+fi
+
+if [[ -s /var/lib/reproos/ssh-host-key-fingerprint ]]; then
+  pass "ssh-host-key:$(cat /var/lib/reproos/ssh-host-key-fingerprint)"
+else
+  fail "ssh-host-key"
+fi
+
+if [[ -s /var/lib/reproos/install-source ]]; then
+  pass "install-source:$(cat /var/lib/reproos/install-source)"
+else
+  fail "install-source"
+fi
+
+if [[ -s /var/lib/reproos/identity.json &&
+      -e /var/lib/reproos/enrollment.complete ]]; then
+  pass "instance-identity"
+else
+  fail "instance-identity"
+fi
+
 toml_string() {
   local wanted_section="$1"
   local wanted_key="$2"

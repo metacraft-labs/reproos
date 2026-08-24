@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Focused regressions for reusable machine profiles and enrollment."""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TOOL = ROOT / "tools/reproos-machine-config.py"
+SPEC = importlib.util.spec_from_file_location("reproos_machine_config", TOOL)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
+SPEC.loader.exec_module(MODULE)
+
+
+def valid_public() -> dict:
+    return MODULE.load_toml(ROOT / "tests/fixtures/auto-config-minimal.toml")
+
+
+def valid_enrollment(key_blob: str) -> dict:
+    return {
+        "schema_version": 1,
+        "machine_id": "83fddb41-b072-45e1-8e44-7ef56f4463a7",
+        "ssh": {
+            "authorized_keys": [f"ssh-ed25519 {key_blob} reproos-test"],
+        },
+    }
+
+
+def bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    result = subprocess.run(
+        ["bash", "-lc", 'cygpath -u "$1"', "bash", str(path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
+
+
+class MachineConfigurationTests(unittest.TestCase):
+    def test_remote_access_configuration_validation(self) -> None:
+        config = valid_public()
+        manifest = MODULE.validate_public(config)
+        self.assertEqual(manifest["remote_access"]["authentication"], "public-key")
+        self.assertEqual(manifest["identity_evidence"]["machine_id"], "/etc/machine-id")
+
+        mutations = []
+        for path, value in (
+            (("user", "locked"), False),
+            (("ssh", "permit_root_login"), True),
+            (("ssh", "password_authentication"), True),
+            (("ssh", "authorized_keys_source"), "embedded"),
+            (("firewall", "default_policy"), "allow"),
+            (("firewall", "ssh_source_cidrs"), ["0.0.0.0/0"]),
+        ):
+            mutated = copy.deepcopy(config)
+            mutated[path[0]][path[1]] = value
+            mutations.append(mutated)
+        for mutated in mutations:
+            with self.subTest(mutated=mutated):
+                with self.assertRaises(MODULE.ConfigError):
+                    MODULE.validate_public(mutated)
+
+        manifest_stub = {"public_image_cache_key": "a" * 64}
+        with self.assertRaises(MODULE.ConfigError):
+            MODULE.compile_enrollment(
+                manifest_stub,
+                {
+                    "schema_version": 1,
+                    "machine_id": "83fddb41-b072-45e1-8e44-7ef56f4463a7",
+                    "ssh": {"authorized_keys": ["-----BEGIN OPENSSH PRIVATE KEY-----"]},
+                },
+            )
+
+        with tempfile.TemporaryDirectory(prefix="reproos-enrollment-") as raw:
+            root = Path(raw) / "root"
+            enrollment = Path(raw) / "enrollment"
+            (root / "etc/repro").mkdir(parents=True)
+            (root / "var/lib/reproos").mkdir(parents=True)
+            enrollment.mkdir()
+            (root / "etc/repro/auto-config.toml").write_bytes(
+                (ROOT / "tests/fixtures/auto-config-minimal.toml").read_bytes()
+            )
+            (root / "etc/repro/generation").write_text("generation-test\n")
+            (root / "var/lib/reproos/install-source").write_text(
+                "unattended-installer\n"
+            )
+            (root / "etc/passwd").write_text(
+                "root:x:0:0:root:/root:/bin/sh\n"
+                "live:x:1000:1000:Live User:/home/live:/bin/bash\n"
+            )
+            (root / "etc/shadow").write_text("root:!:::::::\nlive:!:::::::\n")
+            (root / "etc/group").write_text(
+                "root:x:0:\nwheel:x:10:live\naudio:x:29:live\n"
+                "video:x:44:live\nnetworkmanager:x:102:live\nlive:x:1000:\n"
+            )
+            (enrollment / "machine-id").write_text(
+                "83fddb41-b072-45e1-8e44-7ef56f4463a7\n"
+            )
+            (enrollment / "authorized_keys").write_text(
+                "ssh-ed25519 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE= test\n"
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "REPROOS_ROOT": bash_path(root),
+                    "REPROOS_ENROLLMENT_DIR": bash_path(enrollment),
+                    "REPROOS_SSH_HOST_KEY_FINGERPRINT": "SHA256:test-host-key",
+                    "REPROOS_TEST_MODE": "1",
+                    "MSYS2_ARG_CONV_EXCL": "*",
+                }
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    bash_path(
+                        ROOT
+                        / "recipes/reproos-image/scripts/reproos-first-boot-enroll"
+                    ),
+                ],
+                check=True,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            identity = json.loads(
+                (root / "var/lib/reproos/identity.json").read_text()
+            )
+            self.assertEqual(
+                identity["machine_id"], "83fddb41b07245e18e447ef56f4463a7"
+            )
+            self.assertEqual(identity["install_source"], "unattended-installer")
+            self.assertTrue((root / "var/lib/reproos/enrollment.complete").exists())
+            self.assertIn("repro:x:1000:1000:", (root / "etc/passwd").read_text())
+            self.assertNotIn("live:", (root / "etc/passwd").read_text())
+            self.assertEqual((root / "etc/machine-id").read_text().strip(), identity["machine_id"])
+
+    def test_instance_secrets_do_not_affect_public_image_cache_key(self) -> None:
+        public_manifest = MODULE.validate_public(valid_public())
+        first = MODULE.compile_enrollment(
+            public_manifest,
+            valid_enrollment("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE="),
+        )
+        second = MODULE.compile_enrollment(
+            public_manifest,
+            valid_enrollment("QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="),
+        )
+        self.assertEqual(
+            first["public_image_cache_key"], second["public_image_cache_key"]
+        )
+        self.assertNotEqual(first["instance_injection_key"], second["instance_injection_key"])
+        self.assertNotEqual(
+            first["ssh"]["authorized_key_fingerprints"],
+            second["ssh"]["authorized_key_fingerprints"],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

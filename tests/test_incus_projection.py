@@ -64,8 +64,7 @@ def main() -> int:
         assert fields["disk.layout.type"]["classification"] == "ignored-with-reason"
         assert not fields["disk.layout.type"]["projected"]
         report_text = (first / "projection-report.json").read_text()
-        password_hash = FIXTURE.read_text().split('password_hash = "', 1)[1].split('"', 1)[0]
-        assert password_hash not in report_text
+        assert "password_hash" not in report_text
         difference_paths = {entry["path"] for entry in report["differences"]}
         assert {"hardware.boot", "services.display-manager", "install.target_device"} <= difference_paths
 
@@ -78,6 +77,8 @@ def main() -> int:
         assert "sshd:x:74:74:" in (rootfs / "etc" / "passwd").read_text()
         sshd_config = (rootfs / "etc" / "ssh" / "sshd_config").read_text()
         assert "UsePAM" not in sshd_config
+        assert "PasswordAuthentication no" in sshd_config
+        assert "PermitRootLogin no" in sshd_config
         network = (rootfs / "usr" / "lib" / "reproos" / "incus-network").read_text()
         assert "REPROOS_INCUS_IPV4" in network
         assert "/proc/1/environ" in network

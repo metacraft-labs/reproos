@@ -1,0 +1,178 @@
+#!/usr/bin/busybox sh
+set -eu
+
+root=${REPROOS_ROOT:-}
+state="$root/var/lib/reproos"
+complete="$state/enrollment.complete"
+mountpoint="$root/run/reproos-enrollment"
+enrollment=${REPROOS_ENROLLMENT_DIR:-}
+mounted=0
+
+cleanup() {
+  if [ "$mounted" = 1 ]; then
+    umount "$mountpoint" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+[ -f "$complete" ] && exit 0
+mkdir -p "$state" "$mountpoint"
+
+if [ -z "$enrollment" ]; then
+  for device in /dev/disk/by-label/REPROOS_ENROLL /dev/sr1 /dev/sr0; do
+    [ -e "$device" ] || continue
+    if mount -o ro "$device" "$mountpoint" 2>/dev/null; then
+      enrollment=$mountpoint
+      mounted=1
+      break
+    fi
+  done
+fi
+
+if [ -z "$enrollment" ] || [ ! -f "$enrollment/machine-id" ] || \
+   [ ! -f "$enrollment/authorized_keys" ]; then
+  echo "REPROOS_ENROLLMENT:FAIL:media-not-found" >&2
+  exit 1
+fi
+
+machine_id=$(tr -d '\r\n-' < "$enrollment/machine-id")
+case "$machine_id" in
+  *[!0-9a-fA-F]*|'')
+    echo "REPROOS_ENROLLMENT:FAIL:invalid-machine-id" >&2
+    exit 1
+    ;;
+esac
+[ "${#machine_id}" = 32 ] || {
+  echo "REPROOS_ENROLLMENT:FAIL:invalid-machine-id" >&2
+  exit 1
+}
+
+if grep -q 'PRIVATE KEY' "$enrollment/authorized_keys" || \
+   ! awk '
+      NF == 0 { next }
+      $1 !~ /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)$/ { exit 1 }
+      NF < 2 { exit 1 }
+      { found=1 }
+      END { exit(found ? 0 : 1) }
+    ' "$enrollment/authorized_keys"; then
+  echo "REPROOS_ENROLLMENT:FAIL:invalid-authorized-keys" >&2
+  exit 1
+fi
+
+config="$root/etc/repro/auto-config.toml"
+user=$(awk '
+  BEGIN { section="" }
+  /^\[/ { section=$0; gsub(/^\[|\]$/, "", section); next }
+  section == "user" && /^[[:space:]]*name[[:space:]]*=/ {
+    value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); gsub(/^"|"$/, "", value)
+    print value; exit
+  }
+' "$config")
+case "$user" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "REPROOS_ENROLLMENT:FAIL:invalid-user" >&2
+    exit 1
+    ;;
+esac
+
+full_name=$(awk '
+  BEGIN { section="" }
+  /^\[/ { section=$0; gsub(/^\[|\]$/, "", section); next }
+  section == "user" && /^[[:space:]]*full_name[[:space:]]*=/ {
+    value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); gsub(/^"|"$/, "", value)
+    print value; exit
+  }
+' "$config")
+shell=$(awk '
+  BEGIN { section="" }
+  /^\[/ { section=$0; gsub(/^\[|\]$/, "", section); next }
+  section == "user" && /^[[:space:]]*shell[[:space:]]*=/ {
+    value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); gsub(/^"|"$/, "", value)
+    print value; exit
+  }
+' "$config")
+groups=$(awk '
+  BEGIN { section="" }
+  /^\[/ { section=$0; gsub(/^\[|\]$/, "", section); next }
+  section == "user" && /^[[:space:]]*groups[[:space:]]*=/ {
+    value=$0; sub(/^[^=]*=/, "", value); gsub(/[\[\]",]/, " ", value)
+    gsub(/[[:space:]]+/, " ", value); sub(/^ /, "", value); sub(/ $/, "", value)
+    print value; exit
+  }
+' "$config")
+[ -n "$full_name" ] || full_name=$user
+[ -n "$shell" ] || shell=/bin/bash
+
+if ! grep -q "^$user:" "$root/etc/passwd"; then
+  awk -F: -v user="$user" '$1 != user && $1 != "live"' \
+    "$root/etc/passwd" > "$state/passwd.new"
+  printf '%s:x:1000:1000:%s:/home/%s:%s\n' \
+    "$user" "$full_name" "$user" "$shell" >> "$state/passwd.new"
+  install -m 0644 "$state/passwd.new" "$root/etc/passwd"
+
+  awk -F: -v user="$user" '$1 != user && $1 != "live"' \
+    "$root/etc/shadow" > "$state/shadow.new"
+  printf '%s:!:20000:0:99999:7:::\n' "$user" >> "$state/shadow.new"
+  install -m 0600 "$state/shadow.new" "$root/etc/shadow"
+
+  awk -F: -v OFS=: -v user="$user" -v wanted="$groups" '
+    $1 == user || $1 == "live" { next }
+    {
+      members=""
+      count=split($4, old, ",")
+      for (i=1; i<=count; i++)
+        if (old[i] != "" && old[i] != "live" && old[i] != user)
+          members=members (members == "" ? "" : ",") old[i]
+      if (index(" " wanted " ", " " $1 " ") > 0)
+        members=members (members == "" ? "" : ",") user
+      $4=members
+      print
+    }
+    END { print user, "x", "1000", "" }
+  ' "$root/etc/group" > "$state/group.new"
+  install -m 0644 "$state/group.new" "$root/etc/group"
+fi
+
+home="$root/home/$user"
+ssh_dir="$home/.ssh"
+mkdir -p "$ssh_dir" "$root/etc/ssh"
+install -m 0600 "$enrollment/authorized_keys" "$ssh_dir/authorized_keys"
+printf '%s\n' "$machine_id" > "$root/etc/machine-id"
+chmod 0644 "$root/etc/machine-id"
+if [ "${REPROOS_TEST_MODE:-0}" != 1 ]; then
+  chown -R "$user:$user" "$ssh_dir"
+fi
+mkdir -p "$root/etc/sudoers.d"
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$user" > "$root/etc/sudoers.d/90-reproos-user"
+chmod 0440 "$root/etc/sudoers.d/90-reproos-user"
+
+fingerprint=${REPROOS_SSH_HOST_KEY_FINGERPRINT:-}
+if [ -z "$fingerprint" ]; then
+  /usr/bin/ssh-keygen -A
+  fingerprint=$(/usr/bin/ssh-keygen -lf \
+    "$root/etc/ssh/ssh_host_ed25519_key.pub" -E sha256 | awk '{print $2}')
+fi
+case "$fingerprint" in
+  SHA256:*) ;;
+  *)
+    echo "REPROOS_ENROLLMENT:FAIL:invalid-host-key-fingerprint" >&2
+    exit 1
+    ;;
+esac
+
+printf '%s\n' "$fingerprint" > "$state/ssh-host-key-fingerprint"
+chmod 0644 "$state/ssh-host-key-fingerprint"
+
+generation=$(cat "$root/etc/repro/generation")
+install_source=$(cat "$state/install-source")
+cat > "$state/identity.json" <<EOF
+{
+  "machine_id": "$machine_id",
+  "generation_id": "$generation",
+  "ssh_host_key_fingerprint": "$fingerprint",
+  "install_source": "$install_source"
+}
+EOF
+chmod 0644 "$state/identity.json"
+touch "$complete"
+echo "REPROOS_ENROLLMENT:PASS:machine_id=$machine_id"

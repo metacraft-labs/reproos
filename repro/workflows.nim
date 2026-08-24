@@ -158,6 +158,36 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-installer-artifacts", testInstallerArtifacts)
 
+    let testRemoteAccessConfiguration = shell(
+      command = "python3 tests/test_machine_config.py " &
+        "MachineConfigurationTests." &
+        "test_remote_access_configuration_validation",
+      actionId = "reproos.test-remote-access-configuration",
+      extraInputs = @[
+        "tests/test_machine_config.py",
+        "tools/reproos-machine-config.py",
+        "tests/fixtures/auto-config-minimal.toml",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test_remote_access_configuration_validation",
+      testRemoteAccessConfiguration)
+
+    let testInstanceSecretsCacheKey = shell(
+      command = "python3 tests/test_machine_config.py " &
+        "MachineConfigurationTests." &
+        "test_instance_secrets_do_not_affect_public_image_cache_key",
+      actionId = "reproos.test-instance-secrets-cache-key",
+      extraInputs = @[
+        "tests/test_machine_config.py",
+        "tools/reproos-machine-config.py",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tests/fixtures/instance-enrollment.toml",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test_instance_secrets_do_not_affect_public_image_cache_key",
+      testInstanceSecretsCacheKey)
+
     let cacheBackfill = shell(
       command = "python3 tools/cache_reproos_packages.py \"$@\"",
       args = @["reproos-cache-backfill"],
@@ -489,6 +519,8 @@ package reproosWorkflows:
       testInstallerPreview,
       testInstallerVisuals,
       testInstallerArtifacts,
+      testRemoteAccessConfiguration,
+      testInstanceSecretsCacheKey,
       testCacheBackfill,
       testIncusProjection,
       testIncusHelper,

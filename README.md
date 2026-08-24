@@ -58,6 +58,8 @@ Focused targets are available while iterating:
 repro build test-installer-preview
 repro build test-installer-visuals
 repro build test-installer-artifacts
+repro build test_remote_access_configuration_validation
+repro build test_instance_secrets_do_not_affect_public_image_cache_key
 repro build test-source-composition
 repro build test-iso-reproducibility
 repro build test-iso
@@ -81,6 +83,24 @@ reviewed fixture, applies it to the installed image build, waits for the boot
 health marker, and verifies the configured hostname over SSH. The
 installed-desktop gate captures the graphical session after that health marker
 and checks its readiness panel with GuiAssert.
+
+The reviewed schema-v2 machine profile contains only cacheable public intent.
+It keeps the account locked, enables key-only SSH, and requires a separately
+injected first-boot enrollment profile. Validate or compile that boundary with:
+
+```console
+python3 tools/reproos-machine-config.py validate \
+  --config tests/fixtures/auto-config-minimal.toml \
+  --output build/public-machine-profile.json
+python3 tools/reproos-machine-config.py enroll \
+  --public-manifest build/public-machine-profile.json \
+  --enrollment INSTANCE.toml \
+  --output build/instance-enrollment.json
+```
+
+The public image cache key is independent of machine UUIDs and authorized
+keys. Enrollment outputs are per-instance material and must not be published as
+reusable image artifacts.
 
 `incus-acceptance` runs the complete container gate: configuration projection,
 helper regressions, byte-reproducible image authoring, an isolated live Incus

@@ -315,6 +315,7 @@ package reproosImage:
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-image/scripts/reproos-health-check",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
         "tests/fixtures/auto-config-minimal.toml",
         installerPackage.ReproosInstallerBinary,
         isoPackage.ReproosIsoRootfsOutput,

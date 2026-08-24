@@ -274,6 +274,7 @@ HOSTNAME_VAL="$(toml_get "$CFG" "" "hostname")"
 USER_NAME="$(toml_get "$CFG" "user" "name")"
 USER_FULL_NAME="$(toml_get "$CFG" "user" "full_name")"
 USER_PWHASH="$(toml_get "$CFG" "user" "password_hash")"
+USER_LOCKED="$(toml_get "$CFG" "user" "locked")"
 USER_SHELL="$(toml_get "$CFG" "user" "shell")"
 DISK_SIZE_GB="$(toml_get "$CFG" "disk" "size_gb")"
 DISK_TYPE="$(toml_get "$CFG" "disk.layout" "type")"
@@ -292,10 +293,14 @@ ESP_SIZE_MIB="${ESP_SIZE_MIB:-512}"
 DE_DEFAULT="${DE_DEFAULT:-sway}"
 NET_IPV4="${NET_IPV4:-dhcp}"
 
-if [ -z "$USER_PWHASH" ]; then
-  echo "[build-reproos-image] [user] password_hash is required" >&2
-  exit 66
-fi
+case "$USER_LOCKED:$USER_PWHASH" in
+  true:) USER_SHADOW='!' ;;
+  :\$6\$*) USER_SHADOW="$USER_PWHASH" ;;
+  *)
+    echo "[build-reproos-image] [user] requires locked=true or a SHA-512 password_hash" >&2
+    exit 66
+    ;;
+esac
 case "$DISK_TYPE" in
   uefi-ext4) ;;
   *) echo "[build-reproos-image] unsupported [disk.layout].type: $DISK_TYPE (v1 only supports uefi-ext4)" >&2
@@ -603,7 +608,7 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
     echo 'root:*:19000:0:99999:7:::' > '$MNT_DIR/etc/shadow'
   fi
   awk -v u='$USER_NAME' -F: '\$1 != u' '$MNT_DIR/etc/shadow' > '$MNT_DIR/etc/shadow.new'
-  echo '$USER_NAME:$USER_PWHASH:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow.new'
+  echo '$USER_NAME:$USER_SHADOW:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow.new'
   mv '$MNT_DIR/etc/shadow.new' '$MNT_DIR/etc/shadow'
   chmod 0640 '$MNT_DIR/etc/shadow'
   chown root:root '$MNT_DIR/etc/shadow' 2>/dev/null || true
@@ -624,7 +629,7 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
   # removed above; nss keeps them in lock-step, and dpkg-triggered
   # tools scan shadow via getent).
   awk -v u='$USER_NAME' -F: '\$1 != u && \$1 != \"live\"' '$MNT_DIR/etc/shadow' > '$MNT_DIR/etc/shadow.new2'
-  echo '$USER_NAME:$USER_PWHASH:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow.new2'
+  echo '$USER_NAME:$USER_SHADOW:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow.new2'
   mv '$MNT_DIR/etc/shadow.new2' '$MNT_DIR/etc/shadow'
   chmod 0640 '$MNT_DIR/etc/shadow'
   chown root:root '$MNT_DIR/etc/shadow' 2>/dev/null || true
@@ -800,7 +805,7 @@ ListenAddress 0.0.0.0
 HostKey /etc/ssh/ssh_host_rsa_key
 HostKey /etc/ssh/ssh_host_ecdsa_key
 HostKey /etc/ssh/ssh_host_ed25519_key
-PasswordAuthentication yes
+PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin no
@@ -813,8 +818,9 @@ SSHD_CONFIG_EOF
 cat > "$SSHD_UNIT" <<'SSHD_UNIT_EOF'
 [Unit]
 Description=OpenSSH server
-After=network.target reproos-network.service
+After=network.target reproos-network.service reproos-first-boot-enroll.service
 Wants=reproos-network.service
+Requires=reproos-first-boot-enroll.service
 
 [Service]
 Type=simple
@@ -849,6 +855,31 @@ SSHD_UNIT_EOF
 "$SUDO" chmod 0600 "$MNT_DIR/etc/ssh/sshd_config"
 "$SUDO" chmod 0755 "$MNT_DIR/var/empty"
 
+"$SUDO" install -m 0755 "$SCRIPT_DIR_SELF/reproos-first-boot-enroll" \
+  "$MNT_DIR/usr/local/sbin/reproos-first-boot-enroll"
+"$SUDO" bash -c "cat > '$MNT_DIR/etc/systemd/system/reproos-first-boot-enroll.service'" <<'ENROLL_UNIT_EOF'
+[Unit]
+Description=Enroll ReproOS instance identity and SSH keys
+After=local-fs.target
+Before=sshd.service reproos-health-check.service
+ConditionPathExists=!/var/lib/reproos/enrollment.complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-first-boot-enroll
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+ENROLL_UNIT_EOF
+"$SUDO" chmod 0644 \
+  "$MNT_DIR/etc/systemd/system/reproos-first-boot-enroll.service"
+"$SUDO" mkdir -p "$MNT_DIR/var/lib/reproos"
+printf '%s\n' 'direct-image-assembly' > "$WORK/install-source"
+"$SUDO" install -m 0644 "$WORK/install-source" \
+  "$MNT_DIR/var/lib/reproos/install-source"
+
 "$SUDO" bash -c "
   set -euo pipefail
   grep -q '^sshd:' '$MNT_DIR/etc/group' || \
@@ -862,6 +893,8 @@ SSHD_UNIT_EOF
     echo 'sshd:!:19000:0:99999:7:::' >> '$MNT_DIR/etc/shadow'
   ln -sfn /etc/systemd/system/reproos-network.service \
     '$MNT_DIR/etc/systemd/system/multi-user.target.wants/reproos-network.service'
+  ln -sfn /etc/systemd/system/reproos-first-boot-enroll.service \
+    '$MNT_DIR/etc/systemd/system/multi-user.target.wants/reproos-first-boot-enroll.service'
   ln -sfn /etc/systemd/system/sshd.service \
     '$MNT_DIR/etc/systemd/system/multi-user.target.wants/sshd.service'
 " || { echo "[build-reproos-image] DHCP + OpenSSH configuration failed" >&2; exit 71; }

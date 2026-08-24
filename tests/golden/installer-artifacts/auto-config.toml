@@ -1,5 +1,5 @@
 # ReproOS unattended installation configuration
-schema_version = 1
+schema_version = 2
 hostname = "reproos-smoke"
 
 [regional]
@@ -10,9 +10,13 @@ keymap = "us"
 [user]
 name = "repro"
 full_name = "Repro Test User"
-password_hash = "$6$reproosMvpD1$weHsl0ZQJ.wBhslFBf3O5enSWpih.ykGglXgXLTzbcO0B4YI78JNFZAqOOA0HUP/Bc2nv2oL6SZN837SvcnTi0"
+locked = true
 groups = ["wheel", "audio", "video", "networkmanager"]
 shell = "/bin/bash"
+
+[sudo]
+policy = "passwordless"
+users = ["repro"]
 
 [disk]
 size_gb = 8
@@ -26,6 +30,21 @@ default = "sway"
 
 [network]
 ipv4 = "dhcp"
+
+[ssh]
+enabled = true
+permit_root_login = false
+password_authentication = false
+authorized_keys_source = "instance-enrollment"
+
+[firewall]
+default_policy = "deny"
+allowed_tcp_ports = [22]
+ssh_source_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+[first_boot]
+enrollment = "required"
+enrollment_label = "REPROOS_ENROLL"
 
 [activities]
 enabled = []

@@ -30,9 +30,11 @@ FIELD_RULES = (
     ("regional.keymap", FieldClass.SHARED, "keymap intent is retained"),
     ("user.name", FieldClass.SHARED, "account name is identical"),
     ("user.full_name", FieldClass.SHARED, "account metadata is identical"),
-    ("user.password_hash", FieldClass.SHARED, "credential hash is copied without disclosure"),
+    ("user.locked", FieldClass.SHARED, "the reusable account remains password-locked"),
     ("user.groups", FieldClass.SHARED, "supplementary groups are identical"),
     ("user.shell", FieldClass.SHARED, "login shell is identical"),
+    ("sudo.policy", FieldClass.SHARED, "sudo policy is identical"),
+    ("sudo.users", FieldClass.SHARED, "sudo membership is identical"),
     ("disk.size_gb", FieldClass.IGNORED, "Incus owns the root volume"),
     ("disk.layout.type", FieldClass.IGNORED, "a container has no partition table"),
     ("disk.layout.esp_size_mib", FieldClass.IGNORED, "a container has no EFI system partition"),
@@ -42,6 +44,15 @@ FIELD_RULES = (
         FieldClass.CONTAINER,
         "the Incus profile supplies a deterministic address with guest DHCP fallback",
     ),
+    ("ssh.enabled", FieldClass.SHARED, "SSH service intent is identical"),
+    ("ssh.permit_root_login", FieldClass.SHARED, "root login remains disabled"),
+    ("ssh.password_authentication", FieldClass.SHARED, "password login remains disabled"),
+    ("ssh.authorized_keys_source", FieldClass.SHARED, "keys arrive through instance enrollment"),
+    ("firewall.default_policy", FieldClass.CONTAINER, "Incus and the guest enforce deny-by-default ingress"),
+    ("firewall.allowed_tcp_ports", FieldClass.CONTAINER, "declared ingress is projected into the instance profile"),
+    ("firewall.ssh_source_cidrs", FieldClass.CONTAINER, "SSH sources remain bounded by instance networking"),
+    ("first_boot.enrollment", FieldClass.SHARED, "instance enrollment remains mandatory"),
+    ("first_boot.enrollment_label", FieldClass.VM, "containers receive enrollment through the Incus API"),
     ("activities.enabled", FieldClass.SHARED, "activity selection is identical"),
     ("install.target_device", FieldClass.IGNORED, "Incus creates the root volume"),
 )
@@ -70,7 +81,8 @@ def projection_report(config_path: Path, config: dict) -> dict:
         )
     require(config, "hostname")
     require(config, "user.name")
-    require(config, "user.password_hash")
+    if require(config, "user.locked") is not True:
+        raise ValueError("INCUS_CONFIG_INSECURE_ACCOUNT: user.locked must be true")
 
     fields = []
     for path, classification, reason in FIELD_RULES:
@@ -290,7 +302,7 @@ def configure_accounts(rootfs: Path, config: dict) -> None:
     name = str(user["name"])
     full_name = str(user.get("full_name", name)).replace(":", "")
     shell = str(user.get("shell", "/bin/bash"))
-    password_hash = str(user["password_hash"])
+    password_hash = "!"
     requested_groups = [str(group) for group in user.get("groups", [])]
 
     etc = rootfs / "etc"
@@ -469,7 +481,8 @@ def configure_rootfs(rootfs: Path, artifacts: Path, output: Path, config: dict, 
         "Port 22\nListenAddress 0.0.0.0\nProtocol 2\n"
         "HostKey /etc/ssh/ssh_host_ed25519_key\n"
         "HostKey /etc/ssh/ssh_host_rsa_key\n"
-        "PermitRootLogin no\nPasswordAuthentication yes\n"
+        "PermitRootLogin no\nPasswordAuthentication no\n"
+        "KbdInteractiveAuthentication no\n"
         "PubkeyAuthentication yes\nStrictModes yes\n"
         "PidFile /run/sshd.pid\nSubsystem sftp internal-sftp\n",
         0o600,

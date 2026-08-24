@@ -2054,17 +2054,132 @@ fi
 EOF
 chmod 0644 "$STAGE_DIR/etc/profile.d/zz-reproos-installer-autostart.sh"
 
-# Bake a default automated config for the demo run.
+# Bake the reviewed reusable profile. Instance keys are supplied separately at
+# first boot and never become part of the cacheable live filesystem.
 mkdir -p "$STAGE_DIR/etc/reproos"
 cat > "$STAGE_DIR/etc/reproos/auto-config.toml" <<'EOF'
-hostname = "reproos-vm"
-defaultUser = "alice"
-password = "reproos"
-diskoPreset = "simple"
-targetDevice = "/dev/vda"
-preferredDE = "plasma"
-activities = ["daily-computing", "system-tools"]
+# ReproOS unattended installation configuration
+schema_version = 2
+hostname = "reproos-smoke"
+
+[regional]
+locale = "en_US.UTF-8"
+timezone = "UTC"
+keymap = "us"
+
+[user]
+name = "repro"
+full_name = "Repro Test User"
+locked = true
+groups = ["wheel", "audio", "video", "networkmanager"]
+shell = "/bin/bash"
+
+[sudo]
+policy = "passwordless"
+users = ["repro"]
+
+[disk]
+size_gb = 8
+
+[disk.layout]
+type = "uefi-ext4"
+esp_size_mib = 512
+
+[de]
+default = "sway"
+
+[network]
+ipv4 = "dhcp"
+
+[ssh]
+enabled = true
+permit_root_login = false
+password_authentication = false
+authorized_keys_source = "instance-enrollment"
+
+[firewall]
+default_policy = "deny"
+allowed_tcp_ports = [22]
+ssh_source_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+[first_boot]
+enrollment = "required"
+enrollment_label = "REPROOS_ENROLL"
+
+[activities]
+enabled = []
+
+[install]
+target_device = "/dev/vda"
 EOF
+
+# Instance identity is enrolled from a separate vm-harness secondary ISO. The
+# live root carries the same service that is copied to the installed target;
+# reusable media never contains a login password or an authorized key.
+mkdir -p "$STAGE_DIR/usr/local/sbin" \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants" \
+  "$STAGE_DIR/var/lib/reproos"
+install -m 0755 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-first-boot-enroll" \
+  "$STAGE_DIR/usr/local/sbin/reproos-first-boot-enroll"
+printf '%s\n' 'unattended-installer' \
+  > "$STAGE_DIR/var/lib/reproos/install-source"
+cat > "$STAGE_DIR/etc/systemd/system/reproos-first-boot-enroll.service" <<'EOF'
+[Unit]
+Description=Enroll ReproOS instance identity and SSH keys
+After=local-fs.target
+Before=sshd.service reproos-health-check.service
+ConditionPathExists=!/var/lib/reproos/enrollment.complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-first-boot-enroll
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/reproos-first-boot-enroll.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-first-boot-enroll.service"
+
+cat > "$STAGE_DIR/etc/ssh/sshd_config" <<'EOF'
+Port 22
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+AllowUsers repro
+PrintMotd no
+PidFile /run/sshd.pid
+Subsystem sftp /usr/libexec/sftp-server
+EOF
+chmod 0600 "$STAGE_DIR/etc/ssh/sshd_config"
+cat > "$STAGE_DIR/etc/systemd/system/sshd.service" <<'EOF'
+[Unit]
+Description=OpenSSH server
+After=network.target reproos-first-boot-enroll.service
+Requires=reproos-first-boot-enroll.service
+
+[Service]
+Type=simple
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/sbin/sshd -t
+ExecStart=/usr/sbin/sshd -D -e
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/sshd.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/sshd.service"
 
 # M9.R.18.1 -- SDDM autologin config.
 REPRO_AUTOLOGIN_SESSION="${REPRO_AUTOLOGIN_SESSION:-reproos-installer}"

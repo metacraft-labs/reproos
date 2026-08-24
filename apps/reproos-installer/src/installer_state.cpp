@@ -248,15 +248,18 @@ QString InstallerState::ensurePasswordHash(QString *error) {
 }
 
 QString InstallerState::renderAutoConfigToml() {
-    QString hashError;
-    const QString hash = ensurePasswordHash(&hashError);
-    if (hash.isEmpty())
-        return {};
+    QString hash;
+    if (m_schemaVersion == 1) {
+        QString hashError;
+        hash = ensurePasswordHash(&hashError);
+        if (hash.isEmpty())
+            return {};
+    }
 
     QString out;
     QTextStream s(&out);
     s << "# ReproOS unattended installation configuration\n";
-    s << "schema_version = 1\n";
+    s << "schema_version = " << m_schemaVersion << "\n";
     s << "hostname = " << tomlQuoted(m_hostname) << "\n\n";
     s << "[regional]\n";
     s << "locale = " << tomlQuoted(m_locale) << "\n";
@@ -265,12 +268,20 @@ QString InstallerState::renderAutoConfigToml() {
     s << "[user]\n";
     s << "name = " << tomlQuoted(m_username) << "\n";
     s << "full_name = " << tomlQuoted(m_fullName) << "\n";
-    s << "password_hash = " << tomlQuoted(hash) << "\n";
+    if (m_schemaVersion == 1)
+        s << "password_hash = " << tomlQuoted(hash) << "\n";
+    else
+        s << "locked = true\n";
     QStringList groups = {"audio", "video", "networkmanager"};
     if (m_isAdmin)
         groups.prepend("wheel");
     s << "groups = " << tomlStringArray(groups) << "\n";
     s << "shell = " << tomlQuoted(m_userShell) << "\n\n";
+    if (m_schemaVersion == 2) {
+        s << "[sudo]\n";
+        s << "policy = " << tomlQuoted(m_sudoPolicy) << "\n";
+        s << "users = " << tomlStringArray(m_sudoUsers) << "\n\n";
+    }
     s << "[disk]\n";
     s << "size_gb = " << m_diskSizeGb << "\n\n";
     s << "[disk.layout]\n";
@@ -280,6 +291,26 @@ QString InstallerState::renderAutoConfigToml() {
     s << "default = " << tomlQuoted(m_desktopKind) << "\n\n";
     s << "[network]\n";
     s << "ipv4 = " << tomlQuoted(m_networkIpv4) << "\n\n";
+    if (m_schemaVersion == 2) {
+        s << "[ssh]\n";
+        s << "enabled = " << (m_sshEnabled ? "true" : "false") << "\n";
+        s << "permit_root_login = "
+          << (m_sshPermitRootLogin ? "true" : "false") << "\n";
+        s << "password_authentication = "
+          << (m_sshPasswordAuthentication ? "true" : "false") << "\n";
+        s << "authorized_keys_source = "
+          << tomlQuoted(m_sshAuthorizedKeysSource) << "\n\n";
+        s << "[firewall]\n";
+        s << "default_policy = " << tomlQuoted(m_firewallDefaultPolicy) << "\n";
+        s << "allowed_tcp_ports = [" << m_firewallAllowedTcpPorts.join(", ")
+          << "]\n";
+        s << "ssh_source_cidrs = "
+          << tomlStringArray(m_firewallSshSourceCidrs) << "\n\n";
+        s << "[first_boot]\n";
+        s << "enrollment = " << tomlQuoted(m_firstBootEnrollment) << "\n";
+        s << "enrollment_label = "
+          << tomlQuoted(m_firstBootEnrollmentLabel) << "\n\n";
+    }
     s << "[activities]\n";
     s << "enabled = " << tomlStringArray(m_activeActivities) << "\n\n";
     s << "[install]\n";
@@ -321,6 +352,18 @@ static QStringList parseTomlArray(QString value) {
     return result;
 }
 
+static bool parseTomlBool(const QString &value, bool *parsed) {
+    if (value == "true") {
+        *parsed = true;
+        return true;
+    }
+    if (value == "false") {
+        *parsed = false;
+        return true;
+    }
+    return false;
+}
+
 bool InstallerState::loadAutoConfig(const QString &configPath,
                                     QString *error) {
     QFile file(configPath);
@@ -358,11 +401,14 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
 
         bool handled = true;
         if (qualified == "schema_version") {
-            if (value != "1") {
+            bool ok = false;
+            const int version = value.toInt(&ok);
+            if (!ok || (version != 1 && version != 2)) {
                 if (error)
                     *error = "unsupported schema_version: " + value;
                 return false;
             }
+            m_schemaVersion = version;
         } else if (qualified == "hostname") {
             setHostname(value);
         } else if (qualified == "regional.locale") {
@@ -379,10 +425,20 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
             m_password.clear();
             m_passwordHash = value;
             emit passwordChanged();
+        } else if (qualified == "user.locked") {
+            if (!parseTomlBool(value, &m_userLocked)) {
+                if (error)
+                    *error = "user.locked must be a boolean";
+                return false;
+            }
         } else if (qualified == "user.groups") {
             setIsAdmin(parseTomlArray(rawValue).contains("wheel"));
         } else if (qualified == "user.shell") {
             m_userShell = value;
+        } else if (qualified == "sudo.policy") {
+            m_sudoPolicy = value;
+        } else if (qualified == "sudo.users") {
+            m_sudoUsers = parseTomlArray(rawValue);
         } else if (qualified == "disk.size_gb") {
             bool ok = false;
             const int parsed = value.toInt(&ok);
@@ -422,6 +478,33 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
                 return false;
             }
             m_networkIpv4 = value;
+        } else if (qualified == "ssh.enabled") {
+            if (!parseTomlBool(value, &m_sshEnabled)) {
+                if (error) *error = "ssh.enabled must be a boolean";
+                return false;
+            }
+        } else if (qualified == "ssh.permit_root_login") {
+            if (!parseTomlBool(value, &m_sshPermitRootLogin)) {
+                if (error) *error = "ssh.permit_root_login must be a boolean";
+                return false;
+            }
+        } else if (qualified == "ssh.password_authentication") {
+            if (!parseTomlBool(value, &m_sshPasswordAuthentication)) {
+                if (error) *error = "ssh.password_authentication must be a boolean";
+                return false;
+            }
+        } else if (qualified == "ssh.authorized_keys_source") {
+            m_sshAuthorizedKeysSource = value;
+        } else if (qualified == "firewall.default_policy") {
+            m_firewallDefaultPolicy = value;
+        } else if (qualified == "firewall.allowed_tcp_ports") {
+            m_firewallAllowedTcpPorts = parseTomlArray(rawValue);
+        } else if (qualified == "firewall.ssh_source_cidrs") {
+            m_firewallSshSourceCidrs = parseTomlArray(rawValue);
+        } else if (qualified == "first_boot.enrollment") {
+            m_firstBootEnrollment = value;
+        } else if (qualified == "first_boot.enrollment_label") {
+            m_firstBootEnrollmentLabel = value;
         } else if (qualified == "activities.enabled") {
             const QStringList activities = parseTomlArray(rawValue);
             if (!activities.isEmpty()) {
@@ -449,10 +532,49 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
             *error = "hostname and user.name must not be empty";
         return false;
     }
-    if (!m_passwordHash.startsWith("$6$")) {
-        if (error)
-            *error = "user.password_hash must be a SHA-512 crypt hash";
-        return false;
+    if (m_schemaVersion == 1) {
+        if (!m_passwordHash.startsWith("$6$")) {
+            if (error)
+                *error = "user.password_hash must be a SHA-512 crypt hash";
+            return false;
+        }
+    } else {
+        if (!m_userLocked || !m_passwordHash.isEmpty()) {
+            if (error)
+                *error = "schema v2 reusable profiles require user.locked=true and no password_hash";
+            return false;
+        }
+        if (m_sudoPolicy != "passwordless" || !m_sudoUsers.contains(m_username)) {
+            if (error)
+                *error = "schema v2 requires passwordless sudo for the configured user";
+            return false;
+        }
+        if (!m_sshEnabled || m_sshPermitRootLogin ||
+            m_sshPasswordAuthentication ||
+            m_sshAuthorizedKeysSource != "instance-enrollment") {
+            if (error)
+                *error = "schema v2 requires key-only SSH through instance enrollment";
+            return false;
+        }
+        if (m_firewallDefaultPolicy != "deny" ||
+            !m_firewallAllowedTcpPorts.contains("22") ||
+            m_firewallSshSourceCidrs.isEmpty()) {
+            if (error)
+                *error = "schema v2 requires deny-by-default firewall rules bounded for SSH";
+            return false;
+        }
+        if (m_firewallSshSourceCidrs.contains("0.0.0.0/0") ||
+            m_firewallSshSourceCidrs.contains("::/0")) {
+            if (error)
+                *error = "schema v2 forbids unbounded SSH source networks";
+            return false;
+        }
+        if (m_firstBootEnrollment != "required" ||
+            m_firstBootEnrollmentLabel.isEmpty()) {
+            if (error)
+                *error = "schema v2 requires first-boot enrollment";
+            return false;
+        }
     }
     if (m_targetDevice.isEmpty())
         setTargetDevice("/dev/vda");
@@ -465,7 +587,7 @@ bool InstallerState::writeConfigurationArtifacts(const QString &directory,
     const QString autoConfig = renderAutoConfigToml();
     if (autoConfig.isEmpty()) {
         if (error)
-            *error = "cannot render auto-config.toml; password hashing failed";
+            *error = "cannot render auto-config.toml";
         return false;
     }
     if (!QDir().mkpath(directory)) {

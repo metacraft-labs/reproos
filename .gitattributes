@@ -2,4 +2,4 @@
 recipes/reproos-iso/initramfs/init text eol=lf
 recipes/reproos-iso/initramfs/init-disk text eol=lf
 recipes/reproos-image/scripts/repro-sway-diag text eol=lf
-
+recipes/reproos-image/scripts/reproos-* text eol=lf

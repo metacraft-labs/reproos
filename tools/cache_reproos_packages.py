@@ -34,8 +34,11 @@ def run_command(
     env: dict[str, str],
     timeout: int,
 ) -> subprocess.CompletedProcess[str]:
+    executable_command = command
+    if Path(command[0]).suffix.lower() in {".py", ".pyw"}:
+        executable_command = [sys.executable, *command]
     return subprocess.run(
-        command,
+        executable_command,
         cwd=cwd,
         env=env,
         text=True,
@@ -97,6 +100,23 @@ def load_graph(
     env: dict[str, str],
     timeout: int,
 ) -> dict[str, Any]:
+    prepare_command = [repro, "build"]
+    if target:
+        prepare_command.append(target)
+    prepare_command.extend(
+        [
+            "--daemon=off",
+            "--tool-provisioning=from-source",
+            "--prepare-only",
+            "--progress=line",
+            "--log=summary",
+            "--no-runquota",
+        ]
+    )
+    prepared = run_command(prepare_command, cwd=cwd, env=env, timeout=timeout)
+    if prepared.returncode != 0:
+        raise BackfillError(command_failure(prepare_command, prepared))
+
     command = [repro, "graph"]
     if target:
         command.append(target)
@@ -136,12 +156,31 @@ def discover_iso_packages(
     return packages, ignored
 
 
-def package_cache_keys(
+def graph_source_package_refs(
+    document: dict[str, Any],
+    packages_root: Path,
+) -> tuple[list[str], list[str]]:
+    refs = sorted(
+        {
+            ref
+            for action in graph_actions(document)
+            for ref in action.get("toolIdentityRefs", [])
+            if isinstance(ref, str) and ref
+        }
+    )
+    source_root = packages_root / "packages" / "source"
+    packages = [name for name in refs if (source_root / name / "repro.nim").is_file()]
+    ignored = [name for name in refs if name not in packages]
+    return packages, ignored
+
+
+def package_graph_details(
     repro: str,
     package_dir: Path,
+    packages_root: Path,
     env: dict[str, str],
     timeout: int,
-) -> list[str]:
+) -> tuple[list[str], list[str], list[str]]:
     graph = load_graph(repro, package_dir, "", env, timeout)
     keys = sorted(
         {
@@ -156,7 +195,8 @@ def package_cache_keys(
         raise BackfillError(
             f"{package_dir.name} has no materialized binary-cache publication action"
         )
-    return keys
+    source_packages, ignored_refs = graph_source_package_refs(graph, packages_root)
+    return keys, source_packages, ignored_refs
 
 
 def cache_lookup(
@@ -184,7 +224,31 @@ def publish_package(
     timeout: int,
 ) -> tuple[bool, str, list[str]]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
+    build_report_path = report_path.with_name(
+        f"{report_path.stem}-build{report_path.suffix}"
+    )
+    build_command = [
+        repro,
+        "build",
+        "--daemon=off",
+        "--tool-provisioning=from-source",
+        "--publish-cache-hits",
+        f"--write-report={build_report_path}",
+        "--progress=line",
+        "--log=summary",
+        "--no-runquota",
+    ]
+    result = run_command(build_command, cwd=package_dir, env=env, timeout=timeout)
+    if result.returncode != 0:
+        return False, command_failure(build_command, result), []
+
+    install_mirror = package_dir / ".repro" / "output" / "install"
+    if not install_mirror.is_dir() or not any(
+        path.is_file() for path in install_mirror.rglob("*")
+    ):
+        return False, f"source build produced an empty install mirror: {install_mirror}", []
+
+    publish_command = [
         repro,
         "build",
         "--daemon=off",
@@ -196,9 +260,9 @@ def publish_package(
         "--log=summary",
         "--no-runquota",
     ]
-    result = run_command(command, cwd=package_dir, env=env, timeout=timeout)
+    result = run_command(publish_command, cwd=package_dir, env=env, timeout=timeout)
     if result.returncode != 0:
-        return False, command_failure(command, result), []
+        return False, command_failure(publish_command, result), []
 
     reported_keys: set[str] = set()
     if report_path.is_file():
@@ -236,10 +300,11 @@ def process_package(
     graph_timeout: int,
     build_timeout: int,
     lookup_timeout: int,
-) -> tuple[dict[str, Any], dict[str, int]]:
+) -> tuple[dict[str, Any], dict[str, int], list[str]]:
     item: dict[str, Any] = {
         "package": package,
         "cacheKeys": [],
+        "sourcePackageRefs": [],
         "missingBefore": [],
         "missingAfter": [],
         "reportedPublicationKeys": [],
@@ -255,11 +320,19 @@ def process_package(
         "verifiedEntryCount": 0,
     }
     package_dir = packages_root / "packages" / "source" / package
+    ignored_refs: list[str] = []
     worker_env = provider_worker_env(env)
     started = time.monotonic()
     try:
-        keys = package_cache_keys(repro, package_dir, worker_env, graph_timeout)
+        keys, source_package_refs, ignored_refs = package_graph_details(
+            repro,
+            package_dir,
+            packages_root,
+            worker_env,
+            graph_timeout,
+        )
         item["cacheKeys"] = keys
+        item["sourcePackageRefs"] = source_package_refs
         counts["cacheEntryCount"] = len(keys)
 
         missing: list[str] = []
@@ -324,7 +397,7 @@ def process_package(
         item["error"] = str(error)
     finally:
         item["elapsedSeconds"] = round(time.monotonic() - started, 3)
-    return item, counts
+    return item, counts, ignored_refs
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:
@@ -385,8 +458,9 @@ def load_resume_items(
             "resume report does not match the current run: " + ", ".join(mismatches)
         )
 
-    legacy = previous.get("schemaVersion") == 1
-    if not legacy:
+    schema_version = previous.get("schemaVersion")
+    legacy = schema_version in {1, 2}
+    if schema_version != 1:
         fingerprint_mismatches = []
         if previous.get("reproFingerprint") != repro_fingerprint:
             fingerprint_mismatches.append("repro executable")
@@ -403,12 +477,15 @@ def load_resume_items(
             continue
         package = item.get("package")
         keys = item.get("cacheKeys")
+        source_package_refs = item.get("sourcePackageRefs")
         missing_after = item.get("missingAfter")
         if (
             isinstance(package, str)
             and isinstance(keys, list)
             and keys
             and all(isinstance(key, str) and CACHE_KEY_RE.fullmatch(key) for key in keys)
+            and isinstance(source_package_refs, list)
+            and all(isinstance(ref, str) for ref in source_package_refs)
             and missing_after == []
         ):
             items[package] = item
@@ -425,6 +502,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--cache-url", default=DEFAULT_CACHE_URL)
     parser.add_argument("--cache-scope", default="release")
+    parser.add_argument(
+        "--publisher-key",
+        default="",
+        help=(
+            "publisher private key path; required with --publisher-cert when "
+            "publishing unless both credential environment variables are set"
+        ),
+    )
+    parser.add_argument(
+        "--publisher-cert",
+        default="",
+        help=(
+            "publisher public certificate path; required with --publisher-key "
+            "when publishing unless both credential environment variables are set"
+        ),
+    )
     parser.add_argument(
         "--report",
         default="build/evidence/reproos-cache-backfill-report.json",
@@ -469,9 +562,45 @@ def main(argv: list[str] | None = None) -> int:
             raise BackfillError("--jobs must be at least 1")
         if args.fail_fast and args.jobs != 1:
             raise BackfillError("--fail-fast requires --jobs=1")
+        if not args.verify_only and args.jobs != 1:
+            raise BackfillError(
+                "publishing requires --jobs=1 because recursive source builds "
+                "share package working directories"
+            )
         repro = resolve_repro(args.repro)
         packages_root = resolve_packages_root(args.packages_root)
         env = os.environ.copy()
+        publisher_key_value = args.publisher_key or env.get(
+            "REPRO_BINARY_CACHE_KEY_PATH", ""
+        )
+        publisher_cert_value = args.publisher_cert or env.get(
+            "REPRO_BINARY_CACHE_CERT_PATH", ""
+        )
+        publisher_key = (
+            Path(publisher_key_value).expanduser().resolve()
+            if publisher_key_value
+            else None
+        )
+        publisher_cert = (
+            Path(publisher_cert_value).expanduser().resolve()
+            if publisher_cert_value
+            else None
+        )
+        if not args.verify_only:
+            if publisher_key is None or publisher_cert is None:
+                raise BackfillError(
+                    "publishing requires --publisher-key and --publisher-cert "
+                    "or both REPRO_BINARY_CACHE_KEY_PATH and "
+                    "REPRO_BINARY_CACHE_CERT_PATH"
+                )
+            if not publisher_key.is_file():
+                raise BackfillError(f"publisher private key not found: {publisher_key}")
+            if not publisher_cert.is_file():
+                raise BackfillError(
+                    f"publisher public certificate not found: {publisher_cert}"
+                )
+            env["REPRO_BINARY_CACHE_KEY_PATH"] = str(publisher_key)
+            env["REPRO_BINARY_CACHE_CERT_PATH"] = str(publisher_cert)
         env.update(
             {
                 "REPROBUILD_REPRO": repro,
@@ -485,18 +614,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         env.pop("REPRO_LOCK_PATH", None)
         env.pop("REPRO_LOCK_PINS", None)
-        packages, ignored_refs = discover_iso_packages(
-            repro, packages_root, env, args.graph_timeout_sec
-        )
         if args.package:
-            requested = set(args.package)
-            unknown = sorted(requested.difference(packages))
+            requested = sorted(set(args.package))
+            source_root = packages_root / "packages" / "source"
+            unknown = [
+                name
+                for name in requested
+                if not (source_root / name / "repro.nim").is_file()
+            ]
             if unknown:
                 raise BackfillError(
-                    "requested packages are not in the source-only ISO graph: "
+                    "requested source package recipes do not exist: "
                     + ", ".join(unknown)
                 )
-            packages = [name for name in packages if name in requested]
+            packages = requested
+            ignored_refs: list[str] = []
+        else:
+            packages, ignored_refs = discover_iso_packages(
+                repro, packages_root, env, args.graph_timeout_sec
+            )
         repro_fingerprint = file_fingerprint(Path(repro))
         catalog_fingerprint = source_catalog_fingerprint(packages_root)
         resume_items: dict[str, dict[str, Any]] = {}
@@ -511,8 +647,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             if legacy_resume:
                 print(
-                    "cache backfill: warning: resuming a schema-1 report without "
-                    "input fingerprints",
+                    "cache backfill: warning: older report lacks source-package "
+                    "closure metadata; package graphs will be recomputed",
                     file=sys.stderr,
                 )
     except (BackfillError, OSError, subprocess.SubprocessError) as error:
@@ -520,10 +656,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     report: dict[str, Any] = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "target": "iso",
         "cacheUrl": args.cache_url,
         "cacheScope": args.cache_scope,
+        "publisherKeyPath": str(publisher_key) if publisher_key is not None else "",
+        "publisherCertPath": (
+            str(publisher_cert) if publisher_cert is not None else ""
+        ),
         "verifyOnly": args.verify_only,
         "reprobuildPackagesRoot": str(packages_root),
         "reproFingerprint": repro_fingerprint,
@@ -540,36 +680,21 @@ def main(argv: list[str] | None = None) -> int:
     package_reports = report["packages"]
     assert isinstance(package_reports, list)
 
-    completed: dict[int, dict[str, Any]] = {}
+    completed: dict[str, dict[str, Any]] = {}
+    known_packages = set(packages)
+    ignored_ref_set = set(ignored_refs)
 
-    def record(index: int, item: dict[str, Any], counts: dict[str, int]) -> None:
-        completed[index] = item
+    def record(package: str, item: dict[str, Any], counts: dict[str, int]) -> None:
+        completed[package] = item
         for name, count in counts.items():
             report[name] += count
-        package_reports[:] = [completed[i] for i in sorted(completed)]
+        package_reports[:] = [completed[name] for name in sorted(completed)]
+        refs = item.get("sourcePackageRefs", [])
+        if isinstance(refs, list):
+            known_packages.update(ref for ref in refs if isinstance(ref, str))
+        report["sourcePackageCount"] = len(known_packages)
+        report["ignoredToolIdentityRefs"] = sorted(ignored_ref_set)
         write_report(report_path, report)
-
-    pending: list[tuple[int, str]] = []
-    for index, package in enumerate(packages, start=1):
-        resumed = resume_items.get(package)
-        if resumed is None:
-            pending.append((index, package))
-            continue
-        print(f"[{index}/{len(packages)}] {package} (resumed)", flush=True)
-        item = dict(resumed)
-        item["resumed"] = True
-        keys = item["cacheKeys"]
-        missing_before = item.get("missingBefore", [])
-        record(
-            index,
-            item,
-            {
-                "cacheEntryCount": len(keys),
-                "hitBeforeCount": len(keys) - len(missing_before),
-                "publishedPackageCount": int(item["status"] == "published"),
-                "verifiedEntryCount": len(keys),
-            },
-        )
 
     package_args = {
         "repro": repro,
@@ -581,31 +706,76 @@ def main(argv: list[str] | None = None) -> int:
         "build_timeout": args.build_timeout_sec,
         "lookup_timeout": args.lookup_timeout_sec,
     }
+    def record_resumed_packages() -> None:
+        while True:
+            resumed_names = sorted(
+                known_packages.difference(completed).intersection(resume_items)
+            )
+            if not resumed_names:
+                return
+            for package in resumed_names:
+                print(f"[{package}] resumed", flush=True)
+                item = dict(resume_items[package])
+                item["resumed"] = True
+                keys = item["cacheKeys"]
+                missing_before = item.get("missingBefore", [])
+                record(
+                    package,
+                    item,
+                    {
+                        "cacheEntryCount": len(keys),
+                        "hitBeforeCount": len(keys) - len(missing_before),
+                        "publishedPackageCount": int(item["status"] == "published"),
+                        "verifiedEntryCount": len(keys),
+                    },
+                )
+
+    record_resumed_packages()
+    stop_after_failure = False
     if args.jobs == 1:
-        for index, package in pending:
-            print(f"[{index}/{len(packages)}] {package}", flush=True)
-            item, counts = process_package(package, **package_args)
-            record(index, item, counts)
-            if item["status"] in {"failed", "missing"} and args.fail_fast:
+        while not stop_after_failure:
+            record_resumed_packages()
+            pending = sorted(known_packages.difference(completed))
+            if not pending:
                 break
+            package = pending[0]
+            print(f"[{package}] checking", flush=True)
+            item, counts, package_ignored_refs = process_package(
+                package, **package_args
+            )
+            ignored_ref_set.update(package_ignored_refs)
+            record(package, item, counts)
+            stop_after_failure = (
+                args.fail_fast and item["status"] in {"failed", "missing"}
+            )
     else:
         with ThreadPoolExecutor(max_workers=args.jobs) as executor:
-            futures = {}
-            for index, package in pending:
-                print(f"[{index}/{len(packages)}] {package} (scheduled)", flush=True)
-                future = executor.submit(process_package, package, **package_args)
-                futures[future] = (index, package)
-            for future in as_completed(futures):
-                index, package = futures[future]
-                item, counts = future.result()
-                print(
-                    f"[{index}/{len(packages)}] {package} ({item['status']})",
-                    flush=True,
+            futures: dict[Any, str] = {}
+            scheduled: set[str] = set()
+            while True:
+                record_resumed_packages()
+                available = sorted(
+                    known_packages.difference(completed).difference(scheduled)
                 )
-                record(index, item, counts)
+                while available and len(futures) < args.jobs:
+                    package = available.pop(0)
+                    print(f"[{package}] scheduled", flush=True)
+                    future = executor.submit(process_package, package, **package_args)
+                    futures[future] = package
+                    scheduled.add(package)
+                if not futures:
+                    if not known_packages.difference(completed):
+                        break
+                    continue
+                future = next(as_completed(futures))
+                package = futures.pop(future)
+                item, counts, package_ignored_refs = future.result()
+                ignored_ref_set.update(package_ignored_refs)
+                print(f"[{package}] {item['status']}", flush=True)
+                record(package, item, counts)
 
     report["complete"] = (
-        len(package_reports) == len(packages)
+        len(package_reports) == len(known_packages)
         and all(item["status"] in {"hit", "published"} for item in package_reports)
         and report["verifiedEntryCount"] == report["cacheEntryCount"]
     )
@@ -613,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "cache backfill: "
         f"{report['verifiedEntryCount']}/{report['cacheEntryCount']} entries verified "
-        f"across {len(package_reports)}/{len(packages)} packages; "
+        f"across {len(package_reports)}/{len(known_packages)} packages; "
         f"report: {report_path}",
         flush=True,
     )

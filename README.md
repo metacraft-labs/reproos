@@ -11,6 +11,7 @@ Run builds from the repository root:
 repro build installer
 repro build rootfs
 repro build iso
+repro build unattended-iso
 repro build image
 repro build incus-projection
 repro build incus-image
@@ -60,6 +61,7 @@ repro build test-installer-visuals
 repro build test-installer-artifacts
 repro build test_remote_access_configuration_validation
 repro build test_instance_secrets_do_not_affect_public_image_cache_key
+repro build test_unattended_vm_rejects_live_media_false_positive
 repro build test-source-composition
 repro build test-iso-reproducibility
 repro build test-iso
@@ -67,6 +69,9 @@ repro build test-image-health
 repro build test-installed-desktop
 repro build test-installed-ssh
 repro build test-unattended-install
+repro build unattended-iso
+repro build e2e_unattended_vm_installs_and_boots_target_disk
+repro build test_vm_ssh_host_key_mismatch_fails_closed
 repro build test-incus-projection
 repro build test-incus-helper
 repro build test-incus-publication
@@ -82,7 +87,9 @@ The unattended test compares the wizard's generated configuration with the
 reviewed fixture, applies it to the installed image build, waits for the boot
 health marker, and verifies the configured hostname over SSH. The
 installed-desktop gate captures the graphical session after that health marker
-and checks its readiness panel with GuiAssert.
+and checks its readiness panel with GuiAssert. The unattended installed-disk
+E2E edge runs that same graphical gate after installation, reboot, and SSH
+health verification.
 
 The reviewed schema-v2 machine profile contains only cacheable public intent.
 It keeps the account locked, enables key-only SSH, and requires a separately
@@ -123,6 +130,10 @@ repro run cache-backfill -- --verify-only
 repro run cache-backfill -- --verify-only --resume --jobs 8
 repro run image-ssh
 repro run image-ssh -- uname -a
+repro run vm-install
+repro run vm-install -- --replace
+repro run vm-verify-installed-boot
+repro run vm-ssh -- uname -a
 repro run incus-import
 repro run incus-launch
 repro run incus-shell
@@ -147,6 +158,29 @@ VM workflows are reserved for integration and acceptance:
 repro run boot-iso
 repro run boot-image
 ```
+
+`vm-install` boots the dedicated unattended ISO through `vm-harness`, installs
+onto a caller-owned disk under `build/reproos-vm`, requires the install success
+marker and a clean guest shutdown, and writes a content-identity manifest. It
+does not include instance keys in the installer media. The target is preserved
+for subsequent commands; an existing disk is refused unless `--replace` is
+explicitly passed. `vm-verify-installed-boot` detaches the installer, attaches a
+separate first-boot enrollment ISO, accepts only the installed-disk receipt
+conditioned health marker, retains the installed-disk receipt marker in its
+serial evidence, and verifies the configured hostname over key-only SSH.
+`vm-ssh` boots the same disk with the same enrollment and runs an ad hoc command
+through vm-harness's loopback-only SSH forward. The first successful boot pins
+the guest host key in `build/reproos-vm/ssh_known_hosts`; later boots use a
+stable alias and reject a changed host key. Only an explicit
+`repro run vm-install -- --replace` resets this trust state.
+
+The unattended media embeds `tests/fixtures/auto-config-minimal.toml`; changing
+that file invalidates the rootfs action. Set `REPROOS_VM_STATE_DIR`,
+`REPROOS_VM_BACKEND`, `REPROOS_UNATTENDED_ISO`, or
+`REPROOS_VM_HARNESS_BIN` to override the local state, backend, media, or harness
+binary. Set `REPROOS_VM_ACCELERATION=tcg` when nested KVM is unavailable or
+unreliable; the default is `auto`. On libvirt the persistent
+disk is QCOW2; on Hyper-V it is VHDX.
 
 `installer-vm-screenshot` builds the ISO, waits for the first rendered wizard
 frame, captures it from a self-cleaning libvirt VM, and runs the GuiAssert

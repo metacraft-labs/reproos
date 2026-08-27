@@ -145,7 +145,44 @@ for expected_group in $expected_groups; do
   else
     fail "group:$expected_group:$expected_user"
   fi
+  if awk -F: -v wanted_group="$expected_group" -v wanted_user="$expected_user" '
+    $1 == wanted_group {
+      count=split($4, members, ",")
+      for (i=1; i<=count; i++) if (members[i] == wanted_user) found=1
+    }
+    END { exit(found ? 0 : 1) }
+  ' /etc/gshadow; then
+    pass "gshadow:$expected_group:$expected_user"
+  else
+    fail "gshadow:$expected_group:$expected_user"
+  fi
 done
+
+if grep -q "^$expected_user:" /etc/gshadow; then
+  pass "gshadow:primary:$expected_user"
+else
+  fail "gshadow:primary:$expected_user"
+fi
+
+if awk -F: '
+  $1 == "live" { found=1 }
+  {
+    count=split($4, members, ",")
+    for (i=1; i<=count; i++) if (members[i] == "live") found=1
+  }
+  END { exit(found ? 0 : 1) }
+' /etc/group || awk -F: '
+  $1 == "live" { found=1 }
+  {
+    count=split($3 "," $4, members, ",")
+    for (i=1; i<=count; i++) if (members[i] == "live") found=1
+  }
+  END { exit(found ? 0 : 1) }
+' /etc/gshadow || grep -q '^live:' /etc/passwd /etc/shadow /etc/group; then
+  fail "accounts:live-installer-identity-remains"
+else
+  pass "accounts:installed-identity-only"
+fi
 
 duplicate_group_ids="$(awk -F: '
   $3 ~ /^[0-9]+$/ { count[$3]++; names[$3]=(names[$3] ? names[$3] "," $1 : $1) }
@@ -157,16 +194,36 @@ else
   fail "groups:duplicate-gids=$duplicate_group_ids"
 fi
 
+duplicate_group_names="$(awk -F: '
+  { count[$1]++; gids[$1]=(gids[$1] ? gids[$1] "," $3 : $3) }
+  END { for (name in count) if (count[name] > 1) print name ":" gids[name] }
+' /etc/group)"
+if [[ -z "$duplicate_group_names" ]]; then
+  pass "groups:unique-names"
+else
+  fail "groups:duplicate-names=$duplicate_group_names"
+fi
+
+duplicate_gshadow_names="$(awk -F: '
+  { count[$1]++ }
+  END { for (name in count) if (count[name] > 1) print name }
+' /etc/gshadow)"
+if [[ -z "$duplicate_gshadow_names" ]]; then
+  pass "gshadow:unique-names"
+else
+  fail "gshadow:duplicate-names=$duplicate_gshadow_names"
+fi
+
 if touch "$status_dir/root-write-check" && rm -f "$status_dir/root-write-check"; then
   pass "root-filesystem:writable"
 else
   fail "root-filesystem:read-only"
 fi
 
-if systemctl is-active --quiet graphical.target; then
-  pass "target:graphical"
+if [[ "$(systemctl get-default 2>/dev/null)" == graphical.target ]]; then
+  pass "target:graphical-default"
 else
-  fail "target:graphical"
+  fail "target:not-graphical-default"
 fi
 
 if systemctl is-active --quiet sddm.service; then
@@ -179,6 +236,49 @@ if systemctl is-active --quiet seatd.service; then
   pass "service:seatd"
 else
   fail "service:seatd"
+fi
+
+if systemctl is-active --quiet sshd.service; then
+  pass "service:sshd"
+else
+  fail "service:sshd"
+fi
+
+if systemctl is-active --quiet reproos-network.service; then
+  pass "service:network"
+else
+  fail "service:network"
+fi
+
+network_attempt_limit=${REPROOS_NETWORK_HEALTH_ATTEMPTS:-60}
+network_attempt=0
+network_ipv4=0
+network_default_route=0
+while [[ "$network_attempt" -lt "$network_attempt_limit" ]]; do
+  if /usr/bin/busybox ip -4 addr show scope global | grep -q 'inet '; then
+    network_ipv4=1
+  fi
+  if /usr/bin/busybox route -n | awk \
+      '$1 == "0.0.0.0" && $4 ~ /G/ { found=1 } END { exit(found ? 0 : 1) }'; then
+    network_default_route=1
+  fi
+  if [[ "$network_ipv4" == 1 && "$network_default_route" == 1 ]]; then
+    break
+  fi
+  sleep 1
+  network_attempt=$((network_attempt + 1))
+done
+
+if [[ "$network_ipv4" == 1 ]]; then
+  pass "network:ipv4"
+else
+  fail "network:ipv4"
+fi
+
+if [[ "$network_default_route" == 1 ]]; then
+  pass "network:default-route"
+else
+  fail "network:default-route"
 fi
 
 if [[ -s /usr/share/wayland-sessions/sway.desktop ]]; then

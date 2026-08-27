@@ -725,79 +725,8 @@ echo "[build-reproos-image] Phase 10: emit passwd + shadow + group + gshadow + h
 # ---------------------------------------------------------------
 echo "[build-reproos-image] Phase 10.4: configure DHCP + OpenSSH"
 
-UDHCPC_HOOK="$WORK/reproos-udhcpc-hook"
-NETWORK_RUNNER="$WORK/reproos-network"
-NETWORK_UNIT="$WORK/reproos-network.service"
 SSHD_CONFIG="$WORK/sshd_config"
 SSHD_UNIT="$WORK/sshd.service"
-
-cat > "$UDHCPC_HOOK" <<'UDHCPC_HOOK_EOF'
-#!/usr/bin/busybox sh
-set -eu
-
-case "${1:-}" in
-  deconfig)
-    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
-    /usr/bin/busybox ifconfig "$interface" 0.0.0.0 up
-    ;;
-  bound|renew)
-    /usr/bin/busybox ifconfig "$interface" "$ip" \
-      netmask "${subnet:-255.255.255.0}" up
-    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
-    for gateway in ${router:-}; do
-      /usr/bin/busybox route add default gw "$gateway" dev "$interface"
-      break
-    done
-    : > /etc/resolv.conf
-    for server in ${dns:-}; do
-      printf 'nameserver %s\n' "$server" >> /etc/resolv.conf
-    done
-    ;;
-esac
-UDHCPC_HOOK_EOF
-
-cat > "$NETWORK_RUNNER" <<'NETWORK_RUNNER_EOF'
-#!/usr/bin/busybox sh
-set -eu
-
-interface=""
-attempt=0
-while [ "$attempt" -lt 30 ] && [ -z "$interface" ]; do
-  for path in /sys/class/net/*; do
-    candidate="${path##*/}"
-    [ "$candidate" = "lo" ] && continue
-    interface="$candidate"
-    break
-  done
-  [ -n "$interface" ] || /usr/bin/busybox sleep 1
-  attempt=$((attempt + 1))
-done
-
-if [ -z "$interface" ]; then
-  echo "ReproOS network interface not found" >&2
-  exit 1
-fi
-
-exec /usr/bin/busybox udhcpc -f -i "$interface" \
-  -s /usr/local/sbin/reproos-udhcpc-hook
-NETWORK_RUNNER_EOF
-
-cat > "$NETWORK_UNIT" <<'NETWORK_UNIT_EOF'
-[Unit]
-Description=ReproOS DHCP client
-After=systemd-udev-trigger.service
-Before=network.target sshd.service
-Wants=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/sbin/reproos-network
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-NETWORK_UNIT_EOF
 
 cat > "$SSHD_CONFIG" <<SSHD_CONFIG_EOF
 Port 22
@@ -841,14 +770,15 @@ SSHD_UNIT_EOF
   "$MNT_DIR/etc/ssh" \
   "$MNT_DIR/etc/systemd/system/multi-user.target.wants" \
   "$MNT_DIR/var/empty"
-"$SUDO" cp "$UDHCPC_HOOK" "$MNT_DIR/usr/local/sbin/reproos-udhcpc-hook"
-"$SUDO" cp "$NETWORK_RUNNER" "$MNT_DIR/usr/local/sbin/reproos-network"
-"$SUDO" cp "$NETWORK_UNIT" "$MNT_DIR/etc/systemd/system/reproos-network.service"
+"$SUDO" install -m 0755 \
+  "$SCRIPT_DIR_SELF/reproos-udhcpc-hook" \
+  "$SCRIPT_DIR_SELF/reproos-network" \
+  "$SCRIPT_DIR_SELF/reproos-network-wait" \
+  "$MNT_DIR/usr/local/sbin/"
+"$SUDO" install -m 0644 "$SCRIPT_DIR_SELF/reproos-network.service" \
+  "$MNT_DIR/etc/systemd/system/reproos-network.service"
 "$SUDO" cp "$SSHD_CONFIG" "$MNT_DIR/etc/ssh/sshd_config"
 "$SUDO" cp "$SSHD_UNIT" "$MNT_DIR/etc/systemd/system/sshd.service"
-"$SUDO" chmod 0755 \
-  "$MNT_DIR/usr/local/sbin/reproos-udhcpc-hook" \
-  "$MNT_DIR/usr/local/sbin/reproos-network"
 "$SUDO" chmod 0644 \
   "$MNT_DIR/etc/systemd/system/reproos-network.service" \
   "$MNT_DIR/etc/systemd/system/sshd.service"
@@ -861,7 +791,7 @@ SSHD_UNIT_EOF
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys
 After=local-fs.target
-Before=sshd.service reproos-health-check.service
+Before=sddm.service sshd.service reproos-health-check.service
 ConditionPathExists=!/var/lib/reproos/enrollment.complete
 
 [Service]
@@ -1493,16 +1423,22 @@ PAM_OTHER_EOF
     '$MNT_DIR/usr/local/bin/repro-sway-diag'
 
   # Keep the installed session independent of Debian's optional sway
-  # companion packages.  swaynag is built beside sway in the from-source
+  # companion packages.  swaybar is built beside sway in the from-source
   # output and gives the smoke test a stable, visible readiness signal.
+  ln -sfn '$SOURCE_RECIPES_ROOT/sway/.repro/output/install/usr/bin/swaybar' \
+    '$MNT_DIR/usr/bin/swaybar'
   ln -sfn '$SOURCE_RECIPES_ROOT/sway/.repro/output/install/usr/bin/swaynag' \
     '$MNT_DIR/usr/bin/swaynag'
+  ln -sfn '$SOURCE_RECIPES_ROOT/qt6-declarative/.repro/output/install/usr/bin/qml' \
+    '$MNT_DIR/usr/bin/qml'
+  ln -sfn '$SOURCE_RECIPES_ROOT/qt6-declarative/.repro/output/install/usr/qml' \
+    '$MNT_DIR/usr/qml'
   mkdir -p '$MNT_DIR/etc/sway'
-  cat > '$MNT_DIR/etc/sway/config' <<'SWAY_CONFIG_EOF'
-font pango:monospace 12
-swaybg_command -
-exec swaynag --message 'ReproOS is ready' --dismiss-button 'Ready' --font 'DejaVu Sans 18' --message-padding 28 --button-padding 14 --border-bottom-size 4 --background 20242aff --border 20242aff --border-bottom 43a047ff --text f5f7faff --button-background 343a40ff --button-text f5f7faff
-SWAY_CONFIG_EOF
+  install -m 0644 '$SCRIPT_DIR_SELF/reproos-sway.conf' \
+    '$MNT_DIR/etc/sway/config'
+  mkdir -p '$MNT_DIR/usr/share/reproos'
+  install -m 0644 '$SCRIPT_DIR_SELF/reproos-desktop.qml' \
+    '$MNT_DIR/usr/share/reproos/reproos-desktop.qml'
 
   # systemd invokes module helpers through /sbin, while the from-source kmod
   # recipe installs its applets under /usr/bin.  Expose modprobe at the
@@ -1901,8 +1837,8 @@ echo "[build-reproos-image] Phase 10.10: install post-boot health gate"
   cat > '$MNT_DIR/etc/systemd/system/reproos-health-check.service' <<'HEALTH_UNIT_EOF'
 [Unit]
 Description=ReproOS post-installation acceptance check
-After=graphical.target sddm.service seatd.service
-Wants=graphical.target
+After=sddm.service seatd.service reproos-first-boot-enroll.service reproos-network.service
+Requires=reproos-first-boot-enroll.service reproos-network.service
 
 [Service]
 Type=oneshot

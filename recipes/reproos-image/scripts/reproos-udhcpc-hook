@@ -1,0 +1,26 @@
+#!/usr/bin/busybox sh
+set -eu
+
+ready_file=/run/reproos-network-ready
+
+case "${1:-}" in
+  deconfig)
+    rm -f "$ready_file"
+    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
+    /usr/bin/busybox ifconfig "$interface" 0.0.0.0 up
+    ;;
+  bound|renew)
+    /usr/bin/busybox ifconfig "$interface" "$ip" \
+      netmask "${subnet:-255.255.255.0}" up
+    /usr/bin/busybox route del default dev "$interface" 2>/dev/null || true
+    for gateway in ${router:-}; do
+      /usr/bin/busybox route add default gw "$gateway" dev "$interface"
+      break
+    done
+    : > /etc/resolv.conf
+    for server in ${dns:-}; do
+      printf 'nameserver %s\n' "$server" >> /etc/resolv.conf
+    done
+    printf '%s\n' "$interface" > "$ready_file"
+    ;;
+esac

@@ -24,6 +24,33 @@ const
   ReproosIsoRootfsOutput* = "recipes/reproos-iso/build/de-rootfs"
   ReproosIsoBuildActionId* = "reproosIso.build_iso"
   ReproosIsoOutput* = "recipes/reproos-iso/build/reproos.iso"
+  ReproosUnattendedIsoBuildActionId* = "reproosIso.build_unattended_iso"
+  ReproosUnattendedIsoOutput* =
+    "recipes/reproos-iso/build/reproos-unattended.iso"
+
+proc buildIsoCommand(initramfsOutput, diskInitramfsOutput, isoOutput: string;
+                     installerAutorun: bool): string =
+  let autorun = if installerAutorun: "1" else: "0"
+  @[
+    "set -euo pipefail;",
+    "WORKSPACE_ROOT=\"$(cd ../../.. && pwd)\";",
+    "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$WORKSPACE_ROOT/reprobuild-packages}\";",
+    "export REPROBUILD_PACKAGES_ROOT=\"$PACKAGES_ROOT\";",
+    "export REPRO_FROM_SOURCE_ROOT=\"$PACKAGES_ROOT/packages/source\";",
+    "export REPRO_KERNEL_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install\";",
+    "export REPRO_BUSYBOX_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/busybox/.repro/output/install\";",
+    "mkdir -p build;",
+    "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC " &
+      "REPRO_DE_ROOTFS_DIR=\"$PWD/build/de-rootfs\" " &
+      "REPRO_GRUB_VARIANT=multi-de " &
+      "REPRO_LIVE_INIT=1 " &
+      "REPRO_LIVE_INIT_OUT=\"$PWD/" & initramfsOutput & "\" " &
+      "REPRO_DISK_INIT_OUT=\"$PWD/" & diskInitramfsOutput & "\" " &
+      "REPRO_INSTALLER_AUTORUN=" & autorun & " " &
+      "bash scripts/build-iso.sh " &
+      "\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz\" " &
+      initramfsOutput & " " & isoOutput,
+  ].join(" ")
 
 package reproosIso:
   defaultToolProvisioning "from-source"
@@ -84,6 +111,7 @@ package reproosIso:
     "libevdev"
     "expat"
     "libffi"
+    "libiconv"
     "fontconfig"
     "libfontenc"
     "freetype"
@@ -147,6 +175,7 @@ package reproosIso:
     "tar"
     "bash"
     "gawk"
+    "grep"
     "perl"
     "python3"
     "glibc"
@@ -194,6 +223,15 @@ package reproosIso:
         "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
         "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/reproos-health-check",
+        "recipes/reproos-image/scripts/reproos-sway.conf",
+        "recipes/reproos-image/scripts/reproos-desktop.qml",
+        "recipes/reproos-image/scripts/reproos-network",
+        "recipes/reproos-image/scripts/reproos-network-wait",
+        "recipes/reproos-image/scripts/reproos-network.service",
+        "recipes/reproos-image/scripts/reproos-udhcpc-hook",
+        "tests/fixtures/auto-config-minimal.toml",
         installerPackage.ReproosInstallerBinary,
       ],
       extraOutputs = @["build/de-rootfs"])
@@ -208,28 +246,11 @@ package reproosIso:
 
     # ISO authoring consumes the cached rootfs plus the source-built boot and
     # image tooling. Timestamps, locale, and timezone are pinned by the driver.
-    let buildIsoCommand = @[
-      "set -euo pipefail;",
-      "WORKSPACE_ROOT=\"$(cd ../../.. && pwd)\";",
-      "PACKAGES_ROOT=\"${REPROBUILD_PACKAGES_ROOT:-$WORKSPACE_ROOT/reprobuild-packages}\";",
-      "export REPROBUILD_PACKAGES_ROOT=\"$PACKAGES_ROOT\";",
-      "export REPRO_FROM_SOURCE_ROOT=\"$PACKAGES_ROOT/packages/source\";",
-      "export REPRO_KERNEL_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install\";",
-      "export REPRO_BUSYBOX_INSTALL_ROOT=\"$PACKAGES_ROOT/packages/source/busybox/.repro/output/install\";",
-      "mkdir -p build;",
-      "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC " &
-        "REPRO_DE_ROOTFS_DIR=\"$PWD/build/de-rootfs\" " &
-        "REPRO_GRUB_VARIANT=multi-de " &
-        "REPRO_LIVE_INIT=1 " &
-        "REPRO_LIVE_INIT_OUT=\"$PWD/build/reproos-initramfs.img\" " &
-        # Autorun remains opt-in for unattended installation tests.
-        "REPRO_INSTALLER_AUTORUN=\"${REPRO_INSTALLER_AUTORUN:-0}\" " &
-        "bash scripts/build-iso.sh " &
-        "\"$PACKAGES_ROOT/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz\" " &
-        "build/reproos-initramfs.img build/reproos.iso",
-    ].join(" ")
     let buildIsoAction = shell(
-      command = buildIsoCommand,
+      command = buildIsoCommand(
+        "build/reproos-initramfs.img",
+        "build/reproos-iso-disk-initramfs.img",
+        "build/reproos.iso", false),
       actionId = ReproosIsoBuildActionId,
       deps = @[stageRootfsAction.id],
       extraInputs = @[
@@ -240,9 +261,11 @@ package reproosIso:
         "recipes/reproos-iso/scripts/build-iso.sh",
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init",
+        "recipes/reproos-iso/initramfs/init-disk",
       ],
       extraOutputs = @[
         "build/reproos-initramfs.img",
+        "build/reproos-iso-disk-initramfs.img",
         "build/reproos.iso",
       ])
     appendRegisteredActionToolIdentityRefs(buildIsoAction.id,
@@ -265,7 +288,69 @@ package reproosIso:
       "recipes/reproos-iso")
     let initramfsOutputAbs = projectRoot /
       "recipes/reproos-iso/build/reproos-initramfs.img"
+    let diskInitramfsOutputAbs = projectRoot /
+      "recipes/reproos-iso/build/reproos-iso-disk-initramfs.img"
     let isoOutputAbs = projectRoot / ReproosIsoOutput
     setRegisteredActionDependencyPolicy(buildIsoAction.id,
-      automaticMonitorPolicy(@[initramfsOutputAbs, isoOutputAbs]))
+      automaticMonitorPolicy(@[
+        initramfsOutputAbs,
+        diskInitramfsOutputAbs,
+        isoOutputAbs,
+      ]))
     discard target("iso", buildIsoAction)
+
+    # Keep unattended boot media as a distinct immutable output. The autorun
+    # kernel command line is part of this action's literal command and cache
+    # key, so a normal interactive ISO can never be mistaken for install media.
+    let buildUnattendedIsoAction = shell(
+      command = buildIsoCommand(
+        "build/reproos-unattended-initramfs.img",
+        "build/reproos-unattended-disk-initramfs.img",
+        "build/reproos-unattended.iso", true),
+      actionId = ReproosUnattendedIsoBuildActionId,
+      deps = @[stageRootfsAction.id],
+      extraInputs = @[
+        ReproosIsoRootfsOutput,
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/kernel.release",
+        "../reprobuild-packages/packages/source/busybox/.repro/output/install/usr/bin/busybox",
+        "recipes/reproos-iso/scripts/build-iso.sh",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      extraOutputs = @[
+        "build/reproos-unattended-initramfs.img",
+        "build/reproos-unattended-disk-initramfs.img",
+        "build/reproos-unattended.iso",
+      ])
+    appendRegisteredActionToolIdentityRefs(buildUnattendedIsoAction.id,
+      @[
+        "bash",
+        "busybox",
+        "coreutils",
+        "dosfstools",
+        "gawk",
+        "grub",
+        "kernel",
+        "kmod",
+        "mtools",
+        "squashfs-tools",
+        "xz",
+        "xorriso",
+        "zstd",
+      ])
+    setRegisteredActionCwd(buildUnattendedIsoAction.id, acwdCustom,
+      "recipes/reproos-iso")
+    let unattendedInitramfsOutputAbs = projectRoot /
+      "recipes/reproos-iso/build/reproos-unattended-initramfs.img"
+    let unattendedDiskInitramfsOutputAbs = projectRoot /
+      "recipes/reproos-iso/build/reproos-unattended-disk-initramfs.img"
+    let unattendedIsoOutputAbs = projectRoot / ReproosUnattendedIsoOutput
+    setRegisteredActionDependencyPolicy(buildUnattendedIsoAction.id,
+      automaticMonitorPolicy(@[
+        unattendedInitramfsOutputAbs,
+        unattendedDiskInitramfsOutputAbs,
+        unattendedIsoOutputAbs,
+      ]))
+    discard target("unattended-iso", buildUnattendedIsoAction)

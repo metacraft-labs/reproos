@@ -50,6 +50,70 @@ def bash_path(path: Path) -> str:
 
 
 class MachineConfigurationTests(unittest.TestCase):
+    def test_network_launcher_allows_an_offline_machine(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="reproos-offline-network-") as raw:
+            root = Path(raw)
+            network_root = root / "net"
+            network_root.mkdir()
+            ready_file = root / "network-ready"
+            busybox = root / "busybox"
+            busybox.write_text("#!/bin/sh\nexec \"$@\"\n")
+            busybox.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "REPROOS_SYS_CLASS_NET": bash_path(network_root),
+                    "REPROOS_NETWORK_INTERFACE_ATTEMPTS": "0",
+                    "REPROOS_NETWORK_READY_FILE": bash_path(ready_file),
+                    "REPROOS_BUSYBOX": bash_path(busybox),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    bash_path(
+                        ROOT / "recipes/reproos-image/scripts/reproos-network"
+                    ),
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("continuing offline", result.stdout)
+            self.assertEqual(ready_file.read_text(), "offline\n")
+            waiter = subprocess.run(
+                [
+                    "bash",
+                    bash_path(
+                        ROOT
+                        / "recipes/reproos-image/scripts/reproos-network-wait"
+                    ),
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(waiter.returncode, 0, waiter.stderr)
+
+            ready_file.unlink()
+            env["REPROOS_NETWORK_READY_ATTEMPTS"] = "0"
+            waiter = subprocess.run(
+                [
+                    "bash",
+                    bash_path(
+                        ROOT
+                        / "recipes/reproos-image/scripts/reproos-network-wait"
+                    ),
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(waiter.returncode, 0, waiter.stderr)
+            self.assertIn("continuing offline", waiter.stderr)
+            self.assertEqual(ready_file.read_text(), "offline\n")
+
     def test_remote_access_configuration_validation(self) -> None:
         config = valid_public()
         manifest = MODULE.validate_public(config)
@@ -88,10 +152,14 @@ class MachineConfigurationTests(unittest.TestCase):
             root = Path(raw) / "root"
             enrollment = Path(raw) / "enrollment"
             (root / "etc/repro").mkdir(parents=True)
+            (root / "etc/reproos").mkdir(parents=True)
             (root / "var/lib/reproos").mkdir(parents=True)
             enrollment.mkdir()
             (root / "etc/repro/auto-config.toml").write_bytes(
                 (ROOT / "tests/fixtures/auto-config-minimal.toml").read_bytes()
+            )
+            (root / "etc/reproos/auto-config.toml").write_text(
+                "installer media configuration\n"
             )
             (root / "etc/repro/generation").write_text("generation-test\n")
             (root / "var/lib/reproos/install-source").write_text(
@@ -104,7 +172,11 @@ class MachineConfigurationTests(unittest.TestCase):
             (root / "etc/shadow").write_text("root:!:::::::\nlive:!:::::::\n")
             (root / "etc/group").write_text(
                 "root:x:0:\nwheel:x:10:live\naudio:x:29:live\n"
-                "video:x:44:live\nnetworkmanager:x:102:live\nlive:x:1000:\n"
+                "video:x:44:live\nlive:x:1000:\n"
+            )
+            (root / "etc/gshadow").write_text(
+                "root:*::\nwheel:*::live\naudio:*::live\n"
+                "video:*::live\nlive:!::\n"
             )
             (enrollment / "machine-id").write_text(
                 "83fddb41-b072-45e1-8e44-7ef56f4463a7\n"
@@ -145,7 +217,58 @@ class MachineConfigurationTests(unittest.TestCase):
             self.assertTrue((root / "var/lib/reproos/enrollment.complete").exists())
             self.assertIn("repro:x:1000:1000:", (root / "etc/passwd").read_text())
             self.assertNotIn("live:", (root / "etc/passwd").read_text())
+            self.assertIn(
+                "repro:x:20000:0:99999:7:::",
+                (root / "etc/shadow").read_text(),
+            )
+            group_records = (root / "etc/group").read_text().splitlines()
+            for group_name in ("wheel", "audio", "video", "networkmanager", "seat"):
+                self.assertTrue(
+                    any(
+                        record.split(":", 1)[0] == group_name
+                        and "repro" in record.rsplit(":", 1)[1].split(",")
+                        for record in group_records
+                    ),
+                    f"missing repro membership in {group_name}",
+                )
+            gids = [record.split(":")[2] for record in group_records]
+            self.assertEqual(len(gids), len(set(gids)))
+            names = [record.split(":")[0] for record in group_records]
+            self.assertEqual(len(names), len(set(names)))
+            gshadow_records = (
+                root / "etc/gshadow"
+            ).read_text().splitlines()
+            self.assertFalse(any(
+                record.split(":", 1)[0] == "live"
+                for record in gshadow_records
+            ))
+            for group_name in (
+                "wheel", "audio", "video", "networkmanager", "seat"
+            ):
+                self.assertTrue(
+                    any(
+                        record.split(":", 1)[0] == group_name
+                        and "repro" in record.rsplit(":", 1)[1].split(",")
+                        for record in gshadow_records
+                    ),
+                    f"missing repro gshadow membership in {group_name}: "
+                    f"{gshadow_records}",
+                )
+            self.assertIn("repro:!::", gshadow_records)
             self.assertEqual((root / "etc/machine-id").read_text().strip(), identity["machine_id"])
+            self.assertEqual(
+                (root / "etc/hostname").read_text().strip(), "reproos-smoke"
+            )
+            sddm = (root / "etc/sddm.conf.d/00-autologin.conf").read_text()
+            self.assertIn("User=repro", sddm)
+            self.assertIn("Session=sway", sddm)
+            self.assertFalse((root / "etc/reproos/auto-config.toml").exists())
+            self.assertTrue(
+                (
+                    root
+                    / "etc/reproos/auto-config.toml.disabled-after-install"
+                ).is_file()
+            )
 
     def test_instance_secrets_do_not_affect_public_image_cache_key(self) -> None:
         public_manifest = MODULE.validate_public(valid_public())

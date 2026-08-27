@@ -10,7 +10,8 @@ sources, boot assets, and product-specific tests.
 Use Reprobuild as the only contributor command surface:
 
 - `repro build installer`, `repro build rootfs`, `repro build iso`,
-  `repro build image`, `repro build incus-projection`, and
+  `repro build unattended-iso`, `repro build image`,
+  `repro build incus-projection`, and
   `repro build incus-image` produce the named artifacts from source.
 - `repro build` produces the default artifact collection.
 - `repro test` runs the complete product test collection; focused tests are
@@ -34,6 +35,12 @@ Use Reprobuild as the only contributor command surface:
   by the ISO graph; use `-- --verify-only` for a read-only cache audit.
 - `repro run boot-iso` and `repro run boot-image` leave VMs open for manual
   acceptance.
+- `repro run vm-install` performs a real unattended install through
+  `vm-harness` into a persistent target disk; `vm-verify-installed-boot`
+  detaches the ISO and verifies installed-disk boot, enrollment, health, and
+  key-only SSH with persistent host-key verification. `repro run vm-ssh --
+  COMMAND...` runs an ad hoc command through the same self-cleaning vm-harness
+  lifecycle.
 - `repro run image-ssh -- COMMAND...` boots a self-cleaning installed VM and
   runs a command over SSH; with no command it verifies the configured hostname.
 - `repro run incus-launch` imports and starts the source-built container in an

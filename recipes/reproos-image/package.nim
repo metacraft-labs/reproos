@@ -121,6 +121,7 @@ package reproosImage:
     "libevdev"
     "expat"
     "libffi"
+    "libiconv"
     "fontconfig"
     "libfontenc"
     "freetype"
@@ -184,6 +185,7 @@ package reproosImage:
     "tar"
     "bash"
     "gawk"
+    "grep"
     "perl"
     "python3"
     "glibc"
@@ -314,8 +316,14 @@ package reproosImage:
         reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/repro-sway-diag",
+        "recipes/reproos-image/scripts/reproos-sway.conf",
+        "recipes/reproos-image/scripts/reproos-desktop.qml",
         "recipes/reproos-image/scripts/reproos-health-check",
         "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/reproos-network",
+        "recipes/reproos-image/scripts/reproos-network-wait",
+        "recipes/reproos-image/scripts/reproos-network.service",
+        "recipes/reproos-image/scripts/reproos-udhcpc-hook",
         "tests/fixtures/auto-config-minimal.toml",
         installerPackage.ReproosInstallerBinary,
         isoPackage.ReproosIsoRootfsOutput,

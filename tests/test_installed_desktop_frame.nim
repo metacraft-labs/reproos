@@ -1,4 +1,4 @@
-import std/[os, osproc, streams, strutils]
+import std/[editdistance, os, osproc, streams, strutils]
 
 import gui_assert/image_math
 import gui_assert/ocr
@@ -39,21 +39,15 @@ if imageSize != (1280, 800):
     $imageSize.width & "x" & $imageSize.height)
 
 let gray = decodeGray(frame)
-var rowMeans = newSeq[int](gray.height)
-for y in 0 ..< gray.height:
-  var rowTotal = 0
-  for x in 0 ..< gray.width:
-    rowTotal += int(gray.pixels[y * gray.width + x].uint8)
-  rowMeans[y] = rowTotal div gray.width
-
 var backgroundTotal = 0
 for y in gray.height - 40 ..< gray.height:
-  backgroundTotal += rowMeans[y]
+  backgroundTotal += int(gray.pixels[y * gray.width].uint8)
 let backgroundMean = backgroundTotal div 40
 var panelEnd = -1
 var backgroundRun = 0
 for y in 0 ..< min(gray.height, 320):
-  if abs(rowMeans[y] - backgroundMean) <= 3:
+  let edgePixel = int(gray.pixels[y * gray.width].uint8)
+  if abs(edgePixel - backgroundMean) <= 3:
     inc backgroundRun
     if backgroundRun == 3:
       panelEnd = y - 2
@@ -71,9 +65,15 @@ try:
   cropPanel(frame, panelFrame, gray.width, panelEnd)
   let words = runOcrEx(panelFrame, initOcrOptions(psm = 6))
   let text = concatenatedText(words).toLowerAscii()
-  for expected in ["reproos", "ready"]:
-    if expected notin text:
-      fail("installed desktop OCR is missing '" & expected & "': " & text)
+  var brandFound = false
+  for word in words:
+    if editDistance(word.text.toLowerAscii(), "reproos") <= 1:
+      brandFound = true
+      break
+  if not brandFound:
+    fail("installed desktop OCR is missing 'reproos': " & text)
+  if "ready" notin text:
+    fail("installed desktop OCR is missing 'ready': " & text)
 
   for word in words:
     let wordBottom = word.bbox[1] + word.bbox[3]

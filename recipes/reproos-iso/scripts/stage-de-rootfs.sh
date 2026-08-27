@@ -207,9 +207,13 @@ SOURCE_GLIBC_LOADER_RUNNER="$(realpath -m "$SOURCE_GLIBC_LOADER_STAGED")"
 SOURCE_GLIBC_RUNTIME_DIR_RUNNER="$(realpath -m "$SOURCE_GLIBC_RUNTIME_DIR_STAGED")"
 SOURCE_GLIBC_LOADER="${SOURCE_GLIBC_LOADER_STAGED#$STAGE_DIR}"
 SOURCE_GLIBC_RUNTIME_DIR="${SOURCE_GLIBC_RUNTIME_DIR_STAGED#$STAGE_DIR}"
-SOURCE_GLIBC_VERSION="$(sed -nE \
-  's/^#define VERSION "([0-9]+\.[0-9]+)"/\1/p' \
-  "$SRC_RECIPES_ROOT/glibc/src/version.h" | head -n1)"
+# Cache substitutions intentionally materialize only the declared install
+# artifact, not a producer's unpacked source tree. The GNU libc release string
+# is embedded in libc.so.6, so derive the loader ABI version without executing
+# an image-owned binary or reaching outside the package interface.
+SOURCE_GLIBC_VERSION="$(grep -aoE 'release version [0-9]+\.[0-9]+' \
+  "$SOURCE_GLIBC_RUNTIME_DIR_STAGED/libc.so.6" | \
+  sed -nE 's/^release version ([0-9]+\.[0-9]+)$/\1/p' | head -n1)"
 if [ -z "$SOURCE_GLIBC_VERSION" ]; then
   echo "[stage-de-rootfs] could not determine source glibc version" >&2
   exit 67
@@ -239,10 +243,10 @@ fi
 # value naming one. Generate it with the source-built glibc and upstream
 # locale data so the image does not inherit the build host's locale archive.
 SOURCE_GLIBC_LOCALEDEF="$SOURCE_GLIBC_INSTALL_ROOT/usr/bin/localedef"
-SOURCE_GLIBC_LOCALEDATA="$SRC_RECIPES_ROOT/glibc/src/localedata"
+SOURCE_GLIBC_LOCALEDATA="$SOURCE_GLIBC_INSTALL_ROOT/usr/share/i18n"
 if [ ! -x "$SOURCE_GLIBC_LOCALEDEF" ] || \
    [ ! -f "$SOURCE_GLIBC_LOCALEDATA/locales/C" ] || \
-   [ ! -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" ]; then
+   [ ! -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8.gz" ]; then
   echo "[stage-de-rootfs] required source glibc locale inputs missing" >&2
   exit 67
 fi
@@ -259,8 +263,8 @@ I18NPATH="$SOURCE_GLIBC_LOCALEDATA" \
   "$localedef_runner" \
   --no-archive \
   --prefix="$STAGE_DIR" \
-  -i "$SOURCE_GLIBC_LOCALEDATA/locales/C" \
-  -f "$SOURCE_GLIBC_LOCALEDATA/charmaps/UTF-8" \
+  -i C \
+  -f UTF-8 \
   C.UTF-8
 rm -f "$localedef_runner"
 if [ ! -s "$STAGE_DIR/usr/lib/locale/C.utf8/LC_CTYPE" ] || \
@@ -613,11 +617,29 @@ link_entry() {
 # below.
 link_entry sway sway
 link_entry sway swaymsg
+link_entry sway swaybar
+link_entry sway swaynag
+link_entry qt6-declarative qml
 link_entry kwin kwin_wayland
 link_entry kwin kwin_wayland_wrapper
 link_entry mutter mutter
 link_entry sddm sddm
 link_entry sddm sddm-greeter-qt6
+
+# The live installer switches SDDM to the installed Sway session during first
+# boot enrollment. Stage the same visible readiness surface as the direct image
+# so the copied target root does not fall back to Sway's packaging example.
+mkdir -p "$STAGE_DIR/etc/sway"
+install -m 0644 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-sway.conf" \
+  "$STAGE_DIR/etc/sway/config"
+mkdir -p "$STAGE_DIR/usr/share/reproos"
+install -m 0644 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-desktop.qml" \
+  "$STAGE_DIR/usr/share/reproos/reproos-desktop.qml"
+ln -sfn \
+  /opt/repro/reprobuild-packages/packages/source/qt6-declarative/.repro/output/install/usr/qml \
+  "$STAGE_DIR/usr/qml"
 
 SDDM_INSTALL_ROOT="$ISO_SRC_MIRROR_ROOT/sddm/.repro/output/install"
 if [ ! -f "$SDDM_INSTALL_ROOT/usr/lib/systemd/system/sddm.service" ] || \
@@ -760,10 +782,12 @@ BASE_USERSPACE_RECIPES=(
   adwaita-icon-theme
   dejavu-fonts
   xorg-server
+  libseat
   xz
   tar
   bash
   gawk
+  grep
   perl
   python3
   glibc
@@ -1301,6 +1325,61 @@ for base_recipe in "${BASE_USERSPACE_RECIPES[@]}"; do
   link_base_recipe_binaries "$base_recipe"
 done
 
+# Sway uses the source-built libseat stack. Expose its daemon at the normal FHS
+# path and start it before SDDM so installed sessions do not depend on a
+# distribution-provided logind fallback.
+if grep -q '^seat:' "$STAGE_DIR/etc/group"; then
+  echo "[stage-de-rootfs] duplicate seat group in base rootfs" >&2
+  exit 67
+fi
+if awk -F: '$3 == 985 { found=1 } END { exit(found ? 0 : 1) }' \
+    "$STAGE_DIR/etc/group"; then
+  echo "[stage-de-rootfs] reserved seat GID 985 is already in use" >&2
+  exit 67
+fi
+printf '%s\n' 'seat:x:985:live' >> "$STAGE_DIR/etc/group"
+
+# OpenSSH refuses to start without its privilege-separation account. Keep the
+# account IDs aligned with the direct-image and container compositions.
+if grep -q '^sshd:' "$STAGE_DIR/etc/passwd" || \
+   grep -q '^sshd:' "$STAGE_DIR/etc/group" || \
+   awk -F: '$3 == 74 { found=1 } END { exit(found ? 0 : 1) }' \
+     "$STAGE_DIR/etc/passwd" || \
+   awk -F: '$3 == 74 { found=1 } END { exit(found ? 0 : 1) }' \
+     "$STAGE_DIR/etc/group"; then
+  echo "[stage-de-rootfs] OpenSSH account name or ID 74 is already in use" >&2
+  exit 67
+fi
+printf '%s\n' \
+  'sshd:x:74:74:OpenSSH privilege separation:/var/empty:/usr/bin/false' \
+  >> "$STAGE_DIR/etc/passwd"
+printf '%s\n' 'sshd:!:19000:0:99999:7:::' >> "$STAGE_DIR/etc/shadow"
+printf '%s\n' 'sshd:x:74:' >> "$STAGE_DIR/etc/group"
+printf '%s\n' 'sshd:!::' >> "$STAGE_DIR/etc/gshadow"
+mkdir -p "$STAGE_DIR/var/empty"
+chmod 0755 "$STAGE_DIR/var/empty"
+
+cat > "$STAGE_DIR/etc/systemd/system/seatd.service" <<'EOF'
+[Unit]
+Description=Seat management daemon
+Documentation=man:seatd(1)
+DefaultDependencies=no
+After=systemd-user-sessions.service
+Before=sddm.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/seatd -g seat
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical.target
+EOF
+mkdir -p "$STAGE_DIR/etc/systemd/system/graphical.target.wants"
+ln -sfn /etc/systemd/system/seatd.service \
+  "$STAGE_DIR/etc/systemd/system/graphical.target.wants/seatd.service"
+
 # Install the source-built Mozilla CA bundle at the conventional system paths.
 CA_CERTIFICATES_ROOT="$ISO_SRC_MIRROR_ROOT/ca-certificates/.repro/output/install"
 CA_CERTIFICATES_BUNDLE="$CA_CERTIFICATES_ROOT/etc/ssl/certs/ca-certificates.crt"
@@ -1512,7 +1591,8 @@ EOF
 #   * QT_QPA_PLATFORM=offscreen (the launcher checks this; without it
 #     the binary tries to load the wayland QPA plugin and fails before
 #     anything useful happens).
-#   * REPRO_INSTALLER_DIAG=1 (DIAG mode -> LD_DEBUG + strace + persist).
+#   * REPRO_INSTALLER_DIAG=1 only when the explicit diagnostic kernel token is
+#     present (DIAG mode -> LD_DEBUG + strace + persist).
 #
 # After the installer exits (success or SIGABRT), the unit runs
 # ``poweroff`` so QEMU shuts down cleanly + the driver's wait completes
@@ -1546,13 +1626,25 @@ echo "=== REPROOS-INSTALLER-AUTORUN-BEGIN ===" 1>&2
 echo "uptime: $(cat /proc/uptime 2>/dev/null)" 1>&2
 echo "cmdline: $(cat /proc/cmdline 2>/dev/null)" 1>&2
 
-if ! grep -qE '(^| )repro\.installer\.autorun=1( |$)' /proc/cmdline 2>/dev/null; then
+autorun=false
+diagnostics=false
+for token in $(cat /proc/cmdline 2>/dev/null); do
+  case "$token" in
+    repro.installer.autorun=1) autorun=true ;;
+    repro.installer.diag=1) diagnostics=true ;;
+  esac
+done
+if [ "$autorun" != true ]; then
   echo "=== REPROOS-INSTALLER-AUTORUN-SKIP (cmdline lacks repro.installer.autorun=1) ===" 1>&2
   exit 0
 fi
 
 export QT_QPA_PLATFORM=offscreen
-export REPRO_INSTALLER_DIAG=1
+if [ "$diagnostics" = true ]; then
+  export REPRO_INSTALLER_DIAG=1
+else
+  unset REPRO_INSTALLER_DIAG
+fi
 
 # Run the launcher synchronously.
 /usr/bin/reproos-installer-launcher.sh --automated /etc/reproos/auto-config.toml
@@ -1572,7 +1664,7 @@ chmod 0755 "$STAGE_DIR/usr/local/sbin/reproos-installer-autorun.sh"
 
 cat > "$STAGE_DIR/etc/systemd/system/reproos-installer-autorun.service" <<'EOF'
 [Unit]
-Description=ReproOS Installer auto-run (M9.R.39.4 diagnostic boot path)
+Description=ReproOS Installer unattended auto-run
 After=local-fs.target sysinit.target multi-user.target
 Wants=multi-user.target
 
@@ -2057,61 +2149,8 @@ chmod 0644 "$STAGE_DIR/etc/profile.d/zz-reproos-installer-autostart.sh"
 # Bake the reviewed reusable profile. Instance keys are supplied separately at
 # first boot and never become part of the cacheable live filesystem.
 mkdir -p "$STAGE_DIR/etc/reproos"
-cat > "$STAGE_DIR/etc/reproos/auto-config.toml" <<'EOF'
-# ReproOS unattended installation configuration
-schema_version = 2
-hostname = "reproos-smoke"
-
-[regional]
-locale = "en_US.UTF-8"
-timezone = "UTC"
-keymap = "us"
-
-[user]
-name = "repro"
-full_name = "Repro Test User"
-locked = true
-groups = ["wheel", "audio", "video", "networkmanager"]
-shell = "/bin/bash"
-
-[sudo]
-policy = "passwordless"
-users = ["repro"]
-
-[disk]
-size_gb = 8
-
-[disk.layout]
-type = "uefi-ext4"
-esp_size_mib = 512
-
-[de]
-default = "sway"
-
-[network]
-ipv4 = "dhcp"
-
-[ssh]
-enabled = true
-permit_root_login = false
-password_authentication = false
-authorized_keys_source = "instance-enrollment"
-
-[firewall]
-default_policy = "deny"
-allowed_tcp_ports = [22]
-ssh_source_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-
-[first_boot]
-enrollment = "required"
-enrollment_label = "REPROOS_ENROLL"
-
-[activities]
-enabled = []
-
-[install]
-target_device = "/dev/vda"
-EOF
+install -m 0644 "$REPO_ROOT/tests/fixtures/auto-config-minimal.toml" \
+  "$STAGE_DIR/etc/reproos/auto-config.toml"
 
 # Instance identity is enrolled from a separate vm-harness secondary ISO. The
 # live root carries the same service that is copied to the installed target;
@@ -2124,11 +2163,53 @@ install -m 0755 \
   "$STAGE_DIR/usr/local/sbin/reproos-first-boot-enroll"
 printf '%s\n' 'unattended-installer' \
   > "$STAGE_DIR/var/lib/reproos/install-source"
+
+# The service is present on both live and installed roots, but the receipt is
+# written only after install-root and durable configuration complete on the
+# target disk. This makes the marker impossible to satisfy from live media.
+cat > "$STAGE_DIR/usr/local/sbin/reproos-installed-boot-evidence" <<'EOF'
+#!/bin/sh
+set -eu
+
+receipt=/var/lib/reproos/installation-receipt.json
+generation=/etc/repro/generation
+source_file=/var/lib/reproos/install-source
+
+test -s "$receipt"
+test -s "$generation"
+test -s "$source_file"
+source=$(cat "$source_file")
+test "$source" = unattended-installer
+printf '=== REPROOS-INSTALLED-BOOT source=%s generation=%s ===\n' \
+  "$source" "$(cat "$generation")"
+EOF
+chmod 0755 "$STAGE_DIR/usr/local/sbin/reproos-installed-boot-evidence"
+
+cat > "$STAGE_DIR/etc/systemd/system/reproos-installed-boot-evidence.service" <<'EOF'
+[Unit]
+Description=Publish evidence that ReproOS booted from an installed disk
+After=local-fs.target
+Before=reproos-first-boot-enroll.service
+ConditionPathExists=/var/lib/reproos/installation-receipt.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-installed-boot-evidence
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/reproos-installed-boot-evidence.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-installed-boot-evidence.service"
+
 cat > "$STAGE_DIR/etc/systemd/system/reproos-first-boot-enroll.service" <<'EOF'
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys
 After=local-fs.target
-Before=sshd.service reproos-health-check.service
+Before=sddm.service sshd.service reproos-health-check.service
+ConditionPathExists=/var/lib/reproos/installation-receipt.json
 ConditionPathExists=!/var/lib/reproos/enrollment.complete
 
 [Service]
@@ -2142,6 +2223,46 @@ WantedBy=multi-user.target
 EOF
 ln -sfn /etc/systemd/system/reproos-first-boot-enroll.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-first-boot-enroll.service"
+
+# Use the same source-built BusyBox DHCP client as the direct disk image. The
+# shared service waits for a lease and default route before SSH is considered
+# ready, keeping installed-image and installer-image networking identical.
+install -m 0755 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-udhcpc-hook" \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-network" \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-network-wait" \
+  "$STAGE_DIR/usr/local/sbin/"
+install -m 0644 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-network.service" \
+  "$STAGE_DIR/etc/systemd/system/reproos-network.service"
+ln -sfn /etc/systemd/system/reproos-network.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-network.service"
+
+# The installed-disk acceptance contract uses the same health checker as the
+# directly assembled image. It runs only after enrollment and the graphical
+# session have settled, and persists a detailed status file for SSH probes.
+install -m 0755 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-health-check" \
+  "$STAGE_DIR/usr/local/sbin/reproos-health-check"
+cat > "$STAGE_DIR/etc/systemd/system/reproos-health-check.service" <<'EOF'
+[Unit]
+Description=ReproOS post-installation acceptance check
+After=sddm.service seatd.service reproos-first-boot-enroll.service reproos-network.service
+Requires=reproos-first-boot-enroll.service reproos-network.service
+ConditionPathExists=/var/lib/reproos/installation-receipt.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-health-check
+TimeoutStartSec=180
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+mkdir -p "$STAGE_DIR/etc/systemd/system/graphical.target.wants"
+ln -sfn /etc/systemd/system/reproos-health-check.service \
+  "$STAGE_DIR/etc/systemd/system/graphical.target.wants/reproos-health-check.service"
 
 cat > "$STAGE_DIR/etc/ssh/sshd_config" <<'EOF'
 Port 22
@@ -2162,7 +2283,8 @@ chmod 0600 "$STAGE_DIR/etc/ssh/sshd_config"
 cat > "$STAGE_DIR/etc/systemd/system/sshd.service" <<'EOF'
 [Unit]
 Description=OpenSSH server
-After=network.target reproos-first-boot-enroll.service
+After=network.target reproos-network.service reproos-first-boot-enroll.service
+Wants=reproos-network.service
 Requires=reproos-first-boot-enroll.service
 
 [Service]

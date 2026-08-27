@@ -47,12 +47,16 @@ SCRIPT_DIR_SELF="$(cd "$(dirname "$0")" && pwd)"
 REPRO_LIVE_INIT="${REPRO_LIVE_INIT:-0}"
 if [ "$REPRO_LIVE_INIT" = "1" ]; then
   LIVE_INIT_OUT="${REPRO_LIVE_INIT_OUT:-$(dirname "$INITRAMFS")/initrd.img-live}"
+  DISK_INIT_OUT="${REPRO_DISK_INIT_OUT:-$(dirname "$INITRAMFS")/initrd.img-disk}"
   echo "[build-iso] regenerating live-init initramfs at $LIVE_INIT_OUT"
   bash "$SCRIPT_DIR_SELF/build-initramfs.sh" "$LIVE_INIT_OUT"
+  echo "[build-iso] generating installed-root initramfs at $DISK_INIT_OUT"
+  REPRO_INITRAMFS_INIT=init-disk \
+    bash "$SCRIPT_DIR_SELF/build-initramfs.sh" "$DISK_INIT_OUT"
   INITRAMFS="$LIVE_INIT_OUT"
 fi
 
-for f in "$KERNEL" "$INITRAMFS"; do
+for f in "$KERNEL" "$INITRAMFS" ${DISK_INIT_OUT:+"$DISK_INIT_OUT"}; do
   if [ ! -f "$f" ]; then
     echo "input missing: $f" >&2
     exit 65
@@ -124,6 +128,10 @@ export PATH="$SHIM_DIR:$PATH"
 mkdir -p "$WORK/boot/grub"
 cp "$KERNEL" "$WORK/vmlinuz"
 cp "$INITRAMFS" "$WORK/initrd.img"
+if [ -n "${DISK_INIT_OUT:-}" ]; then
+  mkdir -p "$WORK/reproos"
+  cp "$DISK_INIT_OUT" "$WORK/reproos/disk-initrd.img"
+fi
 
 # M9.R.16.8 — optional DE-rootfs SquashFS payload. When
 # REPRO_DE_ROOTFS_DIR points to a populated directory tree (typically
@@ -157,6 +165,7 @@ if [ -n "$REPRO_DE_ROOTFS_DIR" ]; then
   # the SquashFS metadata instead of relying on the staging-tree uid/gid.
   mksquashfs "$REPRO_DE_ROOTFS_DIR" "$WORK/live/filesystem.squashfs" \
     -p "home/live m 0700 1000 1002" \
+    -p "var/empty m 0755 0 0" \
     -no-xattrs \
     -comp xz -Xbcj x86 \
     -noappend \
@@ -195,15 +204,19 @@ REPRO_GRUB_TIMEOUT="${REPRO_GRUB_TIMEOUT:-0}"
 # the default Sway menu entry's cmdline gets
 # ``repro.installer.autorun=1`` appended, which trips the
 # ``reproos-installer-autorun.service`` systemd unit
-# (stage-de-rootfs.sh Phase 5) on boot.  The unit runs the launcher in
-# DIAG mode BEFORE multi-user.target so the M9.R.39.1 LD_DEBUG + strace
-# evidence capture doesn't depend on the wedge-prone serial-getty
-# autologin flow.  Default is empty so the live ISO behaves normally
-# unless an investigator opts in.
+# (stage-de-rootfs.sh Phase 5) on boot. Diagnostic tracing remains a separate
+# opt-in because tracing a full installation can exhaust the live tmpfs.
+# Default is empty so the live ISO behaves normally unless an unattended build
+# or investigator opts in.
 if [ "${REPRO_INSTALLER_AUTORUN:-0}" = "1" ]; then
   REPRO_INSTALLER_AUTORUN_PARAM=" repro.installer.autorun=1"
 else
   REPRO_INSTALLER_AUTORUN_PARAM=""
+fi
+if [ "${REPRO_INSTALLER_DIAG:-0}" = "1" ]; then
+  REPRO_INSTALLER_DIAG_PARAM=" repro.installer.diag=1"
+else
+  REPRO_INSTALLER_DIAG_PARAM=""
 fi
 
 case "$REPRO_GRUB_VARIANT" in
@@ -243,7 +256,7 @@ terminal_input  serial console
 terminal_output serial console
 
 menuentry 'ReproOS -- Sway (default)' {
-  linux  /vmlinuz repro.de=sway i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text${REPRO_INSTALLER_AUTORUN_PARAM}
+  linux  /vmlinuz repro.de=sway i915.modeset=1 console=tty1 console=ttyS0,115200n8 earlyprintk=ttyS0,115200 loglevel=7 DEBIAN_FRONTEND=text${REPRO_INSTALLER_AUTORUN_PARAM}${REPRO_INSTALLER_DIAG_PARAM}
   initrd /initrd.img
 }
 

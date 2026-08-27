@@ -1,0 +1,16 @@
+[Unit]
+Description=ReproOS DHCP client
+After=systemd-udev-trigger.service
+Before=network.target sshd.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/reproos-network
+ExecStartPost=/usr/local/sbin/reproos-network-wait
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

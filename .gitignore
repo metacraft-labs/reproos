@@ -3,5 +3,7 @@ build/
 **/.repro/
 **/build/
 **/run-evidence/
+__pycache__/
+*.py[cod]
 result
 result-*

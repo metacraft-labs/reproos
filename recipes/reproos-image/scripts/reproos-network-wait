@@ -1,0 +1,24 @@
+#!/usr/bin/busybox sh
+set -eu
+
+ready_file=${REPROOS_NETWORK_READY_FILE:-/run/reproos-network-ready}
+busybox=${REPROOS_BUSYBOX:-/usr/bin/busybox}
+attempt_limit=${REPROOS_NETWORK_READY_ATTEMPTS:-15}
+attempt=0
+while [ "$attempt" -lt "$attempt_limit" ]; do
+  if [ -s "$ready_file" ]; then
+    if [ "$("$busybox" cat "$ready_file")" = "offline" ]; then
+      exit 0
+    fi
+    if "$busybox" route -n | "$busybox" awk \
+         '$1 == "0.0.0.0" && $4 ~ /G/ { found=1 } END { exit(found ? 0 : 1) }'; then
+      exit 0
+    fi
+  fi
+  "$busybox" sleep 1
+  attempt=$((attempt + 1))
+done
+
+echo "ReproOS DHCP lease not ready; continuing offline" >&2
+printf 'offline\n' > "$ready_file"
+exit 0

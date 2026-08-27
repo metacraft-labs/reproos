@@ -16,14 +16,35 @@ proc withToolIdentities(action: BuildActionDef;
 
 proc withHostVmRuntime(command: string): string =
   ## Prefer an available unprivileged libvirt session when no system daemon is
-  ## running. This keeps local VM workflows usable on NixOS and WSL hosts while
-  ## preserving explicit operator configuration and system-libvirt defaults.
+  ## running. Start that session after a host reboot when the provisioned
+  ## libvirt package is available. This keeps local VM workflows usable on
+  ## NixOS and WSL hosts while preserving explicit operator configuration and
+  ## system-libvirt defaults.
   ## Host VM tools must resolve libraries from the host ABI, not the source
   ## package closure used by ReproOS build actions.
-  "if [ -z \"${LIBVIRT_DEFAULT_URI:-}\" ] && " &
-    "[ -S \"/run/user/$UID/libvirt/libvirt-sock\" ] && " &
+  ## These no-op references declare overrides consumed by nested scripts as
+  ## reprobuild environment passthroughs.
+  ": \"${REPROOS_VM_STATE_DIR:-}\" \"${REPROOS_VM_BACKEND:-}\" " &
+    "\"${REPROOS_VM_ACCELERATION:-}\" \"${REPROOS_UNATTENDED_ISO:-}\" " &
+    "\"${REPROOS_VM_HARNESS_BIN:-}\" \"${VM_HARNESS_BIN:-}\" " &
+    "\"${GUI_ASSERT_ROOT:-}\" \"${SSH_KEYGEN_BIN:-}\" " &
+    "\"${XORRISO_BIN:-}\"; " &
+    "if [ \"$(uname -s 2>/dev/null || true)\" = Linux ] && " &
+    "[ -z \"${LIBVIRT_DEFAULT_URI:-}\" ] && " &
     "[ ! -S /run/libvirt/libvirt-sock ] && " &
     "[ ! -S /run/libvirt/virtqemud-sock ]; then " &
+    "runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$UID}; " &
+    "session_sock=$runtime_dir/libvirt/libvirt-sock; " &
+    "if [ ! -S \"$session_sock\" ]; then " &
+    "command -v libvirtd >/dev/null 2>&1 || { " &
+    "echo 'ReproOS VM workflow: libvirtd is unavailable' >&2; exit 69; }; " &
+    "mkdir -p \"$runtime_dir/libvirt\" \"$HOME/.config/libvirt\" " &
+    "\"$HOME/.cache/libvirt\" \"$HOME/.local/share/libvirt\"; " &
+    "libvirtd -d; i=0; while [ ! -S \"$session_sock\" ] && " &
+    "[ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; fi; " &
+    "[ -S \"$session_sock\" ] || { " &
+    "echo 'ReproOS VM workflow: libvirt session did not start' >&2; " &
+    "exit 69; }; export XDG_RUNTIME_DIR=\"$runtime_dir\"; " &
     "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " &
     "unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH; " & command
 
@@ -36,6 +57,7 @@ package reproosWorkflows:
     "python3"
     "vm-harness"
     "openssh"
+    "xorriso"
 
   build:
     let sourceComposition = shell(
@@ -187,6 +209,19 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3"])
     discard target("test_instance_secrets_do_not_affect_public_image_cache_key",
       testInstanceSecretsCacheKey)
+
+    let testReproosVmWorkflow = shell(
+      command = "python3 tests/test_reproos_vm.py",
+      actionId = "reproos.test-vm-install-workflow",
+      extraInputs = @[
+        "tests/test_reproos_vm.py",
+        "tools/reproos-vm.py",
+        "apps/reproos-installer/src/installer_state.cpp",
+        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test_unattended_vm_rejects_live_media_false_positive",
+      testReproosVmWorkflow)
 
     let cacheBackfill = shell(
       command = "python3 tools/cache_reproos_packages.py \"$@\"",
@@ -402,6 +437,75 @@ package reproosWorkflows:
     run("boot-iso", build = bootIso.id,
       owningPackage = "reproosWorkflows")
 
+    let installVm = shell(
+      command = withHostVmRuntime(
+        "python3 tools/reproos-vm.py install \"$@\""),
+      args = @["reproos-vm-install"],
+      actionId = "reproos.vm-install",
+      deps = @[isoPackage.ReproosUnattendedIsoBuildActionId],
+      extraInputs = @[
+        "tools/reproos-vm.py",
+        "tests/fixtures/auto-config-minimal.toml",
+      ],
+      cacheable = false).withToolIdentities([
+        "python3", "vm-harness", "openssh", "xorriso",
+      ])
+    run("vm-install", build = installVm.id,
+      owningPackage = "reproosWorkflows")
+
+    let verifyInstalledVmBoot = shell(
+      command = withHostVmRuntime(
+        "python3 tools/reproos-vm.py verify-installed-boot \"$@\""),
+      args = @["reproos-vm-verify-installed-boot"],
+      actionId = "reproos.vm-verify-installed-boot",
+      extraInputs = @["tools/reproos-vm.py"],
+      cacheable = false).withToolIdentities(["python3", "vm-harness"])
+    run("vm-verify-installed-boot", build = verifyInstalledVmBoot.id,
+      owningPackage = "reproosWorkflows")
+
+    let sshInstalledVm = shell(
+      command = withHostVmRuntime(
+        "python3 tools/reproos-vm.py ssh \"$@\""),
+      args = @["reproos-vm-ssh"],
+      actionId = "reproos.vm-ssh",
+      extraInputs = @["tools/reproos-vm.py"],
+      cacheable = false).withToolIdentities(["python3", "vm-harness"])
+    run("vm-ssh", build = sshInstalledVm.id,
+      owningPackage = "reproosWorkflows")
+
+    let e2eUnattendedVmInstall = shell(
+      command = withHostVmRuntime(
+        "bash tests/e2e-unattended-vm-installs.sh"),
+      actionId = "reproos.e2e-unattended-vm-install",
+      deps = @[isoPackage.ReproosUnattendedIsoBuildActionId],
+      extraInputs = @[
+        "tests/e2e-unattended-vm-installs.sh",
+        "tests/test-installed-desktop-frame.sh",
+        "tests/test_installed_desktop_frame.nim",
+        "tools/reproos-vm.py",
+        "tests/fixtures/auto-config-minimal.toml",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "python3", "vm-harness", "openssh", "xorriso",
+      ])
+    discard target("e2e_unattended_vm_installs_and_boots_target_disk",
+      e2eUnattendedVmInstall)
+
+    let testVmSshHostKeyMismatch = shell(
+      command = withHostVmRuntime(
+        "bash tests/test-vm-ssh-host-key-mismatch.sh"),
+      actionId = "reproos.test-vm-ssh-host-key-mismatch",
+      deps = @[e2eUnattendedVmInstall.id],
+      extraInputs = @[
+        "tests/test-vm-ssh-host-key-mismatch.sh",
+        "tools/reproos-vm.py",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "python3", "vm-harness", "openssh",
+      ])
+    discard target("test_vm_ssh_host_key_mismatch_fails_closed",
+      testVmSshHostKeyMismatch)
+
     let testIso = shell(
       command = withHostVmRuntime(
         "vm-harness boot --backend auto --source-image \"" &
@@ -521,6 +625,7 @@ package reproosWorkflows:
       testInstallerArtifacts,
       testRemoteAccessConfiguration,
       testInstanceSecretsCacheKey,
+      testReproosVmWorkflow,
       testCacheBackfill,
       testIncusProjection,
       testIncusHelper,

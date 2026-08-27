@@ -11,10 +11,13 @@
 #include "installer_state.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRandomGenerator>
@@ -969,7 +972,7 @@ bool InstallerState::runReproSystemApply(const QString &target) {
     // GRUB and left the rest of /mnt empty.  ``repro infra
     // install-root`` is the install-time analogue: rsync -aHAX the
     // live root onto /mnt, generate fstab from the disko spec Phase
-    // 4 wrote to <target>/etc/repro/hardware.nim, then install GRUB
+    // 4 supplied as JSON, then install GRUB
     // + write the target-side grub.cfg.  See M9.R.41.1 commit body.
     const QString grubDevice = m_targetDevice.isEmpty()
         ? QStringLiteral("/dev/vda") : m_targetDevice;
@@ -978,8 +981,8 @@ bool InstallerState::runReproSystemApply(const QString &target) {
     // M9.R.41: point install-root at the JSON form of the disko spec
     // the Phase 2 disk-apply step already wrote to /tmp/repro-
     // installer-<pid>/disko.json (via writeFileAtomic +
-    // renderDiskoJson).  The Phase 4 /mnt/etc/repro/hardware.nim
-    // file is a Nim SOURCE file; loading it via `loadDiskoFromSource`
+    // renderDiskoJson). A target /etc/repro/hardware.nim file would be Nim
+    // source; loading it via `loadDiskoFromSource`
     // requires ``nim r`` which is NOT bundled on the live ISO (the
     // M9.R.24.2 commit body documented this), so we pass --disko
     // explicitly at the JSON path.
@@ -989,19 +992,26 @@ bool InstallerState::runReproSystemApply(const QString &target) {
     if (!QFileInfo::exists(diskoJson)) {
         writeFileAtomic(diskoJson, renderDiskoJson());
     }
+    const QString diskInitrd =
+        QStringLiteral("/run/live/medium/reproos/disk-initrd.img");
+    if (!QFileInfo::exists(diskInitrd)) {
+        appendLog("installed-root initramfs is missing: " + diskInitrd);
+        return false;
+    }
     QStringList args = {"infra", "install-root",
                         "--target", target,
                         "--source", "/",
                         "--device", grubDevice,
                         "--hostname", hn,
-                        "--disko", diskoJson};
+                        "--disko", diskoJson,
+                        "--initrd", diskInitrd};
     // M9.R.44b: cap bumped from 30 min -> 3 hr.  The original 30 min
     // was sized for an SSD host with KVM passthrough; on the eli-wsl
     // host (Windows -> WSL2 -> QEMU triple-virt, no KVM) Phase 5 rsync
     // runs at ~0.8 MB/s and the from-source live root closure is ~3 GB
-    // by M9.R.44, putting Phase 5 wall at 60-90 min.  The 30 min cap
-    // killed Phase 5 mid-rsync in the M9.R.42/M9.R.43/M9.R.44b runs;
-    // installer reported Phase 5 FAILED while the orphaned rsync child
+    // by M9.R.44, putting the root-mirror wall at 60-90 min. The 30 min cap
+    // killed rsync mid-copy in the M9.R.42/M9.R.43/M9.R.44b runs;
+    // the installer reported failure while the orphaned rsync child
     // continued silently in the background for another hour.  3 hr
     // covers the slow path with headroom and is still finite enough to
     // surface a genuine wedge.
@@ -1116,48 +1126,93 @@ void InstallerState::install() {
         return;
     }
 
-    appendLog("Phase 4: writing durable ReproOS configuration artifacts");
-    setInstallStatus("Writing system configuration");
-    setInstallProgress(0.55);
-    if (!dryRunDestructive()) {
-        if (!writeConfigurationArtifacts(target + "/etc/repro",
-                                         &artifactError)) {
-            appendLog("configuration write failed: " + artifactError);
-            setInstallRunning(false);
-            emit installFailed("configuration write failed");
-            return;
-        }
-    } else {
-        appendLog(QString("[dry-run] would write %1").arg(sysNimPath));
-        appendLog(QString("[dry-run] would write %1").arg(hwNimPath));
-    }
-
-    appendLog("Phase 5: applying system profile...");
+    appendLog("Phase 4: applying system profile...");
     setInstallStatus("Applying system profile");
-    setInstallProgress(0.7);
+    setInstallProgress(0.6);
     if (!runReproSystemApply(target)) {
         // M9.R.41: ``repro infra install-root`` failed.  This is now
         // a hard error — the M9.R.24 stub's "minimal bootstrap"
         // fallback intentionally left the installed disk without a
         // real rootfs, blocking G3 (boot installed) + G4 (DE smoke).
-        // The campaign close-out makes Phase 5 the SOURCE OF TRUTH
+        // The campaign close-out makes Phase 4 the SOURCE OF TRUTH
         // for the installed system's contents; a failure here means
         // the install is broken and the user must investigate, not
         // silently proceed with a half-formed system.
-        appendLog("Phase 5 FAILED: `repro infra install-root` did "
+        appendLog("Phase 4 FAILED: `repro infra install-root` did "
                   "not complete; aborting install (the previous "
                   "M9.R.24 minimal-bootstrap fallback is removed in "
                   "M9.R.41 — a failed install must surface, not "
                   "silently produce an unbootable disk).");
+        runReproDiskUnmount(target);
         setInstallRunning(false);
         emit installFailed("system root-mirror failed");
         return;
     }
 
+    // install-root mirrors the live root onto the target, so durable machine
+    // configuration must be written afterwards. Writing it before the mirror
+    // lets the live image's generic files overwrite the user's selections.
+    appendLog("Phase 5: writing durable ReproOS configuration and receipt");
+    setInstallStatus("Writing system configuration");
+    setInstallProgress(0.85);
+    if (!dryRunDestructive()) {
+        if (!writeConfigurationArtifacts(target + "/etc/repro",
+                                         &artifactError)) {
+            appendLog("configuration write failed: " + artifactError);
+            runReproDiskUnmount(target);
+            setInstallRunning(false);
+            emit installFailed("configuration write failed");
+            return;
+        }
+
+        const QByteArray generation = QCryptographicHash::hash(
+            renderAutoConfigToml().toUtf8(), QCryptographicHash::Sha256).toHex();
+        const QString generationText = QString::fromLatin1(generation) + "\n";
+        const QString installSource = QStringLiteral("unattended-installer\n");
+        if (!writeFileAtomic(target + "/etc/repro/generation",
+                             generationText, &artifactError) ||
+            !writeFileAtomic(target + "/var/lib/reproos/install-source",
+                             installSource, &artifactError)) {
+            appendLog("installation identity write failed: " + artifactError);
+            runReproDiskUnmount(target);
+            setInstallRunning(false);
+            emit installFailed("installation identity write failed");
+            return;
+        }
+
+        QJsonObject receipt;
+        receipt.insert("schema_version", 1);
+        receipt.insert("configuration_generation",
+                       QString::fromLatin1(generation));
+        receipt.insert("install_source", "unattended-installer");
+        receipt.insert("target_device", m_targetDevice.isEmpty()
+            ? QStringLiteral("/dev/vda") : m_targetDevice);
+        const QString receiptText = QString::fromUtf8(
+            QJsonDocument(receipt).toJson(QJsonDocument::Indented));
+        if (!writeFileAtomic(
+                target + "/var/lib/reproos/installation-receipt.json",
+                receiptText, &artifactError)) {
+            appendLog("installation receipt write failed: " + artifactError);
+            runReproDiskUnmount(target);
+            setInstallRunning(false);
+            emit installFailed("installation receipt write failed");
+            return;
+        }
+    } else {
+        appendLog(QString("[dry-run] would write %1").arg(sysNimPath));
+        appendLog(QString("[dry-run] would write %1").arg(hwNimPath));
+        appendLog("[dry-run] would write installation generation and receipt");
+    }
+
     appendLog("Phase 6: unmounting target...");
     setInstallStatus("Unmounting");
     setInstallProgress(0.95);
-    runReproDiskUnmount(target);
+    if (!runReproDiskUnmount(target)) {
+        appendLog("target unmount failed");
+        setInstallRunning(false);
+        emit installFailed("target unmount failed");
+        return;
+    }
 
     setInstallProgress(1.0);
     setInstallStatus("Install complete");

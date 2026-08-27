@@ -16,6 +16,7 @@ CONTAINER_RECIPE = ROOT / "recipes/reproos-container/package.nim"
 WORKFLOW_RECIPE = ROOT / "repro/workflows.nim"
 PACKAGE_SETS = ROOT / "repro/package_sets.nim"
 STAGE_ROOTFS_SCRIPT = ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh"
+BUILD_ISO_SCRIPT = ROOT / "recipes/reproos-iso/scripts/build-iso.sh"
 NORMALIZE_RUNTIME_SCRIPT = (
     ROOT / "recipes/reproos-iso/scripts/normalize-source-runtime.sh"
 )
@@ -264,15 +265,27 @@ def main() -> None:
         )
 
     workflow_content = source(WORKFLOW_RECIPE)
-    if workflow_content.count("withHostVmRuntime(") != 10:
+    if workflow_content.count("withHostVmRuntime(") != 15:
         raise AssertionError(
             "all VM-backed workflows must select the available libvirt runtime"
         )
     require_contains(
         WORKFLOW_RECIPE,
         [
+            "command -v libvirtd",
+            "libvirtd -d",
+            "libvirt session did not start",
             'export LIBVIRT_DEFAULT_URI=qemu:///session',
             'unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH',
+            '${REPROOS_VM_STATE_DIR:-}',
+            '${REPROOS_VM_BACKEND:-}',
+            '${REPROOS_VM_ACCELERATION:-}',
+            '${REPROOS_UNATTENDED_ISO:-}',
+            '${REPROOS_VM_HARNESS_BIN:-}',
+            '${VM_HARNESS_BIN:-}',
+            '${GUI_ASSERT_ROOT:-}',
+            '${SSH_KEYGEN_BIN:-}',
+            '${XORRISO_BIN:-}',
             '"boot-iso"',
             '"test-iso"',
             '"boot-image"',
@@ -290,6 +303,7 @@ def main() -> None:
                 "test-installer-artifacts",
                 "test_remote_access_configuration_validation",
                 "test_instance_secrets_do_not_affect_public_image_cache_key",
+                "test_unattended_vm_rejects_live_media_false_positive",
                 "test-cache-backfill",
                 "test-incus-projection",
                 "test-incus-helper",
@@ -305,6 +319,8 @@ def main() -> None:
                 "test-installed-desktop",
                 "test-installed-ssh",
                 "test-unattended-install",
+                "e2e_unattended_vm_installs_and_boots_target_disk",
+                "test_vm_ssh_host_key_mismatch_fails_closed",
             ]],
             *[f'run("{name}"' for name in [
                 "installer",
@@ -313,6 +329,9 @@ def main() -> None:
                 "installer-vm-screenshot",
                 "cache-backfill",
                 "boot-iso",
+                "vm-install",
+                "vm-verify-installed-boot",
+                "vm-ssh",
                 "boot-image",
                 "image-ssh",
                 "incus-import",
@@ -332,6 +351,18 @@ def main() -> None:
     require_contains(
         WORKFLOW_RECIPE,
         [
+            'actionId = "reproos.e2e-unattended-vm-install"',
+            'actionId = "reproos.test-vm-ssh-host-key-mismatch"',
+            "deps = @[e2eUnattendedVmInstall.id]",
+            "e2eUnattendedVmInstall)",
+            "testVmSshHostKeyMismatch)",
+        ],
+        "unattended VM acceptance edge split",
+    )
+
+    require_contains(
+        WORKFLOW_RECIPE,
+        [
             "tools/capture-installer-screens.sh",
             "tools/run-installer-preview.sh",
             "tools/installer-dev-runtime.sh",
@@ -343,7 +374,11 @@ def main() -> None:
             "tests/test_installer_vm_frame.nim",
             "tests/test-installer-artifacts.sh",
             "tests/test_machine_config.py",
+            "tests/test_reproos_vm.py",
+            "tests/e2e-unattended-vm-installs.sh",
+            "tests/test-vm-ssh-host-key-mismatch.sh",
             "tools/reproos-machine-config.py",
+            "tools/reproos-vm.py",
             "tests/fixtures/instance-enrollment.toml",
             "tests/test_cache_reproos_packages.py",
             "tests/test_incus_projection.py",
@@ -467,7 +502,10 @@ def main() -> None:
     for value in [
         "reprobuild-packages/packages/source/kernel",
         "reproos-initramfs.img",
+        "reproos-iso-disk-initramfs.img",
+        "reproos-unattended-disk-initramfs.img",
         "REPRO_BUSYBOX_INSTALL_ROOT",
+        "REPRO_DISK_INIT_OUT",
         "REPRO_LIVE_TARGET=graphical",
         'ReproosIsoRootfsActionId* = "reproosIso.stage_rootfs"',
         'extraOutputs = @["build/de-rootfs"]',
@@ -476,7 +514,8 @@ def main() -> None:
         "setRegisteredActionDependencyPolicy(stageRootfsAction.id",
         "automaticMonitorPolicy(@[rootfsOutputAbs])",
         "setRegisteredActionDependencyPolicy(buildIsoAction.id",
-        "automaticMonitorPolicy(@[initramfsOutputAbs, isoOutputAbs])",
+        "diskInitramfsOutputAbs",
+        "unattendedDiskInitramfsOutputAbs",
         "reproCliInput",
     ]:
         if value not in iso_content:
@@ -520,9 +559,161 @@ def main() -> None:
 
     require_contains(
         ROOT / "recipes/reproos-image/scripts/reproos-health-check",
-        ["account_gecos", "group:$expected_group", "groups:unique-gids"],
+        [
+            "account_gecos",
+            "group:$expected_group",
+            "gshadow:$expected_group",
+            "accounts:installed-identity-only",
+            "groups:unique-gids",
+            "groups:unique-names",
+            "gshadow:unique-names",
+        ],
         "installed account health checks",
     )
+    require_contains(
+        BUILD_ISO_SCRIPT,
+        ['var/empty m 0755 0 0'],
+        "OpenSSH privilege-separation directory metadata",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        [
+            'groups="$groups seat"',
+            'networkmanager) preferred_gid=102',
+            'seat) preferred_gid=985',
+            'chown -R "$user:$user" "$home"',
+            "printf '%s:x:20000:0:99999:7:::",
+            "User=$user",
+            "Session=sway",
+            "auto-config.toml.disabled-after-install",
+        ],
+        "installed graphical-session enrollment",
+    )
+    require_contains(
+        ISO_RECIPE,
+        [
+            '"recipes/reproos-image/scripts/reproos-health-check"',
+            '"recipes/reproos-image/scripts/reproos-sway.conf"',
+        ],
+        "ISO rootfs health-check input",
+    )
+    require_contains(
+        STAGE_ROOTFS_SCRIPT,
+        [
+            "\n  grep\n",
+            "libseat",
+            "ExecStart=/usr/bin/seatd -g seat",
+            "graphical.target.wants/seatd.service",
+            "sshd:x:74:74:OpenSSH privilege separation",
+            "OpenSSH account name or ID 74 is already in use",
+            "recipes/reproos-image/scripts/reproos-health-check",
+            "reproos-health-check.service",
+            "ConditionPathExists=/var/lib/reproos/installation-receipt.json",
+            "link_entry sway swaybar",
+            "link_entry sway swaynag",
+            "link_entry qt6-declarative qml",
+            "recipes/reproos-image/scripts/reproos-sway.conf",
+        ],
+        "installed ISO health gate",
+    )
+    health_service_sources = [
+        source(STAGE_ROOTFS_SCRIPT),
+        source(ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"),
+    ]
+    invalid_health_order = (
+        "Description=ReproOS post-installation acceptance check\n"
+        "After=graphical.target"
+    )
+    for health_service_source in health_service_sources:
+        if invalid_health_order in health_service_source:
+            raise AssertionError(
+                "health service must not order itself after its owning target"
+            )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-health-check",
+        [
+            "systemctl get-default",
+            "target:graphical-default",
+            "service:sshd",
+            "service:network",
+            "REPROOS_NETWORK_HEALTH_ATTEMPTS",
+            "network:ipv4",
+            "network:default-route",
+        ],
+        "graphical target health check",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-network.service",
+        [
+            "Before=network.target sshd.service",
+            "ExecStart=/usr/local/sbin/reproos-network",
+            "ExecStartPost=/usr/local/sbin/reproos-network-wait",
+            "TimeoutStartSec=30",
+        ],
+        "shared DHCP service",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-network",
+        [
+            "REPROOS_SYS_CLASS_NET",
+            "REPROOS_NETWORK_INTERFACE_ATTEMPTS",
+            "REPROOS_NETWORK_READY_FILE",
+            "continuing offline",
+            "exit 0",
+        ],
+        "offline-capable DHCP launcher",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-sway.conf",
+        ["ReproOS Desktop", "reproos-desktop.qml", "swaybg_command -"],
+        "installed desktop readiness surface",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-desktop.qml",
+        ['title: "ReproOS Desktop"', 'text: "ReproOS"', 'text: "Ready"'],
+        "installed desktop QML surface",
+    )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-network-wait",
+        [
+            "REPROOS_NETWORK_READY_FILE",
+            "REPROOS_BUSYBOX",
+            "REPROOS_NETWORK_READY_ATTEMPTS",
+            '"offline"',
+            "continuing offline",
+            "exit 0",
+        ],
+        "offline-capable DHCP readiness waiter",
+    )
+    for composition in [
+        IMAGE_RECIPE,
+        ISO_RECIPE,
+        STAGE_ROOTFS_SCRIPT,
+        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
+    ]:
+        require_contains(
+            composition,
+            ["reproos-sway.conf"],
+            "shared installed desktop composition",
+        )
+    require_contains(
+        ROOT / "recipes/reproos-image/scripts/reproos-udhcpc-hook",
+        [
+            "bound|renew)",
+            "route add default",
+            "/run/reproos-network-ready",
+        ],
+        "shared DHCP lease hook",
+    )
+    for composition in [STAGE_ROOTFS_SCRIPT, ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"]:
+        require_contains(
+            composition,
+            [
+                "reproos-network.service",
+                "multi-user.target.wants/reproos-network.service",
+            ],
+            "shared DHCP composition",
+        )
 
     require_contains(
         CONTAINER_RECIPE,
@@ -740,6 +931,7 @@ def main() -> None:
         "required source BusyBox hostname applet missing",
         "usr/lib/x86_64-linux-gnu/security",
         "REPRO_RUNTIME_SOURCE_ROOT:-/opt/repro/reprobuild-packages/packages/source",
+        'install -m 0644 "$REPO_ROOT/tests/fixtures/auto-config-minimal.toml"',
         "rewrote $rewritten_source_links build-root source links",
         "required source D-Bus configuration missing",
         "org.freedesktop.login1.service",
@@ -769,7 +961,8 @@ def main() -> None:
         "usr/lib/locale/C.utf8/LC_CTYPE",
         "usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES",
         'I18NPATH="$SOURCE_GLIBC_LOCALEDATA"',
-        '"$SRC_RECIPES_ROOT/glibc/src/version.h"',
+        "release version [0-9]+\\.[0-9]+",
+        '"$SOURCE_GLIBC_RUNTIME_DIR_STAGED/libc.so.6"',
         'localedef_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-localedef")"',
         'SOURCE_GLIBC_LOADER_RUNNER="$(realpath -m "$SOURCE_GLIBC_LOADER_STAGED")"',
         'SOURCE_GLIBC_RUNTIME_DIR_RUNNER="$(realpath -m "$SOURCE_GLIBC_RUNTIME_DIR_STAGED")"',
@@ -791,6 +984,8 @@ def main() -> None:
     for obsolete_invocation in [
         '"$busybox_src" --list',
         '"$SOURCE_GLIBC_LOADER_STAGED" --version',
+        '"$SRC_RECIPES_ROOT/glibc/src/version.h"',
+        '"$SRC_RECIPES_ROOT/glibc/src/localedata"',
     ]:
         if obsolete_invocation in stage_content:
             raise AssertionError(

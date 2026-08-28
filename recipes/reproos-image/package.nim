@@ -71,6 +71,10 @@ package reproosImage:
   uses:
     "sh"
     "bash"
+    "cpio"
+    "find"
+    "gzip"
+    "sed"
 
   # The DSL currently extracts dependency declarations as string literals.
   # The graph-quality check keeps this block identical to the canonical set.

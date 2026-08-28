@@ -54,6 +54,10 @@ package reproosWorkflows:
   uses:
     "sh"
     "bash"
+    "cpio"
+    "find"
+    "gzip"
+    "sed"
     "python3"
     "vm-harness"
     "openssh"

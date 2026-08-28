@@ -58,6 +58,10 @@ package reproosIso:
   uses:
     "sh"
     "patchelf"
+    "cpio"
+    "find"
+    "gzip"
+    "sed"
     "xorriso"
     "mtools"
     "squashfs-tools"

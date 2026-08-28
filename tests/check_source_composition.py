@@ -541,6 +541,15 @@ def main() -> None:
             raise AssertionError(f"ISO recipe is missing source-build input: {value}")
 
     initramfs_tools = {"cpio", "find", "gzip", "sed"}
+    for path in [ISO_RECIPE, IMAGE_RECIPE, WORKFLOW_RECIPE]:
+        declared_dependencies = set(uses_dependencies(path))
+        if path != WORKFLOW_RECIPE:
+            declared_dependencies.update(build_dependencies(path))
+        missing = sorted(initramfs_tools - declared_dependencies)
+        if missing:
+            raise AssertionError(
+                f"{path} does not declare its initramfs tools: {', '.join(missing)}"
+            )
     for path, binding in [
         (ISO_RECIPE, "buildIsoAction"),
         (ISO_RECIPE, "buildUnattendedIsoAction"),

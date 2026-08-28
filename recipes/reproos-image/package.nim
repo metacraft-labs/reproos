@@ -273,8 +273,12 @@ package reproosImage:
       "bash",
       "busybox",
       "coreutils",
+      "cpio",
+      "find",
+      "gzip",
       "kernel",
       "kmod",
+      "sed",
       "xz",
       "zstd",
     ])

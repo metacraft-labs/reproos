@@ -77,6 +77,25 @@ def require_unique(values: list[str], subject: str) -> None:
         raise AssertionError(f"{subject} contains duplicates: {', '.join(duplicates)}")
 
 
+def require_registered_action_tools(
+    path: Path, binding: str, expected: set[str]
+) -> None:
+    match = re.search(
+        rf"appendRegisteredActionToolIdentityRefs\({re.escape(binding)}\.id,\s*"
+        r"@\[(?P<body>.*?)\]\)",
+        source(path),
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"tool identities missing for {binding} in {path}")
+    actual = set(re.findall(r'"([^"]+)"', match.group("body")))
+    missing = sorted(expected - actual)
+    if missing:
+        raise AssertionError(
+            f"{binding} in {path} omits initramfs tools: {', '.join(missing)}"
+        )
+
+
 def shell_call_blocks(path: Path) -> list[tuple[str, str]]:
     """Return (binding, call text) pairs for balanced ``shell(...)`` calls."""
     content = source(path)
@@ -520,6 +539,14 @@ def main() -> None:
     ]:
         if value not in iso_content:
             raise AssertionError(f"ISO recipe is missing source-build input: {value}")
+
+    initramfs_tools = {"cpio", "find", "gzip", "sed"}
+    for path, binding in [
+        (ISO_RECIPE, "buildIsoAction"),
+        (ISO_RECIPE, "buildUnattendedIsoAction"),
+        (IMAGE_RECIPE, "buildDiskInitrdAction"),
+    ]:
+        require_registered_action_tools(path, binding, initramfs_tools)
 
     image_content = source(IMAGE_RECIPE)
     for value in [

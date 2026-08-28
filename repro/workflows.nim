@@ -2,6 +2,7 @@
 
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
+import repro_dsl_stdlib/packages/nix
 import repro_resources/run_edge
 
 import "../apps/reproos-installer/package" as installerPackage
@@ -59,6 +60,7 @@ package reproosWorkflows:
     "gzip"
     "sed"
     "python3"
+    "nix"
     "vm-harness"
     "openssh"
     "xorriso"
@@ -140,7 +142,7 @@ package reproosWorkflows:
         "tools/installer-dev-runtime.sh",
         "tests/golden/installer-screens",
       ],
-      cacheable = false).withToolIdentities(["bash"])
+      cacheable = false).withToolIdentities(["bash", "nix"])
     discard target("test-installer-visuals", testInstallerVisuals)
     run("installer-accept-goldens", build = testInstallerVisuals.id,
       args = @["--update-goldens"], owningPackage = "reproosWorkflows")
@@ -153,7 +155,7 @@ package reproosWorkflows:
         "tests/test-installer-vm-frame.sh",
         "tests/test_installer_vm_frame.nim",
       ],
-      cacheable = false).withToolIdentities(["bash"])
+      cacheable = false).withToolIdentities(["bash", "nix"])
     run("installer-vm-frame", build = inspectInstallerVmFrame.id,
       owningPackage = "reproosWorkflows")
 
@@ -168,7 +170,7 @@ package reproosWorkflows:
         "tests/test-installer-vm-frame.sh",
         "tests/test_installer_vm_frame.nim",
       ],
-      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+      cacheable = false).withToolIdentities(["bash", "nix", "vm-harness"])
     run("installer-vm-screenshot", build = captureInstallerVmScreenshot.id,
       owningPackage = "reproosWorkflows")
 
@@ -490,7 +492,7 @@ package reproosWorkflows:
         "tests/fixtures/auto-config-minimal.toml",
       ],
       cacheable = false).withToolIdentities([
-        "bash", "python3", "vm-harness", "openssh", "xorriso",
+        "bash", "python3", "nix", "vm-harness", "openssh", "xorriso",
       ])
     discard target("e2e_unattended_vm_installs_and_boots_target_disk",
       e2eUnattendedVmInstall)
@@ -585,7 +587,7 @@ package reproosWorkflows:
         "tests/test-installed-desktop-frame.sh",
         "tests/test_installed_desktop_frame.nim",
       ],
-      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+      cacheable = false).withToolIdentities(["bash", "nix", "vm-harness"])
     discard target("test-installed-desktop", testInstalledDesktop)
 
     let sshImage = shell(

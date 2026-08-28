@@ -282,8 +282,26 @@ def main() -> None:
         raise AssertionError(
             "workflow uses must select the federated vm-harness producer"
         )
+    if "nix" not in workflow_dependencies:
+        raise AssertionError("workflow uses must provide GuiAssert's environment launcher")
 
     workflow_content = source(WORKFLOW_RECIPE)
+    for action_name in [
+        "testInstallerVisuals",
+        "inspectInstallerVmFrame",
+        "captureInstallerVmScreenshot",
+        "e2eUnattendedVmInstall",
+        "testInstalledDesktop",
+    ]:
+        match = re.search(
+            rf"let {action_name} = shell\(.*?\.withToolIdentities\(\[(.*?)\]\)",
+            workflow_content,
+            flags=re.DOTALL,
+        )
+        if match is None or '"nix"' not in match.group(1):
+            raise AssertionError(
+                f"GuiAssert action {action_name} does not declare the nix tool"
+            )
     if workflow_content.count("withHostVmRuntime(") != 15:
         raise AssertionError(
             "all VM-backed workflows must select the available libvirt runtime"

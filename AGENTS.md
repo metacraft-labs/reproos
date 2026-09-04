@@ -20,6 +20,12 @@ Use Reprobuild as the only contributor command surface:
   `repro build test-installed-desktop` after changing the graphical session.
   `repro build test-installed-ssh` boots the installed image and verifies an
   SSH command through a loopback-only forwarded port.
+  `repro build test-image-boot-smoke` asserts the installed image's serial
+  boot sequence through to a login prompt via the vm-harness sibling's
+  `boot_smoke` engine. Its transcript-replay case always runs; the live boot
+  runs only when an image is present (`REPROOS_IMAGE`, or the recipe's
+  `recipes/reproos-image/build/reproos-installed.qcow2`) and otherwise
+  reports a visible skip.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

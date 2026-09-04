@@ -625,6 +625,24 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-unattended-install", testUnattendedInstall)
 
+    # Serial boot-smoke gate for the installed image. Deliberately NOT
+    # dependent on ReproosImageBuildActionId: its first case replays the
+    # recorded boot transcript through vm-harness's matching engine and
+    # must run everywhere in under a second, while its second case boots a
+    # real image only when one is already present and otherwise reports a
+    # visible skip. Making the image a dependency would turn a cheap,
+    # always-on regression check into a multi-hour build.
+    let testImageBootSmoke = shell(
+      command = "bash tests/test-reproos-image-boot-smoke.sh",
+      actionId = "reproos.test-image-boot-smoke",
+      extraInputs = @[
+        "tests/test-reproos-image-boot-smoke.sh",
+        "tests/test_reproos_image_boot_smoke.nim",
+        "tests/fixtures/reproos-boot-serial-m9r71-v4.log",
+      ],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    discard target("test-image-boot-smoke", testImageBootSmoke)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -642,6 +660,7 @@ package reproosWorkflows:
       testIncusPublication,
       testIsoReproducibility,
       testIso,
+      testImageBootSmoke,
       testImageHealth,
       testInstalledDesktop,
       testInstalledSsh,

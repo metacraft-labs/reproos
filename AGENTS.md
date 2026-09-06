@@ -20,6 +20,12 @@ Use Reprobuild as the only contributor command surface:
   `repro build test-installed-desktop` after changing the graphical session.
   `repro build test-installed-ssh` boots the installed image and verifies an
   SSH command through a loopback-only forwarded port.
+  `repro build test-disk-layout-presets` checks the typed disk-layout
+  registry in `repro/disk_layouts.nim`: every preset round-trips
+  TOML → typed → disko JSON, the `uefi-ext4` document matches the bytes
+  the recipe has always emitted, and `uefi-attested` declares the
+  attestable partition shape. Run it after touching a layout preset, the
+  image recipe's plan, or `build-reproos-image.sh`.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

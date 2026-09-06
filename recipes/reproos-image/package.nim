@@ -11,6 +11,7 @@ import repro_dsl_stdlib/packages/sh
 import "../../apps/reproos-installer/package" as installerPackage
 import "../reproos-iso/package" as isoPackage
 import "../../repro/package_sets" as packageSets
+import "../../repro/disk_layouts" as diskLayouts
 
 const
   ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"
@@ -293,6 +294,47 @@ package reproosImage:
       automaticMonitorPolicy(@[diskInitrdOutputAbs]))
     discard target("disk-initramfs", buildDiskInitrdAction)
 
+    # Resolve the disk layout HERE rather than in the driver. An unknown
+    # or not-yet-buildable [disk.layout].type has to fail while the plan
+    # is being built -- before the image action takes sudo, attaches an
+    # NBD device and partitions it -- and the failure has to name the
+    # legal set. repro/disk_layouts.nim owns that set; this is its only
+    # consumer in the graph.
+    let recipeDir = projectRoot / "recipes" / "reproos-image"
+    let autoConfigSetting = block:
+      let configured = getEnv("REPRO_AUTO_CONFIG")
+      if configured.len > 0: configured
+      else: "../../tests/fixtures/auto-config-minimal.toml"
+    # The driver resolves a relative REPRO_AUTO_CONFIG against the recipe
+    # directory; resolve it the same way so both read one file.
+    let autoConfigPath =
+      if isAbsolute(autoConfigSetting): autoConfigSetting
+      else: recipeDir / autoConfigSetting
+    if not fileExists(autoConfigPath):
+      raise newException(ValueError,
+        "recipes/reproos-image: REPRO_AUTO_CONFIG does not exist: " &
+        autoConfigPath)
+    let layoutRequest = diskLayouts.parseDiskLayoutRequest(
+      readFile(autoConfigPath), "reproos-image", "/dev/nbd0")
+    let layoutError = diskLayouts.validateDiskLayoutRequest(layoutRequest)
+    if layoutError.len > 0:
+      raise newException(ValueError,
+        "recipes/reproos-image: " & autoConfigPath & ": " & layoutError)
+    # The bytes the driver writes to $WORK/disko.json, rendered from the
+    # typed DiskLayout the preset builds. Carried as one line with \n
+    # escapes so the shell command below stays a single line; a quote or
+    # a backslash would need escaping rules this deliberately does not
+    # have, so refuse to emit one instead of guessing.
+    let diskoSpec = diskLayouts.renderDiskoJson(
+      layoutRequest.name, layoutRequest.params)
+    for ch in diskoSpec:
+      if ch == '\'' or ch == '\\':
+        raise newException(ValueError,
+          "recipes/reproos-image: layout " & layoutRequest.name &
+          " rendered a disko document containing a quote or a backslash," &
+          " which the single-line environment hand-off cannot carry")
+    let diskoSpecLine = diskoSpec.replace("\n", "\\n")
+
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
     let buildImageCommand = @[
@@ -307,6 +349,10 @@ package reproosImage:
       "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
       "REPROOS_DISK_INITRD=\"$PWD/build/reproos-disk-initramfs.img\"",
       "REPRO_QCOW2_SEED=\"${REPRO_QCOW2_SEED:-deadbeefcafebabe}\"",
+      "REPROOS_DISK_LAYOUT=\"" & layoutRequest.name & "\"",
+      "REPROOS_DISK_LAYOUT_ESP_MIB=\"" &
+        $layoutRequest.params.espSizeMib & "\"",
+      "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
       "REPRO_BIN=\"" & reproCliInput & "\"",
       "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
       "bash scripts/build-reproos-image.sh build/reproos-installed.qcow2",

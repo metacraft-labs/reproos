@@ -665,6 +665,28 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-initramfs-verity-tpm", testInitramfsVerityTpm)
 
+    # The typed disk-layout preset registry. Pure declaration checking:
+    # it renders every registered preset, decodes the result through
+    # Reprobuild's own parser, and compares the uefi-ext4 rendering
+    # against the bytes the retired heredoc emitted. Nothing is built,
+    # so this runs in under a second and is not dependent on the image
+    # action -- which is the point, since it is the regression check
+    # that guards what the image action feeds to `repro disk apply`.
+    let testDiskLayoutPresets = shell(
+      command = "bash tests/test-disk-layout-presets.sh",
+      actionId = "reproos.test-disk-layout-presets",
+      extraInputs = @[
+        "tests/test-disk-layout-presets.sh",
+        "tests/test_disk_layout_presets.nim",
+        "tests/golden/disko-uefi-ext4.json",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/disk_layouts.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+      ],
+      cacheable = false).withToolIdentities(["bash"])
+    discard target("test-disk-layout-presets", testDiskLayoutPresets)
+
     # The same claim, observed from inside a running guest: the ReproOS
     # kernel direct-kernel-booted with the product's own initramfs and a
     # vTPM attached, reporting dm-verity and a TPM 2.0 on the serial
@@ -702,6 +724,7 @@ package reproosWorkflows:
       testImageBootSmoke,
       testInitramfsVerityTpm,
       testGuestVerityTpm,
+      testDiskLayoutPresets,
       testImageHealth,
       testInstalledDesktop,
       testInstalledSsh,

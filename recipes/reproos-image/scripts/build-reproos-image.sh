@@ -9,7 +9,8 @@
 #   1. Parse $REPRO_AUTO_CONFIG (TOML).
 #   2. Validate the cacheable staged rootfs and boot artifacts supplied by
 #      the Reprobuild graph.
-#   3. Render a disko JSON spec from the TOML's [disk] block.
+#   3. Write out the disko JSON the plan rendered from the typed
+#      layout preset (repro/disk_layouts.nim) named by [disk.layout].
 #   4. qemu-img create -f qcow2 reproos-installed.qcow2 <size>.
 #   5. sudo modprobe nbd; sudo qemu-nbd --connect=/dev/nbd0 <qcow2>.
 #   6. repro disk apply --confirm --device /dev/nbd0 <disko.json>.
@@ -25,6 +26,9 @@
 # Input:
 #   $1 = absolute output path for the qcow2.
 #   REPRO_AUTO_CONFIG, REPROOS_STAGED_ROOTFS and REPROOS_DISK_INITRD env.
+#   REPROOS_DISK_LAYOUT, REPROOS_DISK_LAYOUT_ESP_MIB and
+#   REPROOS_DISKO_SPEC env, all set by recipes/reproos-image/package.nim
+#   from the plan-resolved disk-layout preset.
 #   SOURCE_DATE_EPOCH / LC_ALL / TZ for reproducibility.
 #
 # Output:
@@ -301,11 +305,29 @@ case "$USER_LOCKED:$USER_PWHASH" in
     exit 66
     ;;
 esac
-case "$DISK_TYPE" in
-  uefi-ext4) ;;
-  *) echo "[build-reproos-image] unsupported [disk.layout].type: $DISK_TYPE (v1 only supports uefi-ext4)" >&2
-     exit 66 ;;
-esac
+# The set of legal [disk.layout].type values is NOT listed here any
+# more. It is declared once, as typed values, in repro/disk_layouts.nim,
+# and resolved and validated at PLAN time by
+# recipes/reproos-image/package.nim -- so a typo or an unbuildable
+# layout fails before this driver takes sudo and attaches an NBD device,
+# and the error names the legal set.
+#
+# What is left for the driver is a drift check. The disko document below
+# was rendered by the plan from the plan's reading of the config; if the
+# validated config this driver re-reads disagrees, the document would
+# silently describe a different disk from the one that was asked for.
+: "${REPROOS_DISK_LAYOUT:?REPROOS_DISK_LAYOUT must be set by the recipe (see recipes/reproos-image/package.nim)}"
+: "${REPROOS_DISK_LAYOUT_ESP_MIB:?REPROOS_DISK_LAYOUT_ESP_MIB must be set by the recipe}"
+: "${REPROOS_DISKO_SPEC:?REPROOS_DISKO_SPEC must be set by the recipe}"
+if [ "$DISK_TYPE" != "$REPROOS_DISK_LAYOUT" ] ||
+   [ "$ESP_SIZE_MIB" != "$REPROOS_DISK_LAYOUT_ESP_MIB" ]; then
+  echo "[build-reproos-image] disk layout drift: the plan resolved" \
+       "type=$REPROOS_DISK_LAYOUT esp_size_mib=$REPROOS_DISK_LAYOUT_ESP_MIB" \
+       "but the validated config asks for" \
+       "type=$DISK_TYPE esp_size_mib=$ESP_SIZE_MIB;" \
+       "re-plan so the layout is rendered from the config in effect" >&2
+  exit 66
+fi
 case "$DE_DEFAULT" in
   sway|kwin|mutter|plasmashell|sddm) ;;
   *) echo "[build-reproos-image] unsupported [de].default: $DE_DEFAULT" >&2
@@ -338,71 +360,29 @@ echo "[build-reproos-image] kernel: $SOURCE_KERNEL"
 echo "[build-reproos-image] disk initramfs: $DISK_INITRD"
 
 # ---------------------------------------------------------------
-# Phase 3: render a disko JSON for the uefi-ext4 preset.
-# Mirrors installer_state.cpp::renderDiskoJson but in shell since
-# we don't need the full Qt class hierarchy.
+# Phase 3: write the disko JSON the plan rendered.
+#
+# There is no JSON here any more. The document is rendered from the
+# typed disko model (repro_profile's DiskLayout / DiskSpec /
+# PartitionSpec / ContentSpec) by repro/disk_layouts.nim at plan time
+# and handed to this driver in REPROOS_DISKO_SPEC. That is the whole
+# point of the change: one declaration of what a layout is, consumed by
+# both the validator and the renderer, instead of a heredoc that could
+# drift from the model the apply driver parses it back into.
+#
+# The value arrives as a single line with \n escapes, so that the
+# recipe's shell command stays one line and needs no quoting beyond the
+# single quotes around it (the plan refuses to emit a document
+# containing a quote or a backslash). printf %b expands it; printf is a
+# bash builtin, so this needs no additional tool identity.
 # ---------------------------------------------------------------
-# Format mirrors apps/reproos-installer/src/installer_state.cpp's
-# renderDiskoJson "simple" preset (validated by M9.R.41's installer
-# Phase 5 against the same parseSystemHardwareJson code path).
-# Notes:
-#   - disks/partitions are JObjects (keyed by name), NOT arrays.
-#   - DiskSpec.type = "gpt" (not "disk").
-#   - PartitionSpec.type = "esp" / "linux" (not GPT GUID strings).
-#   - ContentSpec.kind = "filesystem" (no "gpt" content kind).
-#   - bootable is required on every PartitionSpec.
-#   - "pools":[] is required at the disko level.
 DISKO_JSON="$WORK/disko.json"
-cat > "$DISKO_JSON" <<EOF
-{
-  "id": "reproos-image",
-  "cpuArch": "x86_64",
-  "cpuMicrocode": "intel",
-  "kernelModules": [],
-  "loaderDevice": "/dev/nbd0",
-  "filesystems": [],
-  "graphicsDrivers": [],
-  "audioCards": [],
-  "disko": {
-    "disks": {
-      "main": {
-        "device": "/dev/nbd0",
-        "type": "gpt",
-        "partitions": {
-          "esp": {
-            "type": "esp",
-            "size": "${ESP_SIZE_MIB}M",
-            "bootable": true,
-            "content": {
-              "kind": "filesystem",
-              "format": "vfat",
-              "mountpoint": "/boot",
-              "mountOptions": ["umask=0077"],
-              "label": "ESP",
-              "subvols": []
-            }
-          },
-          "root": {
-            "type": "linux",
-            "size": "100%",
-            "bootable": false,
-            "content": {
-              "kind": "filesystem",
-              "format": "ext4",
-              "mountpoint": "/",
-              "mountOptions": ["defaults"],
-              "label": "reproos-root",
-              "subvols": []
-            }
-          }
-        }
-      }
-    },
-    "pools": []
-  }
-}
-EOF
-echo "[build-reproos-image] disko json: $DISKO_JSON"
+printf '%b' "$REPROOS_DISKO_SPEC" > "$DISKO_JSON"
+if [ ! -s "$DISKO_JSON" ]; then
+  echo "[build-reproos-image] rendered disko spec is empty" >&2
+  exit 66
+fi
+echo "[build-reproos-image] disko json: $DISKO_JSON (layout $REPROOS_DISK_LAYOUT)"
 
 # ---------------------------------------------------------------
 # Phase 4: qemu-img create.
@@ -484,6 +464,12 @@ sleep 2
 #
 # With our GPT layout the ESP is partition 1, root is partition 2.
 # qemu-nbd exposes them as ${NBD_DEV}p1, ${NBD_DEV}p2.
+#
+# That is true of the uefi-ext4 preset, which is the only preset the
+# plan lets through to this driver. uefi-attested declares three more
+# volumes and needs a mount plan derived from the layout rather than
+# hardcoded partition numbers; it is refused at plan time until the
+# work that fills it in (verity content, then the UKI) lands.
 # ---------------------------------------------------------------
 ESP_DEV="${NBD_DEV}p1"
 ROOT_DEV="${NBD_DEV}p2"

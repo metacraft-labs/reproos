@@ -12,6 +12,11 @@ if [[ ! -x "$installer_bin" ]]; then
   exit 1
 fi
 
+# Qt routes qCritical() to the journal on some builds. Every refusal
+# this script asserts on is a qCritical(), so force stderr rather than
+# make the assertions depend on how the host's Qt was configured.
+export QT_FORCE_STDERR_LOGGING=1
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 first="$work/first"
@@ -50,5 +55,39 @@ if "$installer_bin" --config "$work/unknown-key.toml" \
   exit 1
 fi
 grep -F "unknown configuration key" "$work/rejected.log" >/dev/null
+
+# The disk layout is decided in one place -- repro/disk_layouts.nim,
+# compiled into the installer by tools/gen_disk_layouts.nim -- and the
+# binary must refuse with the registry's own reason rather than with a
+# validator of its own. tests/test_installer_disk_layout_parity.nim
+# proves the two texts are identical; this asserts the shipped BINARY
+# behaves that way, which is the thing the image driver invokes.
+sed 's/^type = "uefi-ext4"/type = "uefi-reproos-not-a-preset"/' \
+  "$fixture" > "$work/unknown-layout.toml"
+if "$installer_bin" --config "$work/unknown-layout.toml" \
+    --emit-artifacts "$work/unknown-layout-out" \
+    >"$work/unknown-layout.log" 2>&1; then
+  echo "an unregistered disk layout was accepted" >&2
+  exit 1
+fi
+grep -F "unknown [disk.layout].type" "$work/unknown-layout.log" >/dev/null
+# The refusal must list the legal set, not merely say no.
+grep -F "uefi-ext4" "$work/unknown-layout.log" >/dev/null
+grep -F "uefi-attested" "$work/unknown-layout.log" >/dev/null
+
+# A preset the registry declares but cannot build yet is refused with
+# the registry's recorded reason. Sized past the preset's minimum so
+# this exercises the declared-only refusal and not the size check.
+sed -e 's/^type = "uefi-ext4"/type = "uefi-attested"/' \
+    -e 's/^size_gb = 8/size_gb = 32/' \
+  "$fixture" > "$work/declared-layout.toml"
+if "$installer_bin" --config "$work/declared-layout.toml" \
+    --emit-artifacts "$work/declared-layout-out" \
+    >"$work/declared-layout.log" 2>&1; then
+  echo "a declared-but-not-yet-buildable disk layout was accepted" >&2
+  exit 1
+fi
+grep -F "is declared but not yet buildable" "$work/declared-layout.log" >/dev/null
+grep -F "no verity image behind it yet" "$work/declared-layout.log" >/dev/null
 
 echo "installer artifact contract: PASS"

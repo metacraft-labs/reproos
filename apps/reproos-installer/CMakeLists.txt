@@ -42,7 +42,14 @@ qt_standard_project_setup(REQUIRES 6.6)
 qt_add_executable(reproos-installer
     src/main.cpp
     src/installer_state.cpp
-    src/installer_state.h)
+    src/installer_state.h
+    # The disk-layout registry, generated from repro/disk_layouts.nim by
+    # tools/gen_disk_layouts.nim. disk_layouts.cpp is deliberately
+    # Qt-free so the parity gate can compile the shipped file with a
+    # bare g++ and diff its output against the Nim registry.
+    src/disk_layouts.cpp
+    src/disk_layouts.h
+    src/disk_layouts_generated.h)
 
 # The QML files ship as a Qt resource so the binary is fully self-
 # contained (no /usr/share/reproos-installer/qml/ needed). qt_add_qml_module

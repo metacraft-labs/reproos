@@ -26,6 +26,20 @@ Use Reprobuild as the only contributor command surface:
   the recipe has always emitted, and `uefi-attested` declares the
   attestable partition shape. Run it after touching a layout preset, the
   image recipe's plan, or `build-reproos-image.sh`.
+  `repro build test-installer-disk-layout-parity` checks that the disko
+  document has exactly one renderer. `repro/disk_layouts.nim` is the only
+  declaration of what a layout is; `tools/gen_disk_layouts.nim` compiles it
+  into the installer's C++ table
+  (`apps/reproos-installer/src/disk_layouts_generated.h`) and into
+  `tools/disk_layouts_generated.json` for the config validator, and both
+  generated files are checked in. **After changing a preset, regenerate
+  them with `nim r tools/gen_disk_layouts.nim`** — this gate re-derives
+  both and fails if a byte differs, compiles the shipped
+  `apps/reproos-installer/src/disk_layouts.cpp` and diffs its documents
+  and refusals against the registry's, and checks that the image driver
+  refuses when `/etc/repro/disko.json` is not the document it applies.
+  Never hand-edit a generated file, and never add a second place that
+  decides which layouts are legal.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

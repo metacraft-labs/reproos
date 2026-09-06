@@ -687,6 +687,39 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-disk-layout-presets", testDiskLayoutPresets)
 
+    # One renderer for the disko document. The registry is compiled into
+    # the installer's C++ table and the config validator's JSON by
+    # tools/gen_disk_layouts.nim; this gate re-derives both and requires
+    # the checked-in bytes to match, compiles the installer's SHIPPED
+    # disk_layouts.cpp with g++ and diffs its documents and refusals
+    # against the registry's, and checks that the image driver refuses
+    # when /etc/repro/disko.json is not the document it applies. Runs
+    # without the Qt toolchain on purpose, so it stays a fast always-on
+    # check; it additionally compares against a built installer binary
+    # when one is present (REPROOS_INSTALLER_BIN, or the recipe's
+    # output path) and reports a visible skip when it is not.
+    let testInstallerDiskLayoutParity = shell(
+      command = "bash tests/test-installer-disk-layout-parity.sh",
+      actionId = "reproos.test-installer-disk-layout-parity",
+      extraInputs = @[
+        "tests/test-installer-disk-layout-parity.sh",
+        "tests/test_installer_disk_layout_parity.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tests/golden/installer-artifacts",
+        "repro/disk_layouts.nim",
+        "tools/gen_disk_layouts.nim",
+        "tools/disk_layouts_generated.json",
+        "apps/reproos-installer/src/disk_layouts.h",
+        "apps/reproos-installer/src/disk_layouts.cpp",
+        "apps/reproos-installer/src/disk_layouts_generated.h",
+        "apps/reproos-installer/src/installer_state.cpp",
+        "tools/reproos-machine-config.py",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+      ],
+      cacheable = false).withToolIdentities(["bash", "python3"])
+    discard target("test-installer-disk-layout-parity",
+      testInstallerDiskLayoutParity)
+
     # The same claim, observed from inside a running guest: the ReproOS
     # kernel direct-kernel-booted with the product's own initramfs and a
     # vTPM attached, reporting dm-verity and a TPM 2.0 on the serial
@@ -725,6 +758,7 @@ package reproosWorkflows:
       testInitramfsVerityTpm,
       testGuestVerityTpm,
       testDiskLayoutPresets,
+      testInstallerDiskLayoutParity,
       testImageHealth,
       testInstalledDesktop,
       testInstalledSsh,

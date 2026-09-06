@@ -385,6 +385,67 @@ fi
 echo "[build-reproos-image] disko json: $DISKO_JSON (layout $REPROOS_DISK_LAYOUT)"
 
 # ---------------------------------------------------------------
+# Phase 3b: the installed image must describe the disk it actually has.
+#
+# Two documents leave this build. $DISKO_JSON is what `repro disk apply`
+# partitions with, rendered by the plan for the build-time NBD node.
+# $CONFIG_BUNDLE_DIR/disko.json is what Phase 9 copies into the
+# installed root as /etc/repro/disko.json, rendered by the installer for
+# the device the guest will see. They are the same layout rendered by
+# the same registry (repro/disk_layouts.nim, compiled into the
+# installer by tools/gen_disk_layouts.nim), so they must be the same
+# bytes once the two identity parameters -- the spec id and the device
+# node -- are normalised.
+#
+# They were not, before this check existed: the installer rendered its
+# own JSON with empty labels, "noatime" instead of "defaults", no
+# umask=0077 on the ESP, and /dev/vda regardless of the target. Every
+# installed image carried a description of its own disk that disagreed
+# with the disk it had. The comparison is done here, before qemu-img and
+# before sudo, so a regression costs seconds rather than an image.
+INSTALL_TARGET_DEVICE="$(toml_get "$CFG" "install" "target_device")"
+INSTALL_TARGET_DEVICE="${INSTALL_TARGET_DEVICE:-/dev/vda}"
+spec_id() {
+  # The `"id": "<value>",` line of a pretty-printed disko document.
+  sed -n 's/^  "id": "\(.*\)",$/\1/p' "$1" | sed -n '1p'
+}
+PLAN_ID="$(spec_id "$DISKO_JSON")"
+INSTALLED_ID="$(spec_id "$CONFIG_BUNDLE_DIR/disko.json")"
+if [ -z "$PLAN_ID" ]; then
+  echo "[build-reproos-image] cannot read the spec id out of the" \
+       "plan-rendered disko document; it is not the pretty-printed form" \
+       "this check normalises" >&2
+  exit 66
+fi
+if [ -z "$INSTALLED_ID" ]; then
+  # The installer's document is not even the same shape -- a minified
+  # one, say, from an installer built before it consumed the layout
+  # registry. Leave the id alone so the comparison below reports the
+  # whole difference rather than a substitution failure.
+  INSTALLED_ID="$PLAN_ID"
+fi
+sed -e "s|\"$PLAN_ID\"|\"$INSTALLED_ID\"|" \
+    -e "s|/dev/nbd0|$INSTALL_TARGET_DEVICE|g" \
+    "$DISKO_JSON" > "$WORK/disko-as-installed.json"
+APPLIED_SHA="$(sha256sum "$WORK/disko-as-installed.json" | awk '{print $1}')"
+INSTALLED_SHA="$(sha256sum "$CONFIG_BUNDLE_DIR/disko.json" | awk '{print $1}')"
+if [ "$APPLIED_SHA" != "$INSTALLED_SHA" ]; then
+  echo "[build-reproos-image] the disko document the installer emits for" \
+       "/etc/repro/disko.json is not the one this build applies" >&2
+  echo "[build-reproos-image] --- applied (normalised), sha $APPLIED_SHA ---" >&2
+  cat "$WORK/disko-as-installed.json" >&2
+  echo "[build-reproos-image] --- installer's, sha $INSTALLED_SHA ---" >&2
+  cat "$CONFIG_BUNDLE_DIR/disko.json" >&2
+  echo "[build-reproos-image] both come from repro/disk_layouts.nim;" \
+       "regenerate the installer's table with" \
+       "\`nim r tools/gen_disk_layouts.nim\` and rebuild the installer" >&2
+  exit 66
+fi
+echo "[build-reproos-image] /etc/repro/disko.json matches the applied" \
+     "layout (id $INSTALLED_ID, device $INSTALL_TARGET_DEVICE, sha" \
+     "$INSTALLED_SHA)"
+
+# ---------------------------------------------------------------
 # Phase 4: qemu-img create.
 # ---------------------------------------------------------------
 TMP_QCOW2="$WORK/reproos-installed.qcow2"

@@ -60,7 +60,8 @@ ApplicationWindow {
         if (currentScreenIndex === 4) {
             return installerState.targetDevice.length > 0
                 && installerState.wipeAcknowledged
-                && installerState.diskoPreset === "simple";
+                && installerState.diskLayoutRefusal(
+                       installerState.diskLayout).length === 0;
         }
         if (currentScreenIndex === 8)
             return installerState.installProgress >= 1.0;

@@ -11,21 +11,25 @@ hardware "INSTALL":
     disks:
       "main":
         device: "/dev/vda"
-        table: gpt
+        table: "gpt"
         partitions:
           "esp":
-            kind: esp
+            kind: "esp"
             size: "512M"
             bootable: true
             content:
               filesystem:
                 format: "vfat"
                 mountpoint: "/boot"
+                mountOptions: @["umask=0077"]
+                label: "ESP"
           "root":
-            kind: linux
+            kind: "linux"
             size: "100%"
+            bootable: false
             content:
               filesystem:
                 format: "ext4"
                 mountpoint: "/"
-                mountOptions: @["noatime"]
+                mountOptions: @["defaults"]
+                label: "reproos-root"

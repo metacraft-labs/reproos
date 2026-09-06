@@ -133,7 +133,14 @@ InstallerPage {
     Item { Layout.fillHeight: true }
 
     Component.onCompleted: {
-        installerState.diskoPreset = "simple";
+        // The default layout comes from the registry, not from a
+        // literal here: repro/disk_layouts.nim decides what ReproOS
+        // installs by default, and the wizard follows it.
+        if (installerState.diskLayoutRefusal(installerState.diskLayout).length > 0) {
+            var installable = installerState.installableDiskLayouts();
+            if (installable.length > 0)
+                installerState.diskLayout = installable[0];
+        }
         if (installerState.availableDisks.length === 0)
             installerState.refreshAvailableDisks();
     }

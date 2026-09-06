@@ -31,6 +31,82 @@ SSH_KEY_TYPES = {
     "sk-ssh-ed25519@openssh.com",
 }
 
+DISK_LAYOUT_REGISTRY = Path(__file__).with_name("disk_layouts_generated.json")
+
+
+def load_disk_layout_registry() -> dict[str, Any]:
+    """The disk-layout registry, as data.
+
+    ReproOS declares its disk layouts once, as typed values in
+    ``repro/disk_layouts.nim``; ``tools/gen_disk_layouts.nim`` compiles
+    that declaration into this JSON (and into the installer's C++
+    table). This validator used to carry its own
+    ``require_exact(..., "uefi-ext4")``, which meant a preset added to
+    the registry was still rejected here -- a third opinion about what
+    a legal layout is, with a message of its own.
+
+    A missing or unreadable registry is an error, not a fallback to a
+    literal: silently accepting everything, or silently accepting only
+    the old default, is how the divergence this replaced survived.
+    """
+    try:
+        with DISK_LAYOUT_REGISTRY.open("rb") as handle:
+            return json.load(handle)
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot read the disk-layout registry {DISK_LAYOUT_REGISTRY}: {exc}; "
+            "regenerate it with `nim r tools/gen_disk_layouts.nim`"
+        ) from exc
+
+
+def validate_disk_layout(name: str, esp_size_mib: int, disk_size_gb: int) -> None:
+    """Refuse with the registry's own reason, in the registry's own order.
+
+    The wording matches ``validateDiskLayoutRequest`` in
+    ``repro/disk_layouts.nim`` and ``validateDiskLayout`` in
+    ``apps/reproos-installer/src/disk_layouts.cpp``; the parity gate
+    compares all three.
+    """
+    registry = load_disk_layout_registry()
+    presets = registry["presets"]
+    preset = next((p for p in presets if p["name"] == name), None)
+    if preset is None:
+        listing = "\n".join(
+            "    {} \u2014 {}{}".format(
+                p["name"],
+                p["summary"],
+                "" if p["buildable"] else " (declared, not yet buildable)",
+            )
+            for p in presets
+        )
+        raise ConfigError(
+            f'unknown [disk.layout].type: {json.dumps(name)}\n'
+            f"  legal values:\n{listing}"
+        )
+    if esp_size_mib < registry["minEspSizeMib"]:
+        raise ConfigError(
+            "[disk.layout].esp_size_mib must be an integer of at least "
+            f'{registry["minEspSizeMib"]} (got {esp_size_mib})'
+        )
+    if disk_size_gb < 0:
+        # The registry's sentinel for "present but not a number", kept
+        # here so the three validators answer the same way for every
+        # input rather than only for the ones each can produce.
+        raise ConfigError("[disk] size_gb must be an integer")
+    if disk_size_gb < preset["minDiskSizeGb"]:
+        raise ConfigError(
+            f"[disk] size_gb = {disk_size_gb} is too small for layout "
+            f'{json.dumps(name)}, which needs at least '
+            f'{preset["minDiskSizeGb"]} GB'
+        )
+    if not preset["buildable"]:
+        raise ConfigError(
+            f'[disk.layout].type {json.dumps(name)} is declared but not yet '
+            f'buildable: {preset["unbuildableReason"]}\n  build with '
+            f'{json.dumps(registry["defaultLayout"])} until then'
+        )
+
+
 PUBLIC_FIELDS = {
     "schema_version",
     "hostname",
@@ -156,11 +232,11 @@ def validate_public(config: dict[str, Any]) -> dict[str, Any]:
     if user not in sudo_users or "wheel" not in groups:
         raise ConfigError("the administrative user must be in sudo.users and user.groups wheel")
 
-    if field(config, "disk.size_gb", int) < 4:
-        raise ConfigError("disk.size_gb must be at least 4")
-    require_exact(field(config, "disk.layout.type", str), "uefi-ext4", "disk.layout.type")
-    if field(config, "disk.layout.esp_size_mib", int) < 128:
-        raise ConfigError("disk.layout.esp_size_mib must be at least 128")
+    validate_disk_layout(
+        field(config, "disk.layout.type", str),
+        field(config, "disk.layout.esp_size_mib", int),
+        field(config, "disk.size_gb", int),
+    )
     require_exact(field(config, "network.ipv4", str), "dhcp", "network.ipv4")
 
     require_exact(field(config, "ssh.enabled", bool), True, "ssh.enabled")

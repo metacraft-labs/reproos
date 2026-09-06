@@ -5,16 +5,24 @@
 // the same source of truth.
 //
 // M9.R.23.2 -- extended with the Disk-screen-driven properties
-// (targetDevice, diskoPreset, diskPassphrase, wipeAcknowledged,
+// (targetDevice, diskLayout, diskPassphrase, wipeAcknowledged,
 // availableDisks) + the install() orchestration entry point that drives
 // the M9.R.21 / M9.R.22 / M9.R.22b CLI commands end-to-end.
+//
+// `diskLayout` names a preset in the ReproOS disk-layout registry
+// (repro/disk_layouts.nim), reached here through disk_layouts.h. It
+// replaced a wizard-local `diskoPreset` vocabulary ("simple" /
+// "encrypted" / "advanced") that no other part of ReproOS understood:
+// the image recipe, the image driver and the config validator all
+// speak registry names, and the installer refusing on a private
+// vocabulary is what kept uefi-attested unselectable.
 //
 // Per ReproOS-Installer-PRD.md Sec 3.1 the ten wizard screens collect:
 //  - Welcome  (no state captured; orient the user)
 //  - Locale   -> timezone + locale
 //  - Keyboard -> keymap
 //  - Users    -> username + fullName + password + isAdmin
-//  - Disk     -> targetDevice + diskoPreset + diskPassphrase
+//  - Disk     -> targetDevice + diskLayout + diskPassphrase
 //  - DE       -> desktopKind (sway / plasma / gnome / hyprland)
 //  - Activities -> set of activity-name strings
 //  - Summary  (no state captured; show preview)
@@ -46,7 +54,7 @@ class InstallerState : public QObject {
 
     // M9.R.23.2 disk-screen properties.
     Q_PROPERTY(QString targetDevice READ targetDevice WRITE setTargetDevice NOTIFY targetDeviceChanged)
-    Q_PROPERTY(QString diskoPreset READ diskoPreset WRITE setDiskoPreset NOTIFY diskoPresetChanged)
+    Q_PROPERTY(QString diskLayout READ diskLayout WRITE setDiskLayout NOTIFY diskLayoutChanged)
     Q_PROPERTY(QString diskPassphrase READ diskPassphrase WRITE setDiskPassphrase NOTIFY diskPassphraseChanged)
     Q_PROPERTY(bool wipeAcknowledged READ wipeAcknowledged WRITE setWipeAcknowledged NOTIFY wipeAcknowledgedChanged)
     Q_PROPERTY(QStringList availableDisks READ availableDisks WRITE setAvailableDisks NOTIFY availableDisksChanged)
@@ -99,8 +107,18 @@ public:
     QString targetDevice() const { return m_targetDevice; }
     void setTargetDevice(const QString &v);
 
-    QString diskoPreset() const { return m_diskoPreset; }
-    void setDiskoPreset(const QString &v);
+    QString diskLayout() const { return m_diskLayout; }
+    void setDiskLayout(const QString &v);
+
+    // The registry, exposed to QML so the Disk screen can offer what
+    // exists rather than a hard-coded list. `installableDiskLayouts`
+    // omits presets registered as declared-but-not-yet-buildable;
+    // `diskLayoutRefusal` returns the registry's own reason for one,
+    // or "" when the named layout is installable at the current
+    // esp_size_mib / size_gb.
+    Q_INVOKABLE QStringList registeredDiskLayouts() const;
+    Q_INVOKABLE QStringList installableDiskLayouts() const;
+    Q_INVOKABLE QString diskLayoutRefusal(const QString &name) const;
 
     QString diskPassphrase() const { return m_diskPassphrase; }
     void setDiskPassphrase(const QString &v);
@@ -121,13 +139,12 @@ public:
     // binds its TextArea to the return value.
     Q_INVOKABLE QString renderSystemNim() const;
 
-    // M9.R.23.2 -- render the disko block the M9.R.22 macro consumes.
-    // Composes the hardware "<id>": ... disko: ... text per the preset
-    // choice; the wizard's target hardware.nim layers this on top of
-    // the M9.R.21 probe output.
+    // The selected layout's hardware.nim source and disko JSON. Both
+    // are the ReproOS disk-layout registry's own rendering with the id,
+    // device and ESP size substituted -- see disk_layouts.h. Neither is
+    // composed here; a preset added to repro/disk_layouts.nim reaches
+    // both without a line of C++ changing.
     Q_INVOKABLE QString renderDiskoNim(const QString &id = QString("INSTALL")) const;
-    // M9.R.24.2 -- pre-computed JSON form of the disko spec.
-    // Lets the installer's apply path bypass `nim r` in the live ISO.
     Q_INVOKABLE QString renderDiskoJson(const QString &id = QString("INSTALL")) const;
     // Canonical unattended input consumed by recipes/reproos-image.
     // The wizard and the image recipe share this file as their replay
@@ -172,6 +189,10 @@ public:
     bool writeFileAtomic(const QString &path, const QString &text,
                          QString *error = nullptr);
 
+    // The device every emitted document names, with the "nothing
+    // selected yet" fallback applied once instead of at each call site.
+    QString effectiveTargetDevice() const;
+
 signals:
     void hostnameChanged();
     void localeChanged();
@@ -187,7 +208,7 @@ signals:
     void dryRunChanged();
 
     void targetDeviceChanged();
-    void diskoPresetChanged();
+    void diskLayoutChanged();
     void diskPassphraseChanged();
     void wipeAcknowledgedChanged();
     void availableDisksChanged();
@@ -226,7 +247,7 @@ private:
     // M9.R.23 disk fields. Empty targetDevice forces the wizard to
     // re-probe before allowing Next on the Disk screen.
     QString m_targetDevice;
-    QString m_diskoPreset = "simple";
+    QString m_diskLayout = "uefi-ext4";
     QString m_diskPassphrase;
     bool m_wipeAcknowledged = false;
     QStringList m_availableDisks;

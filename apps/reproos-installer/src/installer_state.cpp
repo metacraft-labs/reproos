@@ -10,6 +10,8 @@
 
 #include "installer_state.h"
 
+#include "disk_layouts.h"
+
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
@@ -105,10 +107,38 @@ void InstallerState::setTargetDevice(const QString &v) {
     emit targetDeviceChanged();
 }
 
-void InstallerState::setDiskoPreset(const QString &v) {
-    if (m_diskoPreset == v) return;
-    m_diskoPreset = v;
-    emit diskoPresetChanged();
+QString InstallerState::effectiveTargetDevice() const {
+    // One place decides what "no disk chosen yet" renders as, because
+    // every document that names the device has to name the same one.
+    return m_targetDevice.isEmpty() ? QStringLiteral("/dev/vda")
+                                    : m_targetDevice;
+}
+
+void InstallerState::setDiskLayout(const QString &v) {
+    if (m_diskLayout == v) return;
+    m_diskLayout = v;
+    emit diskLayoutChanged();
+}
+
+QStringList InstallerState::registeredDiskLayouts() const {
+    QStringList names;
+    for (const reproos::DiskLayoutInfo &preset : reproos::diskLayoutPresets())
+        names << QString::fromStdString(preset.name);
+    return names;
+}
+
+QStringList InstallerState::installableDiskLayouts() const {
+    QStringList names;
+    for (const reproos::DiskLayoutInfo &preset : reproos::diskLayoutPresets()) {
+        if (preset.buildable)
+            names << QString::fromStdString(preset.name);
+    }
+    return names;
+}
+
+QString InstallerState::diskLayoutRefusal(const QString &name) const {
+    return QString::fromStdString(reproos::validateDiskLayout(
+        name.toStdString(), m_espSizeMib, m_diskSizeGb));
 }
 
 void InstallerState::setDiskPassphrase(const QString &v) {
@@ -288,7 +318,10 @@ QString InstallerState::renderAutoConfigToml() {
     s << "[disk]\n";
     s << "size_gb = " << m_diskSizeGb << "\n\n";
     s << "[disk.layout]\n";
-    s << "type = \"uefi-ext4\"\n";
+    // The selected layout, not a literal: an auto-config.toml the
+    // wizard emits has to round-trip back through loadAutoConfig, and
+    // the image recipe reads this key to decide what it partitions.
+    s << "type = " << tomlQuoted(m_diskLayout) << "\n";
     s << "esp_size_mib = " << m_espSizeMib << "\n\n";
     s << "[de]\n";
     s << "default = " << tomlQuoted(m_desktopKind) << "\n\n";
@@ -318,8 +351,7 @@ QString InstallerState::renderAutoConfigToml() {
     s << "enabled = " << tomlStringArray(m_activeActivities) << "\n\n";
     s << "[install]\n";
     s << "target_device = " << tomlQuoted(
-        m_targetDevice.isEmpty() ? QStringLiteral("/dev/vda")
-                                 : m_targetDevice) << "\n";
+        effectiveTargetDevice()) << "\n";
     return out;
 }
 
@@ -443,27 +475,30 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
         } else if (qualified == "sudo.users") {
             m_sudoUsers = parseTomlArray(rawValue);
         } else if (qualified == "disk.size_gb") {
+            // Range checking of the three disk keys is deferred to the
+            // single registry validator below, so that a request is
+            // judged as a whole -- "8 GB is too small" depends on which
+            // layout was asked for -- and so that only one place in
+            // ReproOS decides what a legal disk layout is. A
+            // non-integer is still caught here, because the registry
+            // reasons about numbers.
             bool ok = false;
             const int parsed = value.toInt(&ok);
-            if (!ok || parsed < 4) {
+            if (!ok) {
                 if (error)
-                    *error = "disk.size_gb must be an integer of at least 4";
+                    *error = "[disk] size_gb must be an integer";
                 return false;
             }
             m_diskSizeGb = parsed;
         } else if (qualified == "disk.layout.type") {
-            if (value != "uefi-ext4") {
-                if (error)
-                    *error = "only disk.layout.type=uefi-ext4 is supported";
-                return false;
-            }
-            setDiskoPreset("simple");
+            setDiskLayout(value);
         } else if (qualified == "disk.layout.esp_size_mib") {
             bool ok = false;
             const int parsed = value.toInt(&ok);
-            if (!ok || parsed < 128) {
+            if (!ok) {
                 if (error)
-                    *error = "disk.layout.esp_size_mib must be at least 128";
+                    *error =
+                        "[disk.layout].esp_size_mib must be an integer";
                 return false;
             }
             m_espSizeMib = parsed;
@@ -530,6 +565,20 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
         }
     }
 
+    // The disk layout is judged once, by the registry generated from
+    // repro/disk_layouts.nim, and the message the operator sees is the
+    // registry's own. Before this the installer carried its own
+    // `!= "uefi-ext4"` literal and refused before the image recipe's
+    // plan-time validator ever ran, so a preset added to the registry
+    // was still rejected here -- which is why uefi-attested could not
+    // be selected through the installer at all.
+    const std::string layoutRefusal = reproos::validateDiskLayout(
+        m_diskLayout.toStdString(), m_espSizeMib, m_diskSizeGb);
+    if (!layoutRefusal.empty()) {
+        if (error) *error = QString::fromStdString(layoutRefusal);
+        return false;
+    }
+
     if (m_hostname.isEmpty() || m_username.isEmpty()) {
         if (error)
             *error = "hostname and user.name must not be empty";
@@ -587,6 +636,17 @@ bool InstallerState::loadAutoConfig(const QString &configPath,
 
 bool InstallerState::writeConfigurationArtifacts(const QString &directory,
                                                   QString *error) {
+    // The wizard path does not go through loadAutoConfig(), so the
+    // registry is consulted here too. Same validator, same message --
+    // the point of the registry is that there is only one answer to
+    // "is this layout installable", not that it is asked in one place.
+    const std::string layoutRefusal = reproos::validateDiskLayout(
+        m_diskLayout.toStdString(), m_espSizeMib, m_diskSizeGb);
+    if (!layoutRefusal.empty()) {
+        if (error) *error = QString::fromStdString(layoutRefusal);
+        return false;
+    }
+
     const QString autoConfig = renderAutoConfigToml();
     if (autoConfig.isEmpty()) {
         if (error)
@@ -615,158 +675,39 @@ bool InstallerState::writeConfigurationArtifacts(const QString &directory,
     return true;
 }
 
-// M9.R.23.2 -- render the M9.R.22 disko block matching the chosen
-// preset. The "advanced" preset produces a hardware "<id>": block with
-// no disko: sub-block + a comment instructing the user to add one
-// post-install.
+// The two documents that describe the target disk. Neither is written
+// here any more.
+//
+// They used to be: renderDiskoNim() hand-printed a hardware.nim disko
+// block and renderDiskoJson() hand-printed the disko JSON, and both had
+// drifted from repro/disk_layouts.nim -- empty labels where the image
+// build writes ESP and reproos-root, "noatime" where it writes
+// "defaults", no umask=0077 on the ESP, and a device that defaulted to
+// /dev/vda regardless. renderDiskoJson()'s own comment claimed its
+// output matched repro_profile's emitSystemHardwareJson; it did not,
+// and that claim is what is deleted here rather than repaired.
+//
+// Now both come from the registry, compiled into
+// disk_layouts_generated.h by tools/gen_disk_layouts.nim, with the id,
+// device and ESP size substituted. Adding a layout is a change to
+// repro/disk_layouts.nim and a regeneration; there is nothing here to
+// keep in step by hand.
+//
+// An unregistered layout yields an empty document. Callers never see
+// one: loadAutoConfig() refuses through the registry's validator before
+// any artifact is emitted, and writeConfigurationArtifacts() refuses
+// again for the wizard path, which does not go through loadAutoConfig.
+
 QString InstallerState::renderDiskoNim(const QString &id) const {
-    QString out;
-    QTextStream s(&out);
-    s << "# /etc/repro/hardware.nim --- generated by the ReproOS installer\n";
-    s << "import repro_profile\n\n";
-    s << "hardware \"" << id << "\":\n";
-    s << "  cpu:\n";
-    s << "    arch: \"x86_64\"\n";
-    s << "    microcode: \"intel\"\n";
-    s << "  boot:\n";
-    s << "    loaderDevice: \"" << (m_targetDevice.isEmpty()
-        ? QStringLiteral("/dev/vda") : m_targetDevice) << "\"\n";
-
-    if (m_diskoPreset == "advanced") {
-        s << "  # disko: block omitted -- the user opted for the\n";
-        s << "  # advanced layout. Hand-author the disks/pools blocks\n";
-        s << "  # via the M9.R.22 macro vocabulary; see\n";
-        s << "  # reprobuild-specs/ReproOS-Disko-Port.md for examples.\n";
-        return out;
-    }
-
-    const QString dev = m_targetDevice.isEmpty()
-        ? QStringLiteral("/dev/vda") : m_targetDevice;
-
-    s << "  disko:\n";
-    s << "    disks:\n";
-    s << "      \"main\":\n";
-    s << "        device: \"" << dev << "\"\n";
-    s << "        table: gpt\n";
-    s << "        partitions:\n";
-    s << "          \"esp\":\n";
-    s << "            kind: esp\n";
-    s << "            size: \"" << m_espSizeMib << "M\"\n";
-    s << "            bootable: true\n";
-    s << "            content:\n";
-    s << "              filesystem:\n";
-    s << "                format: \"vfat\"\n";
-    s << "                mountpoint: \"/boot\"\n";
-    s << "          \"root\":\n";
-    s << "            kind: linux\n";
-    s << "            size: \"100%\"\n";
-    s << "            content:\n";
-
-    if (m_diskoPreset == "encrypted") {
-        // LUKS2 + btrfs subvols. The keyFile = "interactive" signals
-        // the M9.R.22b apply driver to consume the passphrase from the
-        // CT_DISK_PASSPHRASE env var instead of a key file.
-        s << "              encrypted:\n";
-        s << "                encryption:\n";
-        s << "                  kind: \"luks2\"\n";
-        s << "                  keyFile: \"interactive\"\n";
-        s << "                  allowDiscards: true\n";
-        s << "                inner:\n";
-        s << "                  filesystem:\n";
-        s << "                    format: \"btrfs\"\n";
-        s << "                    mountpoint: \"/\"\n";
-        s << "                    subvols:\n";
-        s << "                      \"@\":\n";
-        s << "                        path: \"/\"\n";
-        s << "                      \"@home\":\n";
-        s << "                        path: \"/home\"\n";
-        s << "                      \"@nix\":\n";
-        s << "                        path: \"/nix\"\n";
-    } else {
-        // simple preset (default): ext4 root.
-        s << "              filesystem:\n";
-        s << "                format: \"ext4\"\n";
-        s << "                mountpoint: \"/\"\n";
-        s << "                mountOptions: @[\"noatime\"]\n";
-    }
-    return out;
+    return QString::fromStdString(reproos::renderHardwareNim(
+        m_diskLayout.toStdString(), id.toStdString(),
+        effectiveTargetDevice().toStdString(), m_espSizeMib));
 }
 
-// M9.R.24.2 -- renderDiskoJson: pre-compute the SystemHardwareSpec
-// JSON the disk_apply driver consumes, so the live ISO's installer
-// can `repro disk apply --confirm <disko.json>` WITHOUT a Nim
-// toolchain (the .nim path goes through `nim r` -- requires nim +
-// gcc + libc-dev in the live filesystem, which we deliberately don't
-// ship). The output must match libs/repro_profile/.../emit.nim's
-// emitSystemHardwareJson for the same SystemHardwareSpec input.
-//
-// Currently supports the `simple` preset only; encrypted/advanced
-// fall through to the .nim path (which still requires Nim).
 QString InstallerState::renderDiskoJson(const QString &id) const {
-    QString out;
-    QTextStream s(&out);
-    auto esc = [](const QString &x) {
-        QString r;
-        for (QChar c : x) {
-            if (c == '"' || c == '\\') r += '\\';
-            r += c;
-        }
-        return r;
-    };
-    const QString dev = m_targetDevice.isEmpty()
-        ? QStringLiteral("/dev/vda") : m_targetDevice;
-    // Filesystem content node (filesystem kind) -- includes all keys
-    // parseContentSpec requires when kind==filesystem.
-    auto fsContent = [&](const QString &format, const QString &mountpoint,
-                         const QString &mountOpts) {
-        QString r;
-        r += "{\"kind\":\"filesystem\"";
-        r += ",\"format\":\"" + esc(format) + "\"";
-        r += ",\"mountpoint\":\"" + esc(mountpoint) + "\"";
-        r += ",\"mountOptions\":" + mountOpts;
-        r += ",\"label\":\"\"";
-        r += ",\"subvols\":[]";
-        r += "}";
-        return r;
-    };
-    s << "{";
-    s << "\"id\":\"" << esc(id) << "\"";
-    s << ",\"cpuArch\":\"x86_64\"";
-    s << ",\"cpuMicrocode\":\"intel\"";
-    s << ",\"kernelModules\":[]";
-    s << ",\"loaderDevice\":\"" << esc(dev) << "\"";
-    s << ",\"filesystems\":[]";
-    s << ",\"graphicsDrivers\":[]";
-    s << ",\"audioCards\":[]";
-    if (m_diskoPreset == "simple" || m_diskoPreset.isEmpty()) {
-        s << ",\"disko\":{";
-        s << "\"disks\":{";
-        s << "\"main\":{";
-        s << "\"device\":\"" << esc(dev) << "\"";
-        s << ",\"type\":\"gpt\"";
-        s << ",\"partitions\":{";
-        // ESP partition.
-        s << "\"esp\":{";
-        s << "\"type\":\"esp\"";
-        s << ",\"size\":\"" << m_espSizeMib << "M\"";
-        s << ",\"bootable\":true";
-        s << ",\"content\":" << fsContent("vfat", "/boot", "[]");
-        s << "},";
-        // Root partition.
-        s << "\"root\":{";
-        s << "\"type\":\"linux\"";
-        s << ",\"size\":\"100%\"";
-        s << ",\"bootable\":false";
-        s << ",\"content\":" << fsContent("ext4", "/", "[\"noatime\"]");
-        s << "}";
-        s << "}";
-        s << "}";
-        s << "}";
-        s << ",\"pools\":[]";
-        s << "}";
-    }
-    s << "}\n";
-    return out;
+    return QString::fromStdString(reproos::renderDiskoDocument(
+        m_diskLayout.toStdString(), id.toStdString(),
+        effectiveTargetDevice().toStdString(), m_espSizeMib));
 }
 
 // ---------------------------------------------------------------------
@@ -960,8 +901,7 @@ bool InstallerState::runReproSystemApply(const QString &target) {
         appendLog(QString("[dry-run] would run `repro infra install-root "
                           "--target %1 --device %2`")
                   .arg(target,
-                       m_targetDevice.isEmpty() ? QStringLiteral("/dev/vda")
-                                                : m_targetDevice));
+                       effectiveTargetDevice()));
         return true;
     }
     // M9.R.41: install-time root-mirror.  The previous
@@ -974,8 +914,7 @@ bool InstallerState::runReproSystemApply(const QString &target) {
     // live root onto /mnt, generate fstab from the disko spec Phase
     // 4 supplied as JSON, then install GRUB
     // + write the target-side grub.cfg.  See M9.R.41.1 commit body.
-    const QString grubDevice = m_targetDevice.isEmpty()
-        ? QStringLiteral("/dev/vda") : m_targetDevice;
+    const QString grubDevice = effectiveTargetDevice();
     const QString hn = m_hostname.isEmpty()
         ? QStringLiteral("reproos-vm") : m_hostname;
     // M9.R.41: point install-root at the JSON form of the disko spec
@@ -1185,8 +1124,7 @@ void InstallerState::install() {
         receipt.insert("configuration_generation",
                        QString::fromLatin1(generation));
         receipt.insert("install_source", "unattended-installer");
-        receipt.insert("target_device", m_targetDevice.isEmpty()
-            ? QStringLiteral("/dev/vda") : m_targetDevice);
+        receipt.insert("target_device", effectiveTargetDevice());
         const QString receiptText = QString::fromUtf8(
             QJsonDocument(receipt).toJson(QJsonDocument::Indented));
         if (!writeFileAtomic(

@@ -643,6 +643,45 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash", "vm-harness"])
     discard target("test-image-boot-smoke", testImageBootSmoke)
 
+    # dm-verity / TPM enablement in the initramfs. Its first case reads
+    # the shipped builder and init scripts and asserts the module
+    # selection list and the loader lists agree; it needs nothing built
+    # and runs in under a second. Its second case builds a real
+    # initramfs against a source-built kernel module tree when one is
+    # present, and otherwise reports a visible skip. Not dependent on
+    # the kernel package, for the same reason the boot smoke is not
+    # dependent on the image: an always-on check must not turn into a
+    # multi-hour build.
+    let testInitramfsVerityTpm = shell(
+      command = "bash tests/test-initramfs-verity-tpm-modules.sh",
+      actionId = "reproos.test-initramfs-verity-tpm",
+      extraInputs = @[
+        "tests/test-initramfs-verity-tpm-modules.sh",
+        "tests/test_initramfs_verity_and_tpm_modules.nim",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      cacheable = false).withToolIdentities(["bash"])
+    discard target("test-initramfs-verity-tpm", testInitramfsVerityTpm)
+
+    # The same claim, observed from inside a running guest: the ReproOS
+    # kernel direct-kernel-booted with the product's own initramfs and a
+    # vTPM attached, reporting dm-verity and a TPM 2.0 on the serial
+    # console. Artifact-conditional on the source-built kernel and
+    # BusyBox; a visible skip naming the remedy when they are absent.
+    let testGuestVerityTpm = shell(
+      command = "bash tests/test-guest-verity-and-tpm.sh",
+      actionId = "reproos.test-guest-verity-tpm",
+      extraInputs = @[
+        "tests/test-guest-verity-and-tpm.sh",
+        "tests/test_guest_verity_and_tpm_available.nim",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init-attest-probe",
+      ],
+      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+    discard target("test-guest-verity-tpm", testGuestVerityTpm)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -661,6 +700,8 @@ package reproosWorkflows:
       testIsoReproducibility,
       testIso,
       testImageBootSmoke,
+      testInitramfsVerityTpm,
+      testGuestVerityTpm,
       testImageHealth,
       testInstalledDesktop,
       testInstalledSsh,

@@ -104,6 +104,11 @@ BUSYBOX_APPLETS=(
   date dmesg sync poweroff reboot init halt killall ps pidof kill
   uname free df mountpoint readlink basename dirname which xargs
   tee touch find
+  # Binary-safe read/dump. Needed to talk to a character device that
+  # answers in bytes rather than lines - /dev/tpm0 is the one that
+  # matters - and generally the difference between an initramfs you can
+  # diagnose a device from and one you cannot.
+  dd od
 )
 for applet in "${BUSYBOX_APPLETS[@]}"; do
   ln -sf busybox "$STAGE/bin/$applet"
@@ -143,8 +148,21 @@ REQUIRED_MODULES=(
   # "Cannot load crc32c driver" without it).
   crc32_generic crc32c_generic crc16 libcrc32c crc32c-intel
   crc-ccitt crct10dif_pclmul crct10dif_generic crct10dif_common
-  # dm-mod / dm-crypt for encrypted disko apply paths.
-  dm_mod dm_crypt
+  # Device mapper. dm_mod / dm_crypt serve the encrypted disko apply
+  # paths; dm_verity (with its dm_bufio block cache) is what activates an
+  # integrity-checked read-only root, and it must be reachable from
+  # inside the initramfs because that is where the root is set up.
+  #
+  # In the source-built kernel all four are compiled in rather than
+  # modular, so nothing is staged for them and modules.builtin below is
+  # what proves they are present. They stay on this list so a kernel that
+  # DOES make them modular still gets a working initramfs.
+  dm_mod dm_crypt dm_verity dm_bufio
+  # TPM. tpm is the core chip driver, tpm_tis/tpm_tis_core the
+  # memory-mapped TIS interface every x86 vTPM presents, tpm_crb the
+  # ACPI CRB interface some firmware TPMs present instead. Same
+  # builtin-vs-modular note as the device mapper above.
+  tpm tpm_tis tpm_tis_core tpm_crb
   # usb hosts (so usb-storage actually attaches)
   ohci-hcd ohci-pci ehci-hcd ehci-pci xhci-hcd xhci-pci uhci-hcd
   usb-common usbcore
@@ -277,12 +295,33 @@ done < "$modules_dep_src"
 # OK - busybox modprobe falls back to modules.dep alone.
 : > "$STAGE_MOD_ROOT/modules.alias"
 : > "$STAGE_MOD_ROOT/modules.symbols"
+
+# modules.builtin - the kernel's own list of what was compiled IN rather
+# than built as a loadable module. Without it /init cannot tell "this
+# driver is missing" from "this driver is already in the kernel", and a
+# boot-critical driver such as dm_verity would be reported as absent on
+# exactly the kernel that has the strongest form of it. It is a few
+# kilobytes of text, so the initramfs carries it verbatim.
+if [ -f "$MOD_ROOT/modules.builtin" ]; then
+  cp "$MOD_ROOT/modules.builtin" "$STAGE_MOD_ROOT/modules.builtin"
+  builtin_count="$(wc -l < "$STAGE_MOD_ROOT/modules.builtin" | tr -d ' ')"
+else
+  # A module tree without modules.builtin is not fatal (an all-modular
+  # kernel legitimately has none), but /init must still find the file.
+  : > "$STAGE_MOD_ROOT/modules.builtin"
+  builtin_count=0
+fi
+
 echo "[initramfs] modules: ${copied_count} files staged for kernel $KERNEL_RELEASE"
+echo "[initramfs] modules.builtin: ${builtin_count} built-in modules recorded"
 
 # 3) /init script. Vendored under recipes/reproos-iso/initramfs/<name>.
 # The variant is selected by REPRO_INITRAMFS_INIT env (default: "init",
 # used by the live-boot ISO; "init-disk" is the M9.R.51 variant used
-# by the reproos-image build-artifact qcow2 for boot-from-disk).
+# by the reproos-image build-artifact qcow2 for boot-from-disk;
+# "init-attest-probe" is a diagnostic variant that never pivots - it
+# reports what the paired kernel offers of dm-verity and the TPM and
+# powers off, and ships in no boot path).
 INIT_NAME="${REPRO_INITRAMFS_INIT:-init}"
 if [ ! -f "$INITRAMFS_SRC/$INIT_NAME" ]; then
   echo "build-initramfs.sh: $INITRAMFS_SRC/$INIT_NAME missing" >&2

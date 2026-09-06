@@ -78,7 +78,29 @@ log "live.image=$LIVE_IMAGE live.fstype=$LIVE_FSTYPE"
 #
 # Order matters - load USB/SCSI host adapters first so /dev/sr0
 # materialises before we probe block devices.
+#
+# A driver that is compiled INTO the kernel has no .ko to load, and
+# `modprobe` on it fails exactly the way a genuinely missing driver
+# does. Consult the kernel's own modules.builtin (staged by
+# build-initramfs.sh) first, so "already in the kernel" is never
+# reported as "missing" - dm_verity and the TPM drivers are built in on
+# the source-built kernel, and the boot log is the only place this is
+# visible.
+MODULE_ROOT="/lib/modules/$(uname -r)"
+BUILTIN_LIST="$MODULE_ROOT/modules.builtin"
+
+is_builtin() {
+  [ -f "$BUILTIN_LIST" ] || return 1
+  _u="$(echo "$1" | tr '-' '_')"
+  _d="$(echo "$1" | tr '_' '-')"
+  grep -q -e "/${_u}\.ko" -e "/${_d}\.ko" "$BUILTIN_LIST"
+}
+
 load_module() {
+  if is_builtin "$1"; then
+    log "module $1 builtin"
+    return 0
+  fi
   modprobe "$1" 2>/dev/null && log "modprobe $1 ok" || log "modprobe $1 missing/failed (ok)"
 }
 
@@ -112,9 +134,18 @@ load_module loop
 # fails post-switch_root with "EXT4-fs: Cannot load crc32c driver".
 load_module crc32c_generic
 load_module crc32c-intel
-# dm_mod / dm_crypt for encrypted-preset disko apply.
+# dm_mod / dm_crypt for encrypted-preset disko apply; dm_verity (with
+# its dm_bufio block cache) for an integrity-checked read-only root.
 load_module dm_mod
+load_module dm_bufio
 load_module dm_crypt
+load_module dm_verity
+# TPM. tpm_tis_core carries the TIS transport tpm_tis registers against;
+# tpm_crb is the ACPI CRB alternative some firmware TPMs present.
+load_module tpm
+load_module tpm_tis_core
+load_module tpm_tis
+load_module tpm_crb
 # Filesystems
 load_module isofs
 load_module squashfs

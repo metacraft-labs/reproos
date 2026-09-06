@@ -1,0 +1,139 @@
+#!/bin/sh
+# Diagnostic initramfs for the attestation substrate.
+#
+# Third sibling of initramfs/init (live-boot squashfs pivot) and
+# initramfs/init-disk (boot from an installed disk). This one never
+# pivots and never ships in a boot path: it brings up the device mapper
+# and the TPM against the paired kernel, prints what it found to the
+# console, and powers off. It exists so that "the kernel and initramfs we
+# actually build can activate dm-verity and reach a TPM" is a claim a
+# machine checks rather than one a person reads off a config file, and so
+# that image bring-up has a two-second way to ask the same question.
+#
+# Select it with REPRO_INITRAMFS_INIT=init-attest-probe when running
+# build-initramfs.sh. Every binary referenced below is a busybox applet
+# from the same staged list the two boot inits use.
+#
+# Markers, in the order they are emitted:
+#
+#   REPROOS-A3-PROBE-START
+#   REPROOS-A3-MODULE=<name>:builtin|loaded|missing   (one per driver)
+#   REPROOS-A3-DM-CONTROL=present|absent
+#   REPROOS-A3-VERITY-TARGET=present|absent
+#   REPROOS-A3-TPM-DEVICE=present|absent
+#   REPROOS-A3-TPM2-GETCAP-FAMILY=<hex response>      (only when present)
+#   REPROOS-A3-PROBE-DONE
+#
+# The GETCAP line is the load-bearing TPM evidence, and it is not a
+# sysfs readout. /dev/tpm0 is opened read-write on ONE file description,
+# a 22-byte TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES,
+# TPM_PT_FAMILY_INDICATOR) command is written to it, and the response is
+# read back on the SAME description (the kernel's TPM chardev discards a
+# response if the fd is closed in between, and its read() returns 0
+# rather than blocking until the response lands, so this polls). A TPM
+# 2.0 answers with the ASCII family indicator "2.0\0" = 322e3000, a value
+# nothing but a real, running, responding TPM 2.0 produces.
+
+PROBE_VERSION='A3-attest-probe'
+
+say() {
+  echo "$*" > /dev/console 2>/dev/null || echo "$*"
+}
+
+mkdir -p /proc /sys /dev
+mount -t proc     none /proc 2>/dev/null
+mount -t sysfs    none /sys 2>/dev/null
+mount -t devtmpfs none /dev 2>/dev/null
+
+say "REPROOS-A3-PROBE-START $PROBE_VERSION"
+
+MODULE_ROOT="/lib/modules/$(uname -r)"
+BUILTIN_LIST="$MODULE_ROOT/modules.builtin"
+
+is_builtin() {
+  [ -f "$BUILTIN_LIST" ] || return 1
+  _u="$(echo "$1" | tr '-' '_')"
+  _d="$(echo "$1" | tr '_' '-')"
+  grep -q -e "/${_u}\.ko" -e "/${_d}\.ko" "$BUILTIN_LIST"
+}
+
+# Same three-way answer the boot inits give, but reported as a marker so
+# a gate can assert it: a driver compiled into the kernel has no .ko and
+# `modprobe` on it fails exactly the way a genuinely absent driver does.
+probe_module() {
+  if is_builtin "$1"; then
+    say "REPROOS-A3-MODULE=$1:builtin"
+  elif modprobe "$1" 2>/dev/null; then
+    say "REPROOS-A3-MODULE=$1:loaded"
+  else
+    say "REPROOS-A3-MODULE=$1:missing"
+  fi
+}
+
+for m in dm_mod dm_bufio dm_crypt dm_verity tpm tpm_tis_core tpm_tis tpm_crb; do
+  probe_module "$m"
+done
+
+# Let devtmpfs create the nodes the drivers just registered.
+sleep 1
+
+# The device-mapper ioctl endpoint. Without it no table of any kind can
+# be loaded, verity or otherwise.
+if [ -e /dev/mapper/control ]; then
+  say "REPROOS-A3-DM-CONTROL=present"
+else
+  say "REPROOS-A3-DM-CONTROL=absent"
+fi
+
+# dm-verity registers a module parameter, so this directory exists for a
+# built-in dm-verity exactly as it does for a modular one. Its presence
+# is the running kernel's own statement that the verity target is
+# compiled in and registered.
+if [ -d /sys/module/dm_verity ]; then
+  say "REPROOS-A3-VERITY-TARGET=present"
+else
+  say "REPROOS-A3-VERITY-TARGET=absent"
+fi
+
+# The TPM chardev is registered during driver probe. The wait bounds a
+# slow probe rather than papering over an absent device, and is short on
+# purpose so the absent case does not cost seconds.
+tries=0
+while [ ! -c /dev/tpm0 ] && [ $tries -lt 20 ]; do
+  sleep 0.1
+  tries=$((tries + 1))
+done
+
+if [ -c /dev/tpm0 ]; then
+  say "REPROOS-A3-TPM-DEVICE=present"
+  # TPM2_GetCapability(TPM_CAP_TPM_PROPERTIES, TPM_PT_FAMILY_INDICATOR, 1):
+  #   8001      tag         = TPM_ST_NO_SESSIONS
+  #   00000016  commandSize = 22
+  #   0000017a  commandCode = TPM_CC_GetCapability
+  #   00000006  capability  = TPM_CAP_TPM_PROPERTIES
+  #   00000100  property    = TPM_PT_FAMILY_INDICATOR
+  #   00000001  propertyCount
+  #
+  # Written as a backslash plus exactly three octal digits per byte:
+  # busybox printf consumes a backslash and at most three octal digits
+  # and counts a leading zero as one of them, so the POSIX `\0ddd`
+  # spelling would emit a literal '0' here.
+  exec 3<> /dev/tpm0
+  printf '\200\001\000\000\000\026\000\000\001\172\000\000\000\006\000\000\001\000\000\000\000\001' >&3
+  resp=""
+  n=0
+  while [ -z "$resp" ] && [ $n -lt 50 ]; do
+    resp=$(dd bs=4096 count=1 <&3 2>/dev/null | od -An -v -tx1 | tr -d ' \n')
+    [ -n "$resp" ] && break
+    sleep 0.1
+    n=$((n + 1))
+  done
+  exec 3>&-
+  say "REPROOS-A3-TPM2-GETCAP-FAMILY=$resp"
+else
+  say "REPROOS-A3-TPM-DEVICE=absent"
+fi
+
+say "REPROOS-A3-PROBE-DONE"
+sync
+poweroff -f

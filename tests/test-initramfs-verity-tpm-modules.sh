@@ -3,23 +3,26 @@ set -euo pipefail
 
 # Compile and run the initramfs dm-verity / TPM enablement gate.
 #
-# `nim` is taken from the ambient development shell, the same way
-# tests/test-reproos-image-boot-smoke.sh does; this script deliberately
-# does not re-exec through `nix develop`, because entering a sibling's
-# dev shell also runs its git-hooks shellHook against whatever repository
-# is the current directory, which a test must not do.
+# Tool contract (see tests/nim-gate.sh, and the matching
+# `.withToolIdentities([...])` list on
+# `reproos.test-initramfs-verity-tpm` in repro/workflows.nim):
+#
+#   nim    -- compiles this gate.
+#   clang  -- the C compiler `nim c` lowers to and shells out to.
+#   mkdir  -- creates the gate's build directory.
+#   bash   -- the artifact-conditional half runs
+#             recipes/reproos-iso/scripts/build-initramfs.sh; it reports a
+#             visible skip when the source-built kernel and BusyBox
+#             install mirrors are absent, which is an ARTIFACT skip, not a
+#             tool skip.
+#
+# This script deliberately does not re-exec through `nix develop`, because
+# entering a sibling's dev shell also runs its git-hooks shellHook against
+# whatever repository is the current directory, which a test must not do.
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-checker="$repo_root/build/test-initramfs-verity-tpm/check-initramfs-verity-tpm"
+# shellcheck source=tests/nim-gate.sh
+. "${BASH_SOURCE[0]%/*}/nim-gate.sh"
 
-if ! command -v nim >/dev/null; then
-  echo "nim is required to build the initramfs verity/TPM gate" >&2
-  echo "enter the development shell (direnv allow / nix develop)" >&2
-  exit 2
-fi
-
-mkdir -p "$(dirname "$checker")"
-nim c --hints:off --warnings:off \
-  --out:"$checker" \
-  "$repo_root/tests/test_initramfs_verity_and_tpm_modules.nim"
-"$checker"
+nim_gate_run test-initramfs-verity-tpm \
+  tests/test_initramfs_verity_and_tpm_modules.nim \
+  bash

@@ -36,10 +36,10 @@
 ## emitter and ``repro/disk_layouts.nim`` produce identical bytes --
 ## disko JSON *and* hardware.nim. The C++ side is not re-implemented
 ## here: this gate compiles the shipped
-## ``apps/reproos-installer/src/disk_layouts.cpp`` with a bare ``g++``
-## and runs it. The matrix includes a device and an id containing a
-## quote and a backslash, so the two escapers are compared rather than
-## assumed equal.
+## ``apps/reproos-installer/src/disk_layouts.cpp`` with a bare ``c++``
+## (no Qt, no CMake) and runs it. The matrix includes a device and an id
+## containing a quote and a backslash, so the two escapers are compared
+## rather than assumed equal.
 ##
 ## It runs over the whole registry, so it grows with it. It does NOT
 ## prove the Qt wrapper calls these functions -- the source read below
@@ -254,11 +254,31 @@ int main(int argc, char **argv) {
 
 var harnessBin = ""
 
+proc resolveCxx(): string =
+  ## The gate needs *a* C++17 compiler, not a specific one: all it does
+  ## with it is compile the installer's shipped ``disk_layouts.cpp`` and
+  ## diff what that emits against the registry's rendering.
+  ##
+  ## ``c++`` first, because both the gcc wrapper and the clang wrapper
+  ## provide it, and because a registered build action's PATH carries
+  ## only the tool identities the action declares -- here ``clang``, the
+  ## identity this workspace can provision without bootstrapping a whole
+  ## GCC from source. ``clang++`` / ``g++`` follow so a bare development
+  ## shell that ships only one of them still runs the gate.
+  for candidate in ["c++", "clang++", "g++"]:
+    if findExe(candidate).len > 0:
+      return candidate
+  ""
+
+let cxxExe = resolveCxx()
+
 block buildTheCxxSide:
-  if findExe("g++").len == 0:
-    fail("t_disko_document_has_one_renderer: g++ is required to compile " &
-         "the installer's shipped disk-layout registry consumer.\n" &
-         "  enter the development shell (direnv allow / nix develop)")
+  if cxxExe.len == 0:
+    fail("t_disko_document_has_one_renderer: a C++17 compiler (c++, " &
+         "clang++ or g++) is required to compile the installer's " &
+         "shipped disk-layout registry consumer.\n" &
+         "  Under `repro build` this means the action does not declare " &
+         "the `clang` tool identity in repro/workflows.nim.")
     break buildTheCxxSide
   if not fileExists(DiskLayoutsCpp):
     fail("t_disko_document_has_one_renderer: missing " & DiskLayoutsCpp)
@@ -268,9 +288,10 @@ block buildTheCxxSide:
   writeFile(harnessPath, HarnessSource)
   let bin = WorkDir / "disk-layout-harness"
   let (output, code) = execCmdEx(
-    # -O1 rather than -O0: the hardened gcc wrappers this project is
+    # -O1 rather than -O0: the hardened compiler wrappers this project is
     # built with make _FORTIFY_SOURCE an error at -O0.
-    "g++ -std=c++17 -O1 -Wall -Wextra -I" & quoteShell(InstallerSrc) &
+    quoteShell(cxxExe) & " -std=c++17 -O1 -Wall -Wextra -I" &
+    quoteShell(InstallerSrc) &
     " -o " & quoteShell(bin) & " " & quoteShell(DiskLayoutsCpp) & " " &
     quoteShell(harnessPath))
   if code != 0:
@@ -752,8 +773,13 @@ block hardwareNimRoundTrips:
     let modulePath = WorkDir / (moduleName & ".nim")
     writeFile(modulePath, source)
     let binPath = WorkDir / moduleName
+    # REPROOS_NIM_CC_ARGS is set by tests/nim-gate.sh and pins the C
+    # compiler to one the ACTION DECLARED. Without it this nested `nim c`
+    # inherits `$CC` from whoever launched `repro build` and shells out to
+    # a compiler the action's hermetic PATH does not carry.
     let (compileOut, compileCode) = execCmdEx(
-      "nim c --hints:off --warnings:off -o:" & quoteShell(binPath) & " " &
+      "nim c --hints:off --warnings:off " & getEnv("REPROOS_NIM_CC_ARGS") &
+      " -o:" & quoteShell(binPath) & " " &
       quoteShell(modulePath), workingDir = RepoRoot)
     if compileCode != 0:
       fail("t_hardware_nim_parses_to_the_registry_layout: the " &

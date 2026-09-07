@@ -94,3 +94,62 @@ declare outputs or be explicitly non-cacheable. Keep dependency declarations
 literal until the DSL can extract computed lists; `repro lint` verifies that the
 ISO and image declarations remain duplicate-free and exactly match the canonical
 package set.
+
+## Adding a Nim-based gate
+
+A registered build action's `PATH` contains **exactly** the tool identities the
+action declares — not the shell's `PATH`, not coreutils, not a compiler. A gate
+that assumes an ambient development shell is, from the engine's point of view,
+an unregistered gate: it will fail in CI and in a clean checkout while passing
+on the author's machine. Four gates were added that way before this was caught;
+the shape is now fixed in one place.
+
+To add one:
+
+1. Write `tests/test_<name>.nim`.
+2. Write `tests/test-<name>.sh` as a *tool contract* and nothing else — source
+   `tests/nim-gate.sh` and call `nim_gate_run <target-name>
+   tests/test_<name>.nim <extra tool identities…>`. `nim`, `mkdir` and a C
+   compiler are implicit — `nim c` lowers Nim to C and shells out to one. Use
+   `nim_gate_require_any` for a capability more than one command can supply (a
+   C++ compiler is `c++` under both the gcc and the clang wrapper). Never
+   re-implement the preamble, and never resolve the repo root with `dirname` —
+   a builtin cannot be a missing tool, so the first diagnostic stays the
+   accurate one.
+3. Register it in `repro/workflows.nim` with `tests/nim-gate.sh` among its
+   `extraInputs`, the same identities in `.withToolIdentities([…])`, and every
+   one of those names in the package's `uses:` block. A `uses:` entry alone
+   puts nothing on an action's `PATH`; the action has to name it too.
+4. Prefer an identity with **no** sibling from-source recipe in
+   `reprobuild-packages` unless you mean to build it — under this project's
+   from-source provisioning a completed source mirror is authoritative, so the
+   identity you name is whatever that mirror contains rather than the pinned
+   nixpkgs build. `clang` is the declared C/C++ compiler for exactly this
+   reason: `gcc` has a from-source recipe whose mirror here is incomplete (its
+   `cc1` cannot load `libmpc`/`libmpfr`/`libgmp`), while `clang` has none and
+   falls through to the pinned nixpkgs channel. `nim`, `mkdir` and `git` have
+   no source recipe either.
+5. Do not let the gate inherit its compiler from the caller. `repro build`
+   replaces only `PATH` in an action and inherits every other variable, so a
+   developer shell's `CC=gcc` reaches the action and nixpkgs' `nim.cfg`
+   substitutes it — nim then shells out to a `gcc` the hermetic `PATH` does not
+   carry. `tests/nim-gate.sh` pins the compiler from the declared identities and
+   exports `REPROOS_NIM_CC_ARGS` for any nested `nim c` the test itself runs.
+
+A missing tool is a **declaration bug and a loud failure**, never a skip.
+Skipping would turn a broken gate into a green one, which is worse than the
+failure. Skips are for missing *artifacts* (an unbuilt kernel, an unbuilt
+installer binary), never for missing tools.
+
+Two checks enforce this. `repro lint` /
+`repro build test-source-composition` re-checks the structure on every run.
+The engine-level acceptance gate is run directly rather than through
+`repro test`, because it drives `repro build` itself:
+
+```
+bash tests/test-nim-gates-through-the-engine.sh
+```
+
+It builds every Nim gate through the engine and then, as a negative case,
+removes `nim` from one target's declared identities and requires that
+`repro build` fails naming the missing tool.

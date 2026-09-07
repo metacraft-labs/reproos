@@ -151,6 +151,267 @@ def require_shell_action_contracts(path: Path) -> None:
             )
 
 
+NIM_GATE_HELPER = ROOT / "tests/nim-gate.sh"
+
+# A command name a Nim gate invokes, mapped to the tool identities that can
+# supply it. `c++` is deliberately many-to-one: both the gcc wrapper and the
+# clang wrapper ship it, and this repo declares `clang` because the sibling
+# reprobuild-packages carries a from-source `gcc` recipe: under from-source
+# provisioning a completed source mirror outranks the pinned nixpkgs build,
+# and that mirror is what an always-on gate would then compile with.
+COMMAND_IDENTITIES = {
+    "c++": {"clang", "gcc"},
+    "clang++": {"clang"},
+    "g++": {"gcc"},
+}
+
+
+def sources_nim_gate_helper(text: str) -> bool:
+    return re.search(r'(?m)^\s*\.\s+\S*nim-gate\.sh', text) is not None
+
+
+def nim_gate_wrappers() -> list[Path]:
+    """Every wrapper that compiles a Nim test, however it gets its compiler."""
+    return sorted(
+        path
+        for path in (ROOT / "tests").glob("test-*.sh")
+        if "nim c " in source(path) or sources_nim_gate_helper(source(path))
+    )
+
+
+def action_call_for_command(content: str, needle: str) -> tuple[str, str]:
+    """Return (binding, call text) of the shell action whose command runs ``needle``."""
+    for binding, call in shell_call_blocks(WORKFLOW_RECIPE):
+        if needle in call:
+            return binding, call
+    raise AssertionError(
+        f"no registered shell action runs {needle}; a Nim gate that is not "
+        "registered cannot run under `repro build`"
+    )
+
+
+def declared_identities(content: str, binding: str) -> set[str]:
+    match = re.search(
+        rf"\blet\s+{re.escape(binding)}\s*=\s*shell\(.*?\)"
+        r"\.withToolIdentities\(\[(?P<body>.*?)\]\)",
+        content,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"{binding} declares no tool identities")
+    return set(re.findall(r'"([^"]+)"', match.group("body")))
+
+
+def required_identities(wrapper: Path) -> set[str]:
+    """The tool identities a wrapper's own tool contract says it needs."""
+    text = source(wrapper)
+    required: set[str] = set()
+    run = re.search(
+        r"^nim_gate_run\s+(?P<body>(?:[^\n]*\\\n)*[^\n]*)$",
+        text,
+        flags=re.MULTILINE,
+    )
+    if run is None:
+        raise AssertionError(f"{wrapper} sources nim-gate.sh but never calls nim_gate_run")
+    words = run.group("body").replace("\\\n", " ").split()
+    # <gate-name> <nim source> [tool identities ...]. `nim`, `mkdir` and a C
+    # compiler are implicit in the helper and therefore required of every Nim
+    # gate: `nim c` lowers Nim to C and shells out to a compiler, so a gate
+    # that declares `nim` and nothing else still dies -- measured, with 31
+    # lines of "gcc: command not found".
+    required.update({"nim", "mkdir", "clang|gcc"})
+    required.update(words[2:])
+    for any_of in re.finditer(
+        r"^nim_gate_require_any\s+(?P<body>(?:[^\n]*\\\n)*[^\n]*)$",
+        text,
+        flags=re.MULTILINE,
+    ):
+        # <gate-name> "<label>" <command> ...; the label is quoted and may
+        # contain spaces, so take everything after the closing quote.
+        tail = any_of.group("body").replace("\\\n", " ")
+        if '"' not in tail:
+            raise AssertionError(
+                f"{wrapper}: nim_gate_require_any needs a quoted label naming "
+                "the capability and the tool identity that supplies it"
+            )
+        commands = tail[tail.rindex('"') + 1:].split()
+        alternatives: set[str] = set()
+        for command in commands:
+            alternatives |= COMMAND_IDENTITIES.get(command, {command})
+        if alternatives:
+            required.add("|".join(sorted(alternatives)))
+    return required
+
+
+def require_nim_gate_declarations() -> None:
+    """A registered Nim gate must be runnable BY THE ENGINE.
+
+    A build action's PATH carries exactly the tool identities the action
+    declares. Four registered gates used to declare only ``bash`` while
+    shelling out to ``nim`` (and coreutils, and a C++ compiler), so every
+    one of them exited 2 before testing anything under ``repro build`` and
+    passed only from a development shell that happened to carry the tools.
+    This check keeps the next Nim gate from being added the same way:
+
+      * every wrapper that compiles Nim routes through tests/nim-gate.sh --
+        or, for the GuiAssert gates, re-execs into a pinned ``nix develop``
+        shell and declares ``nix``;
+      * the registered action names every identity the wrapper's tool
+        contract asks for;
+      * every declared name is also in the package's ``uses:`` block, since
+        a ``uses:`` entry is what gives the resolver something to resolve;
+      * tests/nim-gate.sh is an input of every action that sources it; and
+      * the helper's missing-tool path FAILS rather than skips.
+    """
+    if not NIM_GATE_HELPER.is_file():
+        raise AssertionError(f"the shared Nim gate preamble is missing: {NIM_GATE_HELPER}")
+
+    helper = source(NIM_GATE_HELPER)
+    failure = re.search(
+        r"nim_gate_declaration_failure\(\)\s*\{(?P<body>.*?)\n\}",
+        helper,
+        flags=re.DOTALL,
+    )
+    if failure is None:
+        raise AssertionError(
+            "tests/nim-gate.sh has no nim_gate_declaration_failure; the one "
+            "place a missing tool is reported must stay one place"
+        )
+    body = failure.group("body")
+    if not re.search(r"^\s*exit\s+[1-9]", body, flags=re.MULTILINE):
+        raise AssertionError(
+            "tests/nim-gate.sh's missing-tool path does not exit non-zero. A "
+            "missing tool is a declaration bug and must be a LOUD FAILURE; "
+            "turning it into a skip would convert every Nim gate into a "
+            "silent pass, which is strictly worse than a gate that fails."
+        )
+    # Prose about not skipping is fine; emitting a skip marker or calling a
+    # `skip` helper is the regression this rejects.
+    if re.search(r"(?i)\[\s*skip\s*\]", body) or re.search(
+        r"(?m)^\s*skip\b", body
+    ):
+        raise AssertionError(
+            "tests/nim-gate.sh's missing-tool path reports a SKIP; a missing "
+            "tool must fail, never skip"
+        )
+    for banned in ["exit 0", "return 0"]:
+        if banned in body:
+            raise AssertionError(
+                f"tests/nim-gate.sh's missing-tool path contains `{banned}`"
+            )
+    # Every tool check must route to that one failure path. A check that
+    # quietly returns success when its tool is absent is the same regression
+    # wearing a different hat.
+    for probe in ["nim_gate_require", "nim_gate_require_any", "nim_gate_c_compiler"]:
+        match = re.search(
+            rf"{probe}\(\)\s*\{{(?P<body>.*?)\n\}}", helper, flags=re.DOTALL
+        )
+        if match is None:
+            raise AssertionError(f"tests/nim-gate.sh has no {probe}")
+        if "nim_gate_declaration_failure" not in match.group("body"):
+            raise AssertionError(
+                f"tests/nim-gate.sh's {probe} does not report a missing tool "
+                "through nim_gate_declaration_failure; a missing tool must be a "
+                "loud failure, never a silent success"
+            )
+
+    # Routing to the failure path is necessary but not sufficient: a skip
+    # added ALONGSIDE it -- an early `exit 0` in a probe's loop, or one in
+    # `nim_gate_run`, which is not one of the probes above -- would leave
+    # every check above satisfied while turning the gate into a silent pass.
+    # The helper's executable code therefore carries no success exit and no
+    # skip marker at all; the only exits it has are the failure path's.
+    helper_code = "\n".join(
+        line for line in helper.splitlines() if not line.lstrip().startswith("#")
+    )
+    for banned, why in [
+        (r"\bexit\s+0\b", "exits 0"),
+        (r"(?i)\[\s*skip\s*\]", "prints a skip marker"),
+    ]:
+        if re.search(banned, helper_code):
+            raise AssertionError(
+                f"tests/nim-gate.sh {why}. The helper has exactly one exit "
+                "besides the compiled test's own status, and it is the "
+                "non-zero declaration failure. A skip path anywhere in here "
+                "turns every Nim gate into a silent pass, which is the "
+                "regression this check exists to forbid."
+            )
+    # And the compiled test's status must BE the gate's status: an unguarded
+    # final invocation, with nothing swallowing it.
+    if not re.search(r'(?m)^\s*"\$checker"\s*$', helper_code):
+        raise AssertionError(
+            "tests/nim-gate.sh does not run the compiled checker as a final, "
+            "unguarded statement. Its exit status is the gate's result; "
+            "guarding it (`|| true`) would report success without the test."
+        )
+
+    content = source(WORKFLOW_RECIPE)
+    declared_uses = set(uses_dependencies(WORKFLOW_RECIPE))
+    checked = 0
+    for wrapper in nim_gate_wrappers():
+        text = source(wrapper)
+        rel = wrapper.relative_to(ROOT).as_posix()
+        binding, call = action_call_for_command(content, rel)
+        identities = declared_identities(content, binding)
+        if not sources_nim_gate_helper(text):
+            # The GuiAssert gates are the one sanctioned alternative: they
+            # re-exec into a pinned `nix develop` shell, so `nix` is the
+            # only identity their action needs.
+            if re.search(r'\bdevelop\s+"path:', text) is None:
+                raise AssertionError(
+                    f"{rel} compiles Nim without sourcing tests/nim-gate.sh and "
+                    "without re-execing through `nix develop`; the Nim gate "
+                    "preamble has exactly one home"
+                )
+            if "nix" not in identities:
+                raise AssertionError(
+                    f"{binding} runs {rel}, which re-execs through `nix develop`, "
+                    "but does not declare the `nix` tool identity"
+                )
+            checked += 1
+            continue
+        if '"tests/nim-gate.sh"' not in call:
+            raise AssertionError(
+                f"{binding} runs {rel}, which sources tests/nim-gate.sh, but does "
+                "not declare it as an input"
+            )
+        code = "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("#")
+        )
+        for banned, why in [
+            (r"\bexit\s+0\b", "exits 0 on a branch of its own"),
+            (r"\[\s*skip\s*\]", "prints a skip marker"),
+        ]:
+            if re.search(banned, code):
+                raise AssertionError(
+                    f"{rel} {why}. A Nim gate wrapper is a tool contract: it "
+                    "either runs the gate or fails. Reporting success without "
+                    "running it is the regression the engine-level negative gate exists "
+                    "to catch; artifact skips belong in the Nim test, tool "
+                    "checks belong in tests/nim-gate.sh and must fail."
+                )
+        for requirement in sorted(required_identities(wrapper)):
+            alternatives = set(requirement.split("|"))
+            if not alternatives & identities:
+                raise AssertionError(
+                    f"{binding} runs {rel}, whose tool contract needs "
+                    f"{' or '.join(sorted(alternatives))}, but the action declares "
+                    f"only: {', '.join(sorted(identities))}. Under `repro build` "
+                    "the action's PATH is exactly what it declares, so the gate "
+                    "would exit 2 before testing anything."
+                )
+        for identity in sorted(identities):
+            if identity not in declared_uses:
+                raise AssertionError(
+                    f"{binding} declares the `{identity}` tool identity, but "
+                    "`package reproosWorkflows` does not list it in `uses:`; the "
+                    "resolver has nothing to resolve"
+                )
+        checked += 1
+    if checked == 0:
+        raise AssertionError("no Nim gate wrappers were checked")
+
+
 def main() -> None:
     modules = [
         ROOT_RECIPE,
@@ -1121,6 +1382,8 @@ def main() -> None:
         ["installerState.activeActivities = []"],
         "installer activity screen",
     )
+
+    require_nim_gate_declarations()
 
     print(f"Validated {len(iso_dependencies)} source packages in both bootable targets.")
 

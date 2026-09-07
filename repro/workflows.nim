@@ -3,6 +3,26 @@
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
 import repro_dsl_stdlib/packages/nix
+# The Nim-based gates below compile and run a Nim test through
+# tests/nim-gate.sh. Their provisioning metadata has to be REGISTERED, not
+# merely named: `toInterfaceToolUse` copies the provisioning block off the
+# package whose name matches the `uses:` selector, and it only sees packages
+# whose module was imported before `package reproosWorkflows:` fires. Without
+# these imports the selectors below resolve to nothing and the plan dies with
+# "no stdlib provisioning channel declared on the tool use".
+#
+# None of `nim`, `clang`, `git` or `mkdir` has a sibling from-source recipe in
+# reprobuild-packages, so under this project's `defaultToolProvisioning
+# "from-source"` each falls through to the pinned-nixpkgs channel these modules
+# declare. That is the whole reason `clang` is the declared C/C++ compiler
+# rather than `gcc`: reprobuild-packages DOES carry a from-source `gcc`, and
+# naming it would make every always-on gate bootstrap a GCC before it could
+# run.
+import repro_dsl_stdlib/packages/nim
+import repro_dsl_stdlib/packages/clang
+import repro_dsl_stdlib/packages/git
+# `mkdir` (and the rest of the coreutils command names) live here.
+import repro_dsl_stdlib/packages/host_system_tools
 import repro_resources/run_edge
 
 import "../apps/reproos-installer/package" as installerPackage
@@ -64,6 +84,19 @@ package reproosWorkflows:
     "vm-harness"
     "openssh"
     "xorriso"
+    # The Nim-gate tool set. `nim` compiles every tests/test_*.nim gate and
+    # `mkdir` creates its build directory. `clang` is the compiler those
+    # gates compile WITH -- `nim c` lowers Nim to C and shells out to a C
+    # compiler, and the installer parity gate additionally compiles the
+    # shipped disk_layouts.cpp as `c++`; both come out of the same clang
+    # bin directory. `git` lets the disk-layout gate re-derive its golden
+    # from the pre-B1 driver instead of skipping that case. A `uses:` entry
+    # is necessary but NOT sufficient -- the action has to name it too,
+    # which is what the .withToolIdentities([...]) calls below do.
+    "nim"
+    "mkdir"
+    "clang"
+    "git"
 
   build:
     let sourceComposition = shell(
@@ -625,8 +658,18 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["bash"])
     discard target("test-unattended-install", testUnattendedInstall)
 
-    # Serial boot-smoke gate for the installed image. Deliberately NOT
-    # dependent on ReproosImageBuildActionId: its first case replays the
+    # Serial boot-smoke gate for the installed image.
+    #
+    # It does NOT declare the `vm-harness` tool identity, and that is a
+    # declaration, not an omission: the gate links the sibling's Nim
+    # LIBRARY (`boot_smoke.nim`, put on the Nim path by config.nims) and
+    # drives qemu through it; it never runs the `vm-harness` CLI. Naming
+    # the identity would make the engine build that CLI through the
+    # cross-repo producer edge before a gate that never invokes it could
+    # start -- measured here: `repro build test-guest-verity-tpm` failed in
+    # `vm_harness.cli.build`, having never reached the gate at all.
+    #
+    # Deliberately NOT dependent on ReproosImageBuildActionId: its first case replays the
     # recorded boot transcript through vm-harness's matching engine and
     # must run everywhere in under a second, while its second case boots a
     # real image only when one is already present and otherwise reports a
@@ -637,10 +680,13 @@ package reproosWorkflows:
       actionId = "reproos.test-image-boot-smoke",
       extraInputs = @[
         "tests/test-reproos-image-boot-smoke.sh",
+        "tests/nim-gate.sh",
         "tests/test_reproos_image_boot_smoke.nim",
         "tests/fixtures/reproos-boot-serial-m9r71-v4.log",
       ],
-      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
     discard target("test-image-boot-smoke", testImageBootSmoke)
 
     # dm-verity / TPM enablement in the initramfs. Its first case reads
@@ -657,12 +703,15 @@ package reproosWorkflows:
       actionId = "reproos.test-initramfs-verity-tpm",
       extraInputs = @[
         "tests/test-initramfs-verity-tpm-modules.sh",
+        "tests/nim-gate.sh",
         "tests/test_initramfs_verity_and_tpm_modules.nim",
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
-      cacheable = false).withToolIdentities(["bash"])
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
     discard target("test-initramfs-verity-tpm", testInitramfsVerityTpm)
 
     # The typed disk-layout preset registry. Pure declaration checking:
@@ -677,6 +726,7 @@ package reproosWorkflows:
       actionId = "reproos.test-disk-layout-presets",
       extraInputs = @[
         "tests/test-disk-layout-presets.sh",
+        "tests/nim-gate.sh",
         "tests/test_disk_layout_presets.nim",
         "tests/golden/disko-uefi-ext4.json",
         "tests/fixtures/auto-config-minimal.toml",
@@ -684,7 +734,9 @@ package reproosWorkflows:
         "recipes/reproos-image/package.nim",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
       ],
-      cacheable = false).withToolIdentities(["bash"])
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang", "git",
+      ])
     discard target("test-disk-layout-presets", testDiskLayoutPresets)
 
     # One renderer for the disko document. The registry is compiled into
@@ -703,6 +755,7 @@ package reproosWorkflows:
       actionId = "reproos.test-installer-disk-layout-parity",
       extraInputs = @[
         "tests/test-installer-disk-layout-parity.sh",
+        "tests/nim-gate.sh",
         "tests/test_installer_disk_layout_parity.nim",
         "tests/fixtures/auto-config-minimal.toml",
         "tests/golden/installer-artifacts",
@@ -716,7 +769,9 @@ package reproosWorkflows:
         "tools/reproos-machine-config.py",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
       ],
-      cacheable = false).withToolIdentities(["bash", "python3"])
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang", "python3",
+      ])
     discard target("test-installer-disk-layout-parity",
       testInstallerDiskLayoutParity)
 
@@ -725,16 +780,23 @@ package reproosWorkflows:
     # vTPM attached, reporting dm-verity and a TPM 2.0 on the serial
     # console. Artifact-conditional on the source-built kernel and
     # BusyBox; a visible skip naming the remedy when they are absent.
+    #
+    # As with the boot-smoke gate above, `vm-harness` is deliberately NOT
+    # a declared tool identity here: this gate consumes the sibling's Nim
+    # library, not its CLI.
     let testGuestVerityTpm = shell(
       command = "bash tests/test-guest-verity-and-tpm.sh",
       actionId = "reproos.test-guest-verity-tpm",
       extraInputs = @[
         "tests/test-guest-verity-and-tpm.sh",
+        "tests/nim-gate.sh",
         "tests/test_guest_verity_and_tpm_available.nim",
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init-attest-probe",
       ],
-      cacheable = false).withToolIdentities(["bash", "vm-harness"])
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
     discard target("test-guest-verity-tpm", testGuestVerityTpm)
 
     discard target("test-source-composition", sourceComposition)

@@ -15,18 +15,18 @@
 ## From the ``init-attest-probe`` initramfs variant (see
 ## ``recipes/reproos-iso/initramfs/init-attest-probe``), in order:
 ##
-##   * ``REPROOS-A3-MODULE=dm_verity:builtin`` — the running kernel's own
+##   * ``REPROOS-ATTEST-MODULE=dm_verity:builtin`` — the running kernel's own
 ##     ``modules.builtin`` names it, so it is compiled in rather than
 ##     absent.
-##   * ``REPROOS-A3-DM-CONTROL=present`` — ``/dev/mapper/control``, the
+##   * ``REPROOS-ATTEST-DM-CONTROL=present`` — ``/dev/mapper/control``, the
 ##     device-mapper ioctl endpoint through which any table, verity
 ##     included, is loaded.
-##   * ``REPROOS-A3-VERITY-TARGET=present`` — ``/sys/module/dm_verity``,
+##   * ``REPROOS-ATTEST-VERITY-TARGET=present`` — ``/sys/module/dm_verity``,
 ##     which the kernel creates because dm-verity registers a module
 ##     parameter. It is the running kernel stating that the verity target
 ##     is registered.
-##   * ``REPROOS-A3-TPM-DEVICE=present`` and
-##     ``REPROOS-A3-TPM2-GETCAP-FAMILY=…322e3000`` — ``/dev/tpm0`` opened
+##   * ``REPROOS-ATTEST-TPM-DEVICE=present`` and
+##     ``REPROOS-ATTEST-TPM2-GETCAP-FAMILY=…322e3000`` — ``/dev/tpm0`` opened
 ##     and a real TPM2_GetCapability round trip whose response carries the
 ##     ASCII family indicator ``"2.0\0"``. Only a real, running,
 ##     responding TPM 2.0 produces those bytes.
@@ -69,7 +69,7 @@ const
   BusyboxInstallEnv = "REPRO_BUSYBOX_INSTALL_ROOT"
   PackagesRootEnv = "REPROBUILD_PACKAGES_ROOT"
 
-  AttestationVmNamePrefix = "reproos-att-a3-"
+  AttestationVmNamePrefix = "reproos-att-probe-"
     ## Every VM this test creates is uniquely named under a
     ## ``reproos-att-`` prefix, so a sweep can find whatever a crashed
     ## run left behind and nothing this test does can be confused with
@@ -104,26 +104,26 @@ proc shellQuote(s: string): string =
 
 proc probeSteps(perStepTimeoutSec: int): seq[BootSmokeStep] =
   @[
-    BootSmokeStep(pattern: "REPROOS-A3-PROBE-START",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-PROBE-START",
                   timeoutSec: perStepTimeoutSec,
                   label: "the ReproOS kernel reached the probe initramfs"),
-    BootSmokeStep(pattern: "REPROOS-A3-MODULE=dm_verity:builtin",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-MODULE=dm_verity:builtin",
                   timeoutSec: perStepTimeoutSec,
                   label: "dm-verity is compiled into the running kernel"),
-    BootSmokeStep(pattern: "REPROOS-A3-DM-CONTROL=present",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-DM-CONTROL=present",
                   timeoutSec: perStepTimeoutSec,
                   label: "the device-mapper ioctl endpoint is live"),
-    BootSmokeStep(pattern: "REPROOS-A3-VERITY-TARGET=present",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-VERITY-TARGET=present",
                   timeoutSec: perStepTimeoutSec,
                   label: "the running kernel registered the verity target"),
-    BootSmokeStep(pattern: "REPROOS-A3-TPM-DEVICE=present",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-TPM-DEVICE=present",
                   timeoutSec: perStepTimeoutSec,
                   label: "/dev/tpm0 exists in the guest"),
-    BootSmokeStep(pattern: r"REPROOS-A3-TPM2-GETCAP-FAMILY=[0-9a-f]*322e3000",
+    BootSmokeStep(pattern: r"REPROOS-ATTEST-TPM2-GETCAP-FAMILY=[0-9a-f]*322e3000",
                   timeoutSec: perStepTimeoutSec,
                   label: "a real TPM 2.0 answered GetCapability with " &
                          "family \"2.0\""),
-    BootSmokeStep(pattern: "REPROOS-A3-PROBE-DONE",
+    BootSmokeStep(pattern: "REPROOS-ATTEST-PROBE-DONE",
                   timeoutSec: perStepTimeoutSec,
                   label: "the probe finished rather than hanging"),
   ]

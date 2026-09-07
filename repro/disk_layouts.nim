@@ -98,9 +98,11 @@ const
         "the shape an attestable image needs",
       status: dlsDeclared,
       unbuildableReason:
-        "the read-only root has no verity image behind it yet and boot " &
-        "still goes through GRUB rather than a UKI; the image driver " &
-        "would install a plain read-only ext4 that nothing measures",
+        "the integrity-checked root image is built, but the image " &
+        "driver does not install it onto this layout yet and boot still " &
+        "goes through GRUB, whose command line is not measured; the " &
+        "result would be a read-only root whose root hash nothing " &
+        "attests to",
       minDiskSizeGb: 16,
       defaultEspSizeMib: 512),
   ]
@@ -115,9 +117,11 @@ const
     ## started.
 
   AttestedRootSize* = "4G"
-    ## Fixed because a verity-protected image goes here once verity
-    ## content lands; a percentage size would move every time the
-    ## closure moved.
+    ## Fixed because the verity data image is written here verbatim: the
+    ## partition holds a byte-for-byte copy of an image whose hash tree
+    ## was taken over exactly those bytes. A percentage size would move
+    ## every time the closure moved, and with it the block count the
+    ## verity table declares.
   AttestedSwapSize* = "2G"
   AttestedVarSize* = "4G"
   AttestedHomeSize* = "100%"
@@ -206,11 +210,15 @@ proc uefiAttestedLayout(p: DiskLayoutParams): DiskLayout =
   ## partition mounted ``ro``, and distinct ``/var``, ``/home`` and swap
   ## volumes at the sizes above.
   ##
-  ## What it does NOT yet produce: any dm-verity data or hash image, a
-  ## UKI or a root hash pinned on the kernel command line, or any
-  ## encryption of the state volumes. The root partition below is a plain
-  ## ext4 that is merely *mounted* read-only; it is a slot for the verity
-  ## image to fill, not a measured root.
+  ## What it does NOT yet do: install the verity data image and its hash
+  ## tree onto that root partition, or pin the root hash on a kernel
+  ## command line that anything measures, or encrypt the state volumes.
+  ## The verity image and its root hash ARE built —
+  ## ``recipes/reproos-image/scripts/build-verity-root.sh`` produces them
+  ## from the staged tree, and ``repro/verity.nim`` declares their shape —
+  ## but the root partition below is still a plain ext4 that is merely
+  ## *mounted* read-only. It is the slot the verity image goes into, not
+  ## yet a measured root.
   var partitions: OrderedTable[string, PartitionSpec]
   partitions["esp"] = espPartition(p.espSizeMib)
   partitions["root"] = part("linux", AttestedRootSize,

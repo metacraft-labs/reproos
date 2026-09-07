@@ -12,6 +12,7 @@ import "../../apps/reproos-installer/package" as installerPackage
 import "../reproos-iso/package" as isoPackage
 import "../../repro/package_sets" as packageSets
 import "../../repro/disk_layouts" as diskLayouts
+import "../../repro/verity" as verity
 
 const
   ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"
@@ -20,6 +21,21 @@ const
   ReproosImageBuildActionId* = "reproosImage.build_image"
   ReproosImageOutput* =
     "recipes/reproos-image/build/reproos-installed.qcow2"
+
+  ReproosVerityRootActionId* = "reproosImage.build_verity_root"
+  ReproosVerityRootDir* = "recipes/reproos-image/build/verity"
+  ReproosVerityDataImageOutput* =
+    ReproosVerityRootDir & "/" & verity.VerityDataImageFileName
+  ReproosVerityHashTreeOutput* =
+    ReproosVerityRootDir & "/" & verity.VerityHashTreeFileName
+  ReproosVerityRootHashOutput* =
+    ReproosVerityRootDir & "/" & verity.VerityRootHashFileName
+    ## Where the root hash lands. This is the value the boot artifact has
+    ## to carry on its kernel command line for the launch measurement to
+    ## cover the root filesystem; a consumer reads it from here rather
+    ## than re-deriving it, so there is one answer per build.
+  ReproosVerityManifestOutput* =
+    ReproosVerityRootDir & "/" & verity.VerityManifestFileName
 
 # Keep this list aligned with bare commands invoked by the image driver.
 # ``sudo`` is host-provided because its setuid semantics cannot be supplied by
@@ -359,6 +375,82 @@ package reproosImage:
           " quote or a backslash, which the single-line environment" &
           " hand-off cannot carry")
     let diskIdentitySpecLine = diskIdentitySpec.replace("\n", "\\n")
+
+    # ---------------------------------------------------------------
+    # The integrity-checked read-only root.
+    #
+    # A read-only root that nothing checks is only a mount option: it
+    # stops the running system writing to its own root, and stops
+    # nothing else. What makes it an ATTESTABLE root is the dm-verity
+    # Merkle tree built here, whose root hash is a short value that
+    # changes if any byte of the root filesystem changes. A boot path
+    # carrying that value, and a launch measurement covering that boot
+    # path, together pin every byte of the root.
+    #
+    # Every value the tools would otherwise invent is derived HERE, from
+    # the same identity seed the partition table's identifiers come
+    # from, and passed in. The alternative -- letting `veritysetup`
+    # choose a salt and `mke2fs` choose a UUID -- produces a different
+    # root hash on every build, which would make the value meaningless
+    # as a name for the bytes.
+    #
+    # This action is registered whatever layout is selected, because the
+    # verity root is a function of the staged tree and not of the
+    # partition table. What consumes it is the attested layout.
+    let identitySeed = diskLayouts.reproosImageIdentitySeed(
+      readFile(autoConfigPath),
+      packageSets.ReproosGraphicalRootfsPackages, layoutRequest)
+    let verityRootSpec = verity.verityRootSpec(identitySeed)
+    let verityRootSpecError = verity.validateVeritySpec(verityRootSpec)
+    if verityRootSpecError.len > 0:
+      raise newException(ValueError,
+        "recipes/reproos-image: " & verityRootSpecError)
+    let buildVerityRootCommand = @[
+      "set -euo pipefail;",
+      "mkdir -p build;",
+      "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
+      "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
+      "REPROOS_VERITY_SALT=\"" & verityRootSpec.salt & "\"",
+      "REPROOS_VERITY_UUID=\"" & verityRootSpec.uuid & "\"",
+      "REPROOS_VERITY_FS_UUID=\"" &
+        verity.verityRootFsUuid(identitySeed) & "\"",
+      "REPROOS_VERITY_FS_HASH_SEED=\"" &
+        verity.verityRootFsHashSeed(identitySeed) & "\"",
+      "bash scripts/build-verity-root.sh build/verity;",
+    ].join(" ")
+    let buildVerityRootAction = shell(
+      command = buildVerityRootCommand,
+      actionId = ReproosVerityRootActionId,
+      deps = @[isoPackage.ReproosIsoRootfsActionId],
+      extraInputs = @[
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+        isoPackage.ReproosIsoRootfsOutput,
+      ],
+      extraOutputs = @[
+        "build/verity/" & verity.VerityDataImageFileName,
+        "build/verity/" & verity.VerityHashTreeFileName,
+        "build/verity/" & verity.VerityRootHashFileName,
+        "build/verity/" & verity.VerityManifestFileName,
+      ])
+    # `cryptsetup` is what supplies `veritysetup`, and `e2fsprogs` what
+    # supplies `mkfs.ext4`. Both are already in the image's package
+    # closure, so naming them here costs nothing beyond what the image
+    # build already pays.
+    appendRegisteredActionToolIdentityRefs(buildVerityRootAction.id, @[
+      "bash",
+      "coreutils",
+      "cryptsetup",
+      "e2fsprogs",
+      "find",
+      "gawk",
+      "util-linux",
+    ])
+    setRegisteredActionCwd(buildVerityRootAction.id, acwdCustom,
+      "recipes/reproos-image")
+    let verityOutputDirAbs = projectRoot / ReproosVerityRootDir
+    setRegisteredActionDependencyPolicy(buildVerityRootAction.id,
+      automaticMonitorPolicy(@[verityOutputDirAbs]))
+    discard target("verity-root", buildVerityRootAction)
 
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.

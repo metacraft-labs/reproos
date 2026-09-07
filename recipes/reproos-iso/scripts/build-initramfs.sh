@@ -330,6 +330,96 @@ fi
 cp "$INITRAMFS_SRC/$INIT_NAME" "$STAGE/init"
 chmod +x "$STAGE/init"
 
+# 3b) veritysetup, for the integrity-checked read-only root.
+#
+# An initramfs that boots a dm-verity root has to load a verity table
+# before it has a root filesystem, so the tool that loads it must be
+# inside the initramfs. BusyBox has no dmsetup applet and no verity
+# support of any kind, so this is the one non-busybox binary the
+# initramfs carries. `init-disk` treats its absence as fatal rather than
+# falling back to an unchecked mount, which is why this step must either
+# stage it or say plainly that it did not.
+#
+# REPRO_INITRAMFS_VERITY:
+#   auto     (default) stage it when a cryptsetup install mirror is
+#            found; carry on without it otherwise.
+#   require  stage it or fail. What a build of an attested image asks
+#            for, so that "the initramfs cannot activate verity" is a
+#            build failure rather than a boot failure.
+#   off      never stage it.
+#
+# The shared-library closure is copied to the SAME absolute paths it has
+# on the build host. That is not laziness: the ELF interpreter is named
+# by an absolute path inside the binary, and so are its DT_RUNPATH
+# entries, so reproducing the paths is what makes the binary runnable
+# with no loader configuration, no patching and no LD_LIBRARY_PATH.
+VERITY_MODE="${REPRO_INITRAMFS_VERITY:-auto}"
+CRYPTSETUP_INSTALL_ROOT="${REPRO_CRYPTSETUP_INSTALL_ROOT:-$SOURCE_RECIPES_ROOT/cryptsetup/.repro/output/install}"
+VERITYSETUP_BIN="${REPRO_VERITYSETUP_BIN:-}"
+if [ -z "$VERITYSETUP_BIN" ]; then
+  for cand in "$CRYPTSETUP_INSTALL_ROOT/usr/sbin/veritysetup" \
+              "$CRYPTSETUP_INSTALL_ROOT/usr/bin/veritysetup" \
+              "$CRYPTSETUP_INSTALL_ROOT/sbin/veritysetup" \
+              "$CRYPTSETUP_INSTALL_ROOT/bin/veritysetup"; do
+    if [ -x "$cand" ]; then
+      VERITYSETUP_BIN="$cand"
+      break
+    fi
+  done
+fi
+
+case "$VERITY_MODE" in
+  off)
+    echo "[initramfs] veritysetup: not staged (REPRO_INITRAMFS_VERITY=off)"
+    ;;
+  auto | require)
+    if [ -z "$VERITYSETUP_BIN" ] || [ ! -x "$VERITYSETUP_BIN" ]; then
+      if [ "$VERITY_MODE" = require ]; then
+        echo "build-initramfs.sh: REPRO_INITRAMFS_VERITY=require but no veritysetup was found." >&2
+        echo "  looked in \$REPRO_VERITYSETUP_BIN and $CRYPTSETUP_INSTALL_ROOT" >&2
+        echo "  An initramfs without it cannot activate an integrity-checked root." >&2
+        exit 72
+      fi
+      echo "[initramfs] veritysetup: not staged (no install mirror at $CRYPTSETUP_INSTALL_ROOT)"
+    else
+      if ! command -v ldd >/dev/null 2>&1; then
+        echo "build-initramfs.sh: ldd is not in PATH; the veritysetup shared-library closure cannot be resolved" >&2
+        exit 72
+      fi
+      cp "$VERITYSETUP_BIN" "$STAGE/bin/veritysetup"
+      chmod +x "$STAGE/bin/veritysetup"
+      verity_libs=0
+      while read -r libpath; do
+        [ -n "$libpath" ] || continue
+        [ -f "$libpath" ] || continue
+        mkdir -p "$STAGE$(dirname "$libpath")"
+        cp -f "$libpath" "$STAGE$libpath"
+        verity_libs=$((verity_libs + 1))
+      done <<EOF
+$(ldd "$VERITYSETUP_BIN" 2>/dev/null | tr '[:space:]' '\n' | grep '^/' | LC_ALL=C sort -u)
+EOF
+      # The ELF interpreter is named by an absolute path INSIDE the
+      # binary and ldd prints it as the first field of a tab-indented
+      # line, so splitting on spaces alone drops it -- and a binary whose
+      # interpreter is missing fails with "not found", which reads as a
+      # missing binary rather than a missing loader. Splitting on all
+      # whitespace above is what keeps it, and this is the check that
+      # says so if it ever stops working.
+      verity_interp="$(ldd "$VERITYSETUP_BIN" 2>/dev/null \
+        | tr '[:space:]' '\n' | grep '/ld-linux' | head -n1 || true)"
+      if [ -n "$verity_interp" ] && [ ! -f "$STAGE$verity_interp" ]; then
+        echo "build-initramfs.sh: the ELF interpreter $verity_interp was not staged; veritysetup would fail with 'not found' inside the initramfs" >&2
+        exit 72
+      fi
+      echo "[initramfs] veritysetup: staged from $VERITYSETUP_BIN with $verity_libs shared libraries"
+    fi
+    ;;
+  *)
+    echo "build-initramfs.sh: REPRO_INITRAMFS_VERITY must be auto, require or off (got $VERITY_MODE)" >&2
+    exit 64
+    ;;
+esac
+
 # 4) /etc minimal files for getty/login - even though we never reach
 #    them inside the initramfs, the staged /etc/* are mirrored into
 #    the overlay so the very first systemd boot can read them.

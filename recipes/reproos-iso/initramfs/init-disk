@@ -5,13 +5,37 @@
 # Parses `root=UUID=<uuid>` (or LABEL/PARTUUID/device) from /proc/cmdline, mounts that ext4
 # partition at /newroot, switches root into it, execs /sbin/init.
 #
+# It boots two shapes of root, and which one is chosen is decided by the
+# kernel command line alone:
+#
+#   * A PLAIN root. `root=<spec>` names an ext4 partition, which is
+#     mounted read-only and switched into. Nothing checks its contents.
+#
+#   * An INTEGRITY-CHECKED root. `reproos.verity.roothash=<hex>` names
+#     the expected root hash of a dm-verity Merkle tree, and
+#     `reproos.verity.data=` / `reproos.verity.hash=` name the image and
+#     the tree that backs it. Every block read from that root is checked
+#     against the tree on the way out of the block layer; a block that
+#     does not match fails the read rather than being served. Writable
+#     state lives on separate volumes named by `reproos.state.var=` and
+#     `reproos.state.home=`, so nothing writable is ever part of what the
+#     root hash covers.
+#
+# The root hash is a value the boot path supplies from outside the disk.
+# That is the whole point of it: an attacker who can rewrite the root
+# filesystem cannot also rewrite the hash it is checked against, so the
+# worst they can achieve is a boot that stops.
+#
 # Designed for the BUSYBOX-only userspace that build-initramfs.sh
-# stages (same busybox binary + slimmed Debian kernel modules).
-# Every binary referenced below is a busybox applet.
+# stages (same busybox binary + slimmed Debian kernel modules). Every
+# binary referenced below is a busybox applet, with one exception:
+# `veritysetup`, which build-initramfs.sh stages next to busybox when the
+# initramfs is built for an integrity-checked root, and whose absence is
+# a hard failure rather than a fallback.
 
 set -e
 
-INIT_VERSION='M9.R.51-label-root'
+INIT_VERSION='M9.R.51-verity-root'
 
 log() {
   echo "[disk-init] $*" >/dev/kmsg 2>/dev/null || echo "[disk-init] $*"
@@ -35,22 +59,43 @@ mount -t tmpfs    none /run
 mount -t tmpfs    none /tmp
 
 # Parse kernel cmdline for root= and (optional) rootfstype=.
+#
+# The verity keys below are the ones repro/verity.nim declares. When
+# reproos.verity.roothash= is present the root is an integrity-checked
+# read-only image and `root=` is not needed: the root device is the
+# device-mapper node this script creates. The state volumes are named
+# separately so they can be mounted read-write without ever being part
+# of the measured surface.
 ROOT_SPEC=''
 ROOT_FSTYPE='ext4'
 DISK_DEBUG=''
+VERITY_ROOTHASH=''
+VERITY_DATA=''
+VERITY_HASH=''
+STATE_VAR=''
+STATE_HOME=''
 for arg in $(cat /proc/cmdline); do
   case "$arg" in
-    root=*)       ROOT_SPEC="${arg#root=}" ;;
-    rootfstype=*) ROOT_FSTYPE="${arg#rootfstype=}" ;;
-    disk.debug)   DISK_DEBUG=1 ;;
+    root=*)                     ROOT_SPEC="${arg#root=}" ;;
+    rootfstype=*)               ROOT_FSTYPE="${arg#rootfstype=}" ;;
+    disk.debug)                 DISK_DEBUG=1 ;;
+    reproos.verity.roothash=*)  VERITY_ROOTHASH="${arg#reproos.verity.roothash=}" ;;
+    reproos.verity.data=*)      VERITY_DATA="${arg#reproos.verity.data=}" ;;
+    reproos.verity.hash=*)      VERITY_HASH="${arg#reproos.verity.hash=}" ;;
+    reproos.state.var=*)        STATE_VAR="${arg#reproos.state.var=}" ;;
+    reproos.state.home=*)       STATE_HOME="${arg#reproos.state.home=}" ;;
   esac
 done
 
-if [ -z "$ROOT_SPEC" ]; then
-  rescue "no root= on kernel cmdline"
-fi
+VERITY_NAME='reproos-root'
 
-log "root=$ROOT_SPEC rootfstype=$ROOT_FSTYPE"
+if [ -n "$VERITY_ROOTHASH" ]; then
+  log "verity roothash=$VERITY_ROOTHASH data=$VERITY_DATA hash=$VERITY_HASH"
+elif [ -z "$ROOT_SPEC" ]; then
+  rescue "no root= and no reproos.verity.roothash= on kernel cmdline"
+else
+  log "root=$ROOT_SPEC rootfstype=$ROOT_FSTYPE"
+fi
 
 # Load modules. Same set as live-init but trimmed to what a
 # disk boot on QEMU/virtio needs (no cdrom / iso9660 / squashfs /
@@ -135,35 +180,91 @@ fi
 # initramfs has devtmpfs but no udev daemon, so /dev/disk/by-* symlinks are not
 # guaranteed to exist. BusyBox findfs uses blkid directly and works on QEMU,
 # Hyper-V, and physical disk naming alike.
-resolve_root() {
-  case "$ROOT_SPEC" in
-    UUID=*|LABEL=*|PARTUUID=*) findfs "$ROOT_SPEC" 2>/dev/null || true ;;
-    *)          echo "$ROOT_SPEC" ;;
+resolve_spec() {
+  case "$1" in
+    UUID=*|LABEL=*|PARTUUID=*) findfs "$1" 2>/dev/null || true ;;
+    *)          echo "$1" ;;
   esac
 }
 
-# Wait for the root device to appear. Re-resolve stable identifiers on every
+# Wait for a block device to appear. Re-resolve stable identifiers on every
 # iteration because the disk may be attached after the first scan.
-ROOT_DEV=''
-attempt=0
-while :; do
-  ROOT_DEV="$(resolve_root)"
-  if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
-    break
+await_device() {
+  # await_device <spec> <what it is, for the diagnostic>
+  _spec="$1"
+  _what="$2"
+  _dev=''
+  _attempt=0
+  while :; do
+    _dev="$(resolve_spec "$_spec")"
+    if [ -n "$_dev" ] && [ -b "$_dev" ]; then
+      echo "$_dev"
+      return 0
+    fi
+    _attempt=$((_attempt + 1))
+    if [ "$_attempt" -ge 30 ]; then
+      log "$_what $_spec never appeared; last resolution: ${_dev:-<none>}; available:"
+      ls /sys/class/block/ >/dev/kmsg 2>/dev/null || ls /sys/class/block/
+      rescue "$_what not found"
+    fi
+    sleep 1
+  done
+}
+
+if [ -n "$VERITY_ROOTHASH" ]; then
+  # The integrity-checked read-only root.
+  #
+  # There is deliberately NO fallback. If the hash tree is missing, the
+  # tool is missing, or the root hash does not match, this boot stops.
+  # Mounting the data device directly would produce a system that looks
+  # identical and serves whatever bytes are on the disk -- which is the
+  # exact failure the read-only root exists to make impossible.
+  if [ -z "$VERITY_DATA" ] || [ -z "$VERITY_HASH" ]; then
+    rescue "reproos.verity.roothash= given without reproos.verity.data= and reproos.verity.hash="
   fi
-  attempt=$((attempt + 1))
-  if [ "$attempt" -ge 30 ]; then
-    log "root device $ROOT_SPEC never appeared; last resolution: ${ROOT_DEV:-<none>}; available:"
-    ls /sys/class/block/ >/dev/kmsg 2>/dev/null || ls /sys/class/block/
-    rescue "root device not found"
+  if ! command -v veritysetup >/dev/null 2>&1; then
+    rescue "veritysetup is not in this initramfs; an integrity-checked root cannot be activated without it"
   fi
-  sleep 1
-done
+  VERITY_DATA_DEV="$(await_device "$VERITY_DATA" 'verity data device')"
+  VERITY_HASH_DEV="$(await_device "$VERITY_HASH" 'verity hash device')"
+  log "veritysetup open $VERITY_DATA_DEV $VERITY_NAME $VERITY_HASH_DEV"
+  # No udev runs in an initramfs, so libdevmapper must create the node
+  # itself rather than wait for a uevent that will never be answered.
+  if ! DM_DISABLE_UDEV=1 veritysetup open \
+      "$VERITY_DATA_DEV" "$VERITY_NAME" "$VERITY_HASH_DEV" \
+      "$VERITY_ROOTHASH"; then
+    rescue "verity activation failed - the root filesystem does not match $VERITY_ROOTHASH"
+  fi
+  ROOT_DEV="/dev/mapper/$VERITY_NAME"
+  if [ ! -b "$ROOT_DEV" ]; then
+    rescue "verity reported success but $ROOT_DEV does not exist"
+  fi
+  log "verity active: $ROOT_DEV"
+else
+  ROOT_DEV="$(await_device "$ROOT_SPEC" 'root device')"
+fi
 
 log "mounting $ROOT_DEV at /newroot"
 if ! mount -t "$ROOT_FSTYPE" -o ro "$ROOT_DEV" /newroot; then
   rescue "mount $ROOT_DEV failed"
 fi
+
+# State volumes. Everything writable lives here and nothing writable is
+# on the measured surface, so these are mounted read-write and the root
+# stays read-only for the whole life of the boot. Encryption of these
+# volumes is not done here yet; they are plaintext.
+mount_state() {
+  # mount_state <spec> <mountpoint under /newroot>
+  [ -n "$1" ] || return 0
+  _dev="$(await_device "$1" "state volume $2")"
+  mkdir -p "/newroot$2"
+  log "mounting $_dev at $2 read-write"
+  if ! mount -t ext4 -o rw "$_dev" "/newroot$2"; then
+    rescue "mount $_dev at $2 failed"
+  fi
+}
+mount_state "$STATE_VAR" /var
+mount_state "$STATE_HOME" /home
 
 # Move /proc /sys /dev into the new root so the pivoted init can
 # still read them.

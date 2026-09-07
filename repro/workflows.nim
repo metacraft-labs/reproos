@@ -862,6 +862,38 @@ package reproosWorkflows:
       ])
     discard target("test-disk-identity-pinning", testDiskIdentityPinning)
 
+    # The integrity-checked read-only root.
+    #
+    # Its always-on layer builds real dm-verity Merkle trees in Nim and
+    # checks them against a known answer a real `veritysetup` produced,
+    # so it needs no tool beyond the Nim gate set and runs in about a
+    # second. Two heavier layers are opt-in and report a visible skip
+    # naming the remedy: REPROOS_VERITY_TOOL_GATE=1 runs the shipped
+    # build-verity-root.sh against real mkfs.ext4 and veritysetup, and
+    # REPROOS_VERITY_GUEST_GATE=1 boots a real guest on the product's own
+    # init-disk initramfs and reads the result off its serial console.
+    #
+    # `cryptsetup`, `e2fsprogs` and qemu are deliberately NOT declared as
+    # identities: the first two are from-source packages here, so naming
+    # them would make an always-on gate bootstrap them.
+    let testVerityRoot = shell(
+      command = "bash tests/test-verity-root.sh",
+      actionId = "reproos.test-verity-root",
+      extraInputs = @[
+        "tests/test-verity-root.sh",
+        "tests/nim-gate.sh",
+        "tests/test_verity_root.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-verity-root", testVerityRoot)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -880,6 +912,7 @@ package reproosWorkflows:
       testIsoReproducibility,
       testImageReproducibility,
       testDiskIdentityPinning,
+      testVerityRoot,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

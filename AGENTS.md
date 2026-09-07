@@ -69,6 +69,26 @@ Use Reprobuild as the only contributor command surface:
   runs only when an image is present (`REPROOS_IMAGE`, or the recipe's
   `recipes/reproos-image/build/reproos-installed.qcow2`) and otherwise
   reports a visible skip.
+  `repro build test-verity-root` is the gate for the integrity-checked
+  read-only root, in layers. Its always-on layer costs about two seconds and needs
+  no tool: `repro/verity.nim` builds real dm-verity Merkle trees and is
+  checked against a **known answer a real `veritysetup` produced**, then
+  exercised for determinism, for corruption localisation, and against
+  mutations that must redden it. Two heavier layers are opt-in and report
+  a visible skip naming the remedy — `REPROOS_VERITY_TOOL_GATE=1` runs
+  the shipped `recipes/reproos-image/scripts/build-verity-root.sh`
+  against a real `mkfs.ext4` and `veritysetup` and compares the two
+  implementations byte for byte, and `REPROOS_VERITY_GUEST_GATE=1` boots
+  a real guest on the product's own `init-disk` initramfs over a real
+  verity image and reads the result off its serial console (writing to
+  `/` fails, writing to `/var` succeeds, a flipped byte makes the read of
+  its block fail while the raw device still serves it, and a root hash
+  that does not match refuses to boot at all). Run it after touching
+  `repro/verity.nim`, `build-verity-root.sh`, `init-disk`, or the verity
+  staging in `build-initramfs.sh`. `veritysetup` and `mkfs.ext4` are
+  deliberately **not** declared tool identities: `cryptsetup` and
+  `e2fsprogs` are from-source packages here, so naming them would make an
+  always-on gate bootstrap them.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

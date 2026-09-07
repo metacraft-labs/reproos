@@ -335,24 +335,54 @@ package reproosImage:
           " which the single-line environment hand-off cannot carry")
     let diskoSpecLine = diskoSpec.replace("\n", "\\n")
 
+    # The identity document that rides beside the disko document.
+    #
+    # Without it, `repro disk apply` leaves every filesystem UUID, the
+    # ext4 directory-hash seed, the FAT volume serial and the GPT GUIDs
+    # to the tools, which take them from the clock and the system RNG --
+    # so two builds of identical inputs produce different bytes. The
+    # seed is derived from the auto-config, the ordered source-package
+    # closure, the layout and its sizing (repro/disk_layouts.nim), so
+    # the same inputs give the same disk on any host.
+    #
+    # It is carried the same way the disko document is: rendered here,
+    # written by the driver into the work directory next to disko.json,
+    # and found by `repro disk apply` by convention. Nothing has to
+    # remember to forward it at the call site.
+    let diskIdentitySpec = diskLayouts.renderDiskIdentityJson(
+      readFile(autoConfigPath),
+      packageSets.ReproosGraphicalRootfsPackages, layoutRequest)
+    for ch in diskIdentitySpec:
+      if ch == '\'' or ch == '\\':
+        raise newException(ValueError,
+          "recipes/reproos-image: the disk identity document contains a" &
+          " quote or a backslash, which the single-line environment" &
+          " hand-off cannot carry")
+    let diskIdentitySpecLine = diskIdentitySpec.replace("\n", "\\n")
+
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
+    #
+    # There is no REPROOS_SOURCE_RECIPES here. It belongs to the ISO
+    # recipe, whose stage-de-rootfs.sh filters the source-package set
+    # with it; this driver never runs that script and never reads the
+    # variable, and the packages this action can reach are decided by
+    # its tool identities below. An assignment nothing reads looks like
+    # a pin and is not one.
     let buildImageCommand = @[
       "set -euo pipefail;",
       "mkdir -p build;",
       "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
-      "REPROOS_SOURCE_RECIPES=\"" &
-        packageSets.ReproosGraphicalRootfsPackages.join(" ") & "\"",
       "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
       "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\"",
       "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
       "REPROOS_DISK_INITRD=\"$PWD/build/reproos-disk-initramfs.img\"",
-      "REPRO_QCOW2_SEED=\"${REPRO_QCOW2_SEED:-deadbeefcafebabe}\"",
       "REPROOS_DISK_LAYOUT=\"" & layoutRequest.name & "\"",
       "REPROOS_DISK_LAYOUT_ESP_MIB=\"" &
         $layoutRequest.params.espSizeMib & "\"",
       "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
+      "REPROOS_DISKO_IDENTITY='" & diskIdentitySpecLine & "'",
       "REPRO_BIN=\"" & reproCliInput & "\"",
       "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
       "bash scripts/build-reproos-image.sh build/reproos-installed.qcow2",

@@ -838,6 +838,30 @@ package reproosWorkflows:
       ])
     discard target("test-image-reproducibility", testImageReproducibility)
 
+    # The image's filesystem and partition-table identifiers.
+    #
+    # Not folded into the reproducibility gate above: that one is about
+    # the image's INPUTS being a function of the tree, this one is about
+    # what `repro disk apply` writes onto the disk. Keeping them apart
+    # means a failure says which of the two it is.
+    let testDiskIdentityPinning = shell(
+      command = "bash tests/test-disk-identity-pinning.sh",
+      actionId = "reproos.test-disk-identity-pinning",
+      extraInputs = @[
+        "tests/test-disk-identity-pinning.sh",
+        "tests/nim-gate.sh",
+        "tests/test_disk_identity_pinning.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/disk_layouts.nim",
+        "repro/package_sets.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+      ],
+      cacheable = false).withToolIdentities([
+        "nim", "mkdir", "clang",
+      ])
+    discard target("test-disk-identity-pinning", testDiskIdentityPinning)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -855,6 +879,7 @@ package reproosWorkflows:
       testIncusPublication,
       testIsoReproducibility,
       testImageReproducibility,
+      testDiskIdentityPinning,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

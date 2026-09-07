@@ -317,6 +317,7 @@ esac
 : "${REPROOS_DISK_LAYOUT:?REPROOS_DISK_LAYOUT must be set by the recipe (see recipes/reproos-image/package.nim)}"
 : "${REPROOS_DISK_LAYOUT_ESP_MIB:?REPROOS_DISK_LAYOUT_ESP_MIB must be set by the recipe}"
 : "${REPROOS_DISKO_SPEC:?REPROOS_DISKO_SPEC must be set by the recipe}"
+: "${REPROOS_DISKO_IDENTITY:?REPROOS_DISKO_IDENTITY must be set by the recipe (see recipes/reproos-image/package.nim); without it every filesystem UUID, the ext4 directory-hash seed, the FAT volume serial and the GPT GUIDs come from the clock and the image is not reproducible}"
 if [ "$DISK_TYPE" != "$REPROOS_DISK_LAYOUT" ] ||
    [ "$ESP_SIZE_MIB" != "$REPROOS_DISK_LAYOUT_ESP_MIB" ]; then
   echo "[build-reproos-image] disk layout drift: the plan resolved" \
@@ -381,6 +382,41 @@ if [ ! -s "$DISKO_JSON" ]; then
   exit 66
 fi
 echo "[build-reproos-image] disko json: $DISKO_JSON (layout $REPROOS_DISK_LAYOUT)"
+
+# The identity document rides beside the disko document, under the name
+# `repro disk apply` looks for without being told: <layout>.identity.json.
+# It carries the seed every filesystem UUID, the ext4 directory-hash
+# seed, the FAT volume serial and the GPT GUIDs are derived from, which
+# is what makes two builds of the same inputs produce the same bytes.
+# The seed itself is derived at plan time from the auto-config, the
+# source-package closure and the layout (repro/disk_layouts.nim).
+DISKO_IDENTITY_JSON="${DISKO_JSON%.json}.identity.json"
+printf '%b' "$REPROOS_DISKO_IDENTITY" > "$DISKO_IDENTITY_JSON"
+if [ ! -s "$DISKO_IDENTITY_JSON" ]; then
+  echo "[build-reproos-image] rendered disk identity document is empty" >&2
+  exit 66
+fi
+echo "[build-reproos-image] disk identity: $DISKO_IDENTITY_JSON"
+
+# ...and the engine that will read it has to be one that knows the
+# document exists. An older `repro disk apply` ignores it silently and
+# seeds every filesystem identifier from the clock, which produces a
+# build that looks entirely healthy and is not reproducible. Checked
+# here, before qemu-img and before sudo, so the cost of a stale engine
+# binary is a second rather than an image. `case` is a shell builtin, so
+# this needs no additional tool identity.
+REPRO_DISK_USAGE="$("$REPRO_BIN" disk 2>&1 || true)"
+case "$REPRO_DISK_USAGE" in
+  *--identity*) ;;
+  *)
+    echo "[build-reproos-image] $REPRO_BIN has no \`disk apply --identity\`," \
+         "so it would ignore $DISKO_IDENTITY_JSON and take every filesystem" \
+         "UUID, the ext4 directory-hash seed, the FAT volume serial and the" \
+         "GPT GUIDs from the clock. Rebuild the engine before building an" \
+         "image." >&2
+    exit 69
+    ;;
+esac
 
 # ---------------------------------------------------------------
 # Phase 3b: the installed image must describe the disk it actually has.
@@ -510,7 +546,15 @@ DISK_APPLY_LD="$DISK_APPLY_LD:${LD_LIBRARY_PATH:-}"
 if [ -x "$E2FSPROGS_SBIN/mkfs.ext4" ]; then
   DISK_APPLY_PATH="$E2FSPROGS_SBIN:$DISK_APPLY_PATH"
 fi
+# SOURCE_DATE_EPOCH / LC_ALL / TZ have to be named here for the same
+# reason PATH and LD_LIBRARY_PATH are: sudo resets the environment, so a
+# variable this script exports does not reach the command it runs unless
+# it is passed as an explicit assignment. mkfs.ext4 stamps the
+# superblock's creation and last-write times from SOURCE_DATE_EPOCH and
+# there is no flag that pins them, so without this the filesystems come
+# out different on every build no matter what identifiers are pinned.
 "$SUDO" PATH="$DISK_APPLY_PATH" LD_LIBRARY_PATH="$DISK_APPLY_LD" \
+  SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" LC_ALL="$LC_ALL" TZ="$TZ" \
   "$REPRO_BIN" disk apply --device "$NBD_DEV" --confirm "$DISKO_JSON" \
   || { echo "[build-reproos-image] disk apply failed" >&2; exit 69; }
 

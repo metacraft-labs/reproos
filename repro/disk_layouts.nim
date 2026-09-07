@@ -43,9 +43,10 @@
 ## Reprobuild's own ``parseSystemHardwareJson`` into a structurally equal
 ## ``SystemHardwareSpec``, which the same test asserts for every preset.
 
-import std/[options, strutils, tables]
+import std/[options, sha1, strutils, tables]
 
 import repro_profile/types
+import repro_profile/disk_identity
 
 type
   DiskLayoutStatus* = enum
@@ -371,6 +372,74 @@ proc renderDiskoDocument*(h: SystemHardwareSpec): string =
 
 proc renderDiskoJson*(name: string; p: DiskLayoutParams): string =
   renderDiskoDocument(diskLayoutHardwareSpec(name, p))
+
+# ---------------------------------------------------------------------
+# The identity seed, and the document that carries it.
+#
+# ## Why the identifiers are not in the disko document
+#
+# Left to themselves, every tool that creates a filesystem or a
+# partition table invents its identifiers from the clock and the system
+# RNG, so two builds of one image differ in their bytes. Reprobuild's
+# ``repro disk apply`` can derive them all from one seed instead; what
+# ReproOS decides here is what that seed is a function of.
+#
+# The seed travels in a document BESIDE the disko document, not inside
+# it, and that placement is load-bearing in two ways:
+#
+#   1. The disko document is installed at ``/etc/repro/disko.json`` on
+#      every machine built from an image. Filesystem UUIDs written into
+#      it would tell every one of those machines to claim the same
+#      UUIDs, and ``root=UUID=`` then names two devices in any box that
+#      has two ReproOS disks. Pinned identifiers are a property of one
+#      reproducible BUILD, not of a layout many machines share.
+#   2. The image build already checks that the document it applies and
+#      the document the installer emits are the same bytes. A build-only
+#      field inside that document would have to be threaded through the
+#      installer's compiled template too, in a language that has no
+#      hash function, to keep that check meaningful.
+#
+# ## What the seed is a function of
+#
+# The auto-config the image is built from, the ordered source-package
+# closure (which names the kernel), the layout preset, and the layout's
+# sizing parameters. Two hosts building the same tuple derive the same
+# seed and therefore the same identifiers.
+#
+# What it deliberately does NOT include is the target device: the same
+# layout applied to ``/dev/nbd3`` instead of ``/dev/nbd0`` must produce
+# the same filesystems, and the build picks whichever NBD node is free.
+# ---------------------------------------------------------------------
+
+const DiskIdentitySeedScheme* = "reproos-image-v1"
+  ## Prefix of every seed, and part of the hashed material. Bumping it
+  ## is how a deliberate change of the derivation announces itself:
+  ## every identifier moves, and the seed says why.
+
+proc reproosImageIdentitySeed*(autoConfigText: string;
+                               sourcePackages: openArray[string];
+                               request: DiskLayoutRequest): string =
+  ## The identity seed for one image build. A pure function of its
+  ## arguments — no clock, no host, no environment.
+  var material = DiskIdentitySeedScheme & "\n"
+  material.add "layout=" & request.name & "\n"
+  material.add "id=" & request.params.id & "\n"
+  material.add "esp-size-mib=" & $request.params.espSizeMib & "\n"
+  material.add "disk-size-gb=" & $request.params.diskSizeGb & "\n"
+  for pkg in sourcePackages:
+    material.add "package=" & pkg & "\n"
+  material.add "auto-config-bytes=" & $autoConfigText.len & "\n"
+  material.add autoConfigText
+  DiskIdentitySeedScheme & ":" & toLowerAscii($secureHash(material))
+
+proc renderDiskIdentityJson*(autoConfigText: string;
+                             sourcePackages: openArray[string];
+                             request: DiskLayoutRequest): string =
+  ## The exact bytes the driver writes beside the disko document, where
+  ## ``repro disk apply`` finds them without being told.
+  renderDiskIdentityDocument(DiskIdentity(
+    seed: reproosImageIdentitySeed(autoConfigText, sourcePackages,
+                                   request)))
 
 # ---------------------------------------------------------------------
 # The same layout, rendered as the ``hardware.nim`` profile source that

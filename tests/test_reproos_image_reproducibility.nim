@@ -399,7 +399,7 @@ const ImageCriticalActions = [
             knobs: @["REPRO_INITRAMFS_INIT"]),
   ActionEnv(label: "reproosImage.build_image", recipe: ImageRecipe,
             anchor: "let buildImageCommand = @[",
-            knobs: @["REPRO_QCOW2_SEED"]),
+            knobs: @["REPROOS_DISKO_IDENTITY"]),
 ]
 
 proc readSource(root, rel: string): string =
@@ -578,6 +578,23 @@ const ProducerRules = [
       ": \"${SOURCE_DATE_EPOCH:?",
       ": \"${LC_ALL:?",
       ": \"${TZ:?",
+      # The filesystems inside the image. `repro disk apply` finds the
+      # identity document beside the layout document, so the driver has
+      # to write it there; without it every filesystem UUID, the ext4
+      # directory-hash seed, the FAT volume serial and the GPT GUIDs are
+      # taken from the clock and the system RNG.
+      ": \"${REPROOS_DISKO_IDENTITY:?",
+      ".identity.json",
+      # ...and a refusal to run an engine that would ignore it. An older
+      # `repro disk apply` reads no identity document and says nothing,
+      # which is a build that looks healthy and is not reproducible.
+      "REPRO_DISK_USAGE=\"",
+      "*--identity*)",
+      # And the epoch has to survive sudo, which resets the environment:
+      # the ext4 superblock's timestamps come from SOURCE_DATE_EPOCH and
+      # no mkfs flag pins them, so an assignment this script merely
+      # exports does not reach mkfs.
+      "SOURCE_DATE_EPOCH=\"$SOURCE_DATE_EPOCH\"",
     ],
     forbidden: @[]),
 ]
@@ -702,6 +719,96 @@ proc caseProducersArePinned() =
        PinnedVars.join(", "))
 
 # ---------------------------------------------------------------------------
+# Case 2b — every variable the image recipe sets is read by something.
+#
+# The generalisation of a real defect: the recipe assigned
+# `REPRO_QCOW2_SEED` and NOTHING read it -- not the driver, not the
+# engine, not the tool that creates the filesystems. It read as a pin
+# and was not one, exactly like a `${SOURCE_DATE_EPOCH:-...}` fallback,
+# and while it sat there the image's filesystem identifiers were seeded
+# from the clock. A variable a recipe sets and nobody reads is worse
+# than an absent one, so the class is checked rather than the instance.
+# ---------------------------------------------------------------------------
+
+const EnvReadByTheToolsThemselves = [
+  # Read by the binaries the driver invokes rather than by any script in
+  # this repository, so their absence from the driver text is correct.
+  "SOURCE_DATE_EPOCH", "LC_ALL", "LANG", "TZ", "PATH", "LD_LIBRARY_PATH",
+  "HOME",
+]
+
+proc assignedNames(shellText: string): seq[string] =
+  ## Every `NAME=` assignment on a shell command line, ignoring anything
+  ## inside single quotes -- the recipe hands whole documents across that
+  ## way and their contents are data, not assignments.
+  result = @[]
+  var i = 0
+  var inSingle = false
+  while i < shellText.len:
+    let c = shellText[i]
+    if c == '\'':
+      inSingle = not inSingle
+      i.inc
+      continue
+    if inSingle:
+      i.inc
+      continue
+    let boundary = i == 0 or shellText[i - 1] in {' ', '\t', '\n', ';'}
+    if boundary and c in {'A' .. 'Z', '_'}:
+      var j = i
+      while j < shellText.len and
+            shellText[j] in {'A' .. 'Z', '0' .. '9', '_'}: j.inc
+      if j > i and j < shellText.len and shellText[j] == '=':
+        let name = shellText[i ..< j]
+        if name notin result: result.add name
+        i = j + 1
+        continue
+    i.inc
+
+proc unreadRecipeVariables(root: string): seq[string] =
+  ## Names the image recipe assigns on the build action's command line
+  ## that nothing the recipe invokes ever reads.
+  result = @[]
+  let shellText = commandBlock(readSource(root, ImageRecipe),
+                               "let buildImageCommand = @[")
+  if shellText.len == 0:
+    result.add "the image build action's command could not be read out of " &
+      ImageRecipe
+    return
+  # Comments stripped: a variable NAMED in a comment is not a variable
+  # read, and the whole point of this check is that a pin nothing
+  # consumes looks exactly like one that something does.
+  var readers = codeOnly(readSource(root, ImageDriver))
+  let scriptsDir = root / ImageScriptsDir
+  if dirExists(scriptsDir):
+    for kind, path in walkDir(scriptsDir):
+      if kind == pcFile or kind == pcLinkToFile:
+        readers.add "\n"
+        readers.add codeOnly(readFile(path))
+  for name in assignedNames(shellText):
+    if name in EnvReadByTheToolsThemselves: continue
+    # An expansion or a re-assignment counts as a read; a bare mention
+    # does not, and neither does a name that only appears because it is
+    # a prefix of a longer one.
+    if readers.contains("$" & name) or
+       readers.contains("${" & name) or
+       readers.contains(name & "="): continue
+    result.add name & " is assigned by " & ImageRecipe &
+      " and read by nothing it invokes: not " & ImageDriver &
+      ", not any script staged from " & ImageScriptsDir &
+      ". It reads as a pin and is not one; consume it or delete it."
+
+proc caseRecipeDeclaresNoUnreadVariable() =
+  let unread = unreadRecipeVariables(RepoRoot)
+  if unread.len > 0:
+    for u in unread:
+      fail("t_image_recipe_declares_no_unread_seed: " & u)
+    return
+  pass("t_image_recipe_declares_no_unread_seed: every variable the image " &
+       "recipe assigns on the build action's command line is read by the " &
+       "driver or by a script the driver stages")
+
+# ---------------------------------------------------------------------------
 # Case 3 — the falsifiability gate.
 #
 # Real perturbations, written into a scratch copy of the real sources, run
@@ -801,6 +908,18 @@ proc injections(): seq[Injection] =
       apply: proc (root: string): bool =
         replaceWithin(root / IsoBuilder, "",
           "  --gpt_disk_guid \"$REPRO_GPT_DISK_GUID\" \\\n", "")),
+    Injection(
+      # A real defect this tree carried, reproduced under a different
+      # name: a variable the recipe sets that reads as a pin and that
+      # nothing consumes. It has to be caught as a CLASS, not as the one
+      # name it happened to have.
+      name: "a variable the recipe sets and nothing reads",
+      expect: "REPRO_UNUSED_PIN",
+      viaManifest: false,
+      apply: proc (root: string): bool =
+        replaceWithin(root / ImageRecipe, "let buildImageCommand = @[",
+          "\"set -euo pipefail;\",",
+          "\"set -euo pipefail;\",\n      \"REPRO_UNUSED_PIN=deadbeefcafebabe\",")),
   ]
 
 proc caseInjectedNondeterminismIsCaught(workRoot: string) =
@@ -813,7 +932,8 @@ proc caseInjectedNondeterminismIsCaught(workRoot: string) =
   let controlDiff = compareTwoDerivations(scratch, workRoot / "injection" / "control",
                                           "control")
   let controlViolations = producerViolations(scratch) &
-                          unpinnedActionVariables(scratch)
+                          unpinnedActionVariables(scratch) &
+                          unreadRecipeVariables(scratch)
   if controlDiff.kind != dkNone or controlViolations.len > 0:
     fail("t_image_reproducibility_gate_detects_injected_nondeterminism: the " &
          "UNPERTURBED scratch copy is not green, so nothing an injection " &
@@ -855,7 +975,8 @@ proc caseInjectedNondeterminismIsCaught(workRoot: string) =
            " (" & describe(d.a) & " vs " & describe(d.b) & ")")
     else:
       let violations = producerViolations(scratch) &
-                       unpinnedActionVariables(scratch)
+                       unpinnedActionVariables(scratch) &
+                       unreadRecipeVariables(scratch)
       if violations.len == 0:
         fail("t_image_reproducibility_gate_detects_injected_nondeterminism: " &
              injection.name & " did NOT redden the gate")
@@ -1013,8 +1134,8 @@ proc caseImageBuildsTwiceIdentically(workRoot: string) =
   let epoch = unquote(assignmentValue(imageShell, "SOURCE_DATE_EPOCH"))
   let locale = unquote(assignmentValue(imageShell, "LC_ALL"))
   let zone = unquote(assignmentValue(imageShell, "TZ"))
-  let seed = resolveKnob("REPRO_QCOW2_SEED",
-                         assignmentValue(imageShell, "REPRO_QCOW2_SEED"))
+  let identity = resolveKnob("REPROOS_DISKO_IDENTITY",
+                             assignmentValue(imageShell, "REPROOS_DISKO_IDENTITY"))
 
   let configText = readSource(RepoRoot, AutoConfigFixture)
   let request = parseDiskLayoutRequest(configText, "reproos-image", "/dev/nbd0")
@@ -1025,10 +1146,8 @@ proc caseImageBuildsTwiceIdentically(workRoot: string) =
     "cd " & quoteShell(recipeDir) & " && " &
     "SOURCE_DATE_EPOCH=" & quoteShell(epoch) & " " &
     "LC_ALL=" & quoteShell(locale) & " TZ=" & quoteShell(zone) & " " &
-    "REPRO_QCOW2_SEED=" & quoteShell(seed) & " " &
+    "REPROOS_DISKO_IDENTITY=" & quoteShell(identity) & " " &
     "REPRO_AUTO_CONFIG=" & quoteShell(RepoRoot / AutoConfigFixture) & " " &
-    "REPROOS_SOURCE_RECIPES=" &
-      quoteShell(ReproosGraphicalRootfsPackages.join(" ")) & " " &
     "REPROOS_INSTALLER_BIN=" & quoteShell(RepoRoot / InstallerBinRel) & " " &
     "REPROOS_STAGED_ROOTFS=" & quoteShell(RepoRoot / StagedRootfsRel) & " " &
     "REPROOS_DISK_INITRD=" & quoteShell(RepoRoot / DiskInitrdRel) & " " &
@@ -1066,6 +1185,7 @@ createDir(workRoot)
 
 caseInputsAreDeterministic(workRoot)
 caseProducersArePinned()
+caseRecipeDeclaresNoUnreadVariable()
 caseInjectedNondeterminismIsCaught(workRoot)
 caseGatesShareOneContract()
 caseImageBuildsTwiceIdentically(workRoot)

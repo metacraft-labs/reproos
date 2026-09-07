@@ -64,6 +64,7 @@ repro build test_instance_secrets_do_not_affect_public_image_cache_key
 repro build test_unattended_vm_rejects_live_media_false_positive
 repro build test-source-composition
 repro build test-iso-reproducibility
+repro build test-image-reproducibility
 repro build test-iso
 repro build test-image-health
 repro build test-installed-desktop

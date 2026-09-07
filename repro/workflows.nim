@@ -800,6 +800,44 @@ package reproosWorkflows:
       ])
     discard target("test-guest-verity-tpm", testGuestVerityTpm)
 
+    # Image reproducibility, in layers. The always-on layers re-derive
+    # every input the image is built from -- twice, into two clean trees,
+    # the second under a different caller environment and the opposite
+    # directory enumeration order -- and check that every authored
+    # artifact on the image's path pins its timestamps, its entry order
+    # and its otherwise-random identifiers. They need nothing built and
+    # run in under a second. The build-twice byte comparison is opt-in
+    # (REPROOS_IMAGE_REPRODUCIBILITY_GATE=1) because an image build takes
+    # hours and needs sudo; it reports a visible skip naming the remedy
+    # when it is not asked for, never a silent pass.
+    #
+    # Deliberately NOT dependent on the image build action, for the same
+    # reason the boot-smoke gate is not: an always-on regression check
+    # must not turn into a multi-hour build.
+    let testImageReproducibility = shell(
+      command = "bash tests/test-image-reproducibility.sh",
+      actionId = "reproos.test-image-reproducibility",
+      extraInputs = @[
+        "tests/test-image-reproducibility.sh",
+        "tests/nim-gate.sh",
+        "tests/test_reproos_image_reproducibility.nim",
+        "tests/test-iso-reproducibility.sh",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/disk_layouts.nim",
+        "repro/package_sets.nim",
+        "repro/workflows.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-iso/package.nim",
+        "apps/reproos-installer/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-iso/scripts/build-initramfs.sh",
+        "recipes/reproos-iso/scripts/build-iso.sh",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-image-reproducibility", testImageReproducibility)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -816,6 +854,7 @@ package reproosWorkflows:
       testIncusHelper,
       testIncusPublication,
       testIsoReproducibility,
+      testImageReproducibility,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

@@ -215,6 +215,14 @@ package reproosIso:
       "if [ -d build/de-rootfs ]; then chmod -R u+w build/de-rootfs 2>/dev/null || true; fi;",
       "rm -rf build/de-rootfs;",
       "mkdir -p build/de-rootfs;",
+      # Pin the reproducibility triple here rather than leaving it to
+      # stage-de-rootfs.sh's `${SOURCE_DATE_EPOCH:-...}` fallback. A build
+      # action inherits every variable it does not assign, so with the
+      # fallback alone the staged tree -- the largest single input to both
+      # the ISO and the installed image -- was a function of the caller's
+      # environment rather than of this repository. The ISO and image
+      # authoring steps already pin the same three values.
+      "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
       "REPRO_LIVE_TARGET=graphical bash scripts/stage-de-rootfs.sh build/de-rootfs;",
     ].join(" ")
     let stageRootfsAction = shell(

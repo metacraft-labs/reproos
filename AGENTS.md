@@ -40,6 +40,29 @@ Use Reprobuild as the only contributor command surface:
   refuses when `/etc/repro/disko.json` is not the document it applies.
   Never hand-edit a generated file, and never add a second place that
   decides which layouts are legal.
+  `repro build test-image-reproducibility` is the reproducibility gate for
+  the installed image, in layers. Its always-on layers cost a second and
+  need nothing built: they re-derive every input the image is a function
+  of — the disko document, the pinned build environment of every action on
+  the image's path, the source package closure, the declared inputs and
+  tool identities, and the scripts staged into the image — **twice, into
+  two clean trees**, the second under a deliberately different caller
+  environment (`SOURCE_DATE_EPOCH`, `TZ`, `LC_ALL`, `LANG`) and the
+  opposite directory enumeration order, and they check that every shipped
+  script that authors an archive carries the flags that make it a function
+  of its inputs. A mismatch names the **first differing artifact**, not
+  merely that something differs. The build-twice byte comparison of the
+  qcow2 itself is opt-in
+  (`REPROOS_IMAGE_REPRODUCIBILITY_GATE=1`) because an image build takes
+  hours and needs `sudo`; it reports a visible skip naming the remedy when
+  it is not asked for. Run this gate after touching the image or ISO
+  recipes, the image driver, the initramfs builder, or `build-iso.sh`.
+  Two rules it enforces and that are easy to get wrong: an action
+  **inherits** every variable it does not assign, so `SOURCE_DATE_EPOCH`,
+  `LC_ALL` and `TZ` have to be assigned as bare literals on the action's
+  own command line — a `${SOURCE_DATE_EPOCH:-…}` fallback inside the
+  script is not a pin; and `test-iso-reproducibility` is held to the same
+  contract by this gate, so the two cannot drift.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

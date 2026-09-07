@@ -68,6 +68,7 @@ TARGETS=(
   test-initramfs-verity-tpm
   test-guest-verity-tpm
   test-image-boot-smoke
+  test-image-reproducibility
 )
 
 # The target the negative case mutates. `test-disk-layout-presets` is the

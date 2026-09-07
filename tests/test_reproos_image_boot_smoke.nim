@@ -20,7 +20,7 @@
 ##   4. ``<host> login:``              — getty is up on the console
 ##
 ## Step 2 is what makes the gate specific rather than "some Linux
-## booted", and step 4 is the milestone's stated end state.
+## booted", and step 4 is the end state this gate is asserting.
 ##
 ## *Why the patterns are not the plain strings above.* systemd colours
 ## its status output, so on the wire markers 2 and 3 arrive with SGR
@@ -74,11 +74,10 @@ const
   ImageEnvOverride = "REPROOS_IMAGE"
   RecipeImageOutput = "recipes/reproos-image/build/reproos-installed.qcow2"
   AttestationVmNamePrefix = "reproos-att-a1-"
-    ## Campaign-wide naming rule from the ReproOS attestation execution
-    ## plan: every VM this campaign creates is uniquely named under a
-    ## ``reproos-att-<milestone>-`` prefix so that (a) a sweep can find
-    ## what the campaign leaked and (b) nothing the campaign does can
-    ## ever be confused with production guests sharing the same host.
+    ## Every VM this test creates is uniquely named under a
+    ## ``reproos-att-`` prefix so that (a) a sweep can find whatever a
+    ## crashed run left behind and (b) nothing this test does can ever
+    ## be confused with production guests sharing the same host.
 
 var failures = 0
 

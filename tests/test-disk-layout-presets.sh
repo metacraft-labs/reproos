@@ -18,8 +18,8 @@ set -euo pipefail
 #   mkdir  -- creates the gate's build directory.
 #   bash   -- the gate replays the image driver's `printf '%b'` hand-off
 #             through a real bash rather than reasoning about it.
-#   git    -- the gate re-derives the uefi-ext4 golden from the
-#             pre-B1 driver at a pinned revision.
+#   git    -- the gate re-derives the uefi-ext4 golden from an earlier
+#             revision of the driver, at a pinned commit.
 #
 # This script deliberately does not re-exec through `nix develop`, because
 # entering a sibling's dev shell also runs its git-hooks shellHook against

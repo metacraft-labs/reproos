@@ -1070,11 +1070,11 @@ void InstallerState::install() {
     setInstallProgress(0.6);
     if (!runReproSystemApply(target)) {
         // M9.R.41: ``repro infra install-root`` failed.  This is now
-        // a hard error — the M9.R.24 stub's "minimal bootstrap"
+        // a hard error — the earlier stub's "minimal bootstrap"
         // fallback intentionally left the installed disk without a
-        // real rootfs, blocking G3 (boot installed) + G4 (DE smoke).
-        // The campaign close-out makes Phase 4 the SOURCE OF TRUTH
-        // for the installed system's contents; a failure here means
+        // real rootfs, so neither booting the installed system nor a
+        // desktop smoke test could succeed. Phase 4 is the SOURCE OF
+        // TRUTH for the installed system's contents; a failure means
         // the install is broken and the user must investigate, not
         // silently proceed with a half-formed system.
         appendLog("Phase 4 FAILED: `repro infra install-root` did "

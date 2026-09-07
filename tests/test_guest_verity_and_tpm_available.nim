@@ -39,8 +39,8 @@
 ## BusyBox-only and BusyBox has no ``dmsetup`` applet. The strongest
 ## statement obtainable from inside this guest is "the target is
 ## registered and the ioctl endpoint is live", and that is what is
-## asserted. Loading a real table belongs with the milestone that builds
-## a verity-hashed root and can run ``veritysetup`` from the ReproOS
+## asserted. Loading a real table belongs with the work that builds a
+## verity-hashed root and can run ``veritysetup`` from the ReproOS
 ## rootfs.
 ##
 ## ## Why it is artifact-conditional
@@ -70,11 +70,10 @@ const
   PackagesRootEnv = "REPROBUILD_PACKAGES_ROOT"
 
   AttestationVmNamePrefix = "reproos-att-a3-"
-    ## Campaign-wide naming rule from the ReproOS attestation execution
-    ## plan: every VM this campaign creates is uniquely named under a
-    ## ``reproos-att-<milestone>-`` prefix, so a sweep can find what the
-    ## campaign leaked and nothing it does can be confused with the
-    ## production guests that share this host.
+    ## Every VM this test creates is uniquely named under a
+    ## ``reproos-att-`` prefix, so a sweep can find whatever a crashed
+    ## run left behind and nothing this test does can be confused with
+    ## the production guests that share this host.
 
 var failures = 0
 

@@ -1,5 +1,4 @@
-# M9.R.18.13 -- Activity catalog seed. Per ReproOS-Installer-PRD.md
-# Sec 4.2 + Sec 7.4 the wizard reads this file from
+# M9.R.18.13 -- Activity catalog seed. The wizard reads this file from
 # /usr/share/reproos-installer/activities.toml at startup. v0.1 ships
 # the catalog inline in qml/screens/Activities.qml; this file is a
 # placeholder for M9.R.19 which will switch the QML loader to read

@@ -2,8 +2,6 @@
 # M9.R.50.2 -- build-reproos-image.sh: produce a fully-installed
 # reproos-installed.qcow2 on the host.
 #
-# Spec: reprobuild-specs/ReproOS-Image-Recipe.md (M9.R.50.1).
-#
 # Pipeline:
 #
 #   1. Parse $REPRO_AUTO_CONFIG (TOML).
@@ -1198,9 +1196,9 @@ SDDM_THEME_EOF
 #
 # Cascade class: install-prefix baked into a compile-time
 # constant.  The proper fix is to rebuild sddm with the correct
-# CMake flags (documented as a residual for M9.R.57+); the
-# image-time fix in this milestone uses shadow-link symlinks in
-# the same pattern as Phase 10.6 Blocker 3 (the
+# CMake flags, which is still outstanding; the image-time fix used
+# here is shadow-link symlinks in the same pattern as
+# Phase 10.6 Blocker 3 (the
 # dbus-daemon-launch-helper shim) --- ``/usr/local/libexec ->
 # /usr/libexec`` and ``/usr/local/share/sddm -> /usr/share/sddm``.
 #

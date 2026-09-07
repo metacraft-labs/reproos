@@ -41,13 +41,13 @@ class ReproosVmWorkflowTests(unittest.TestCase):
             "os.environ",
             {
                 "VM_HARNESS_BIN": "provider-vm-harness",
-                "REPROOS_VM_HARNESS_BIN": "campaign-vm-harness",
+                "REPROOS_VM_HARNESS_BIN": "stub-vm-harness",
             },
             clear=False,
         ):
             args = MODULE.parser().parse_args(["install"])
 
-        self.assertEqual(args.vm_harness, "campaign-vm-harness")
+        self.assertEqual(args.vm_harness, "stub-vm-harness")
 
     def test_unattended_vm_rejects_live_media_false_positive(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:

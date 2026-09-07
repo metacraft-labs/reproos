@@ -1,9 +1,9 @@
 // M9.R.18.4 -- ReproOS Installer Qt6/QML entry point.
 //
-// Per ReproOS-Installer-PRD.md Sec 7.1 the installer is a Qt6 + QML
-// application loaded into a single QQmlApplicationEngine. This file
-// is the C++ shim PRD Sec 9 Q1 anticipated as the fallback for the
-// patchy Nim Qt6 binding landscape -- the logic stays in Nim (via
+// The installer is a Qt6 + QML application loaded into a single
+// QQmlApplicationEngine. This file is the C++ shim used as the
+// fallback for the patchy Nim Qt6 binding landscape -- the logic
+// stays in Nim (via
 // the libreproos_installer shared library the Nim recipe builds and
 // links here), but the Qt object instantiation is C++.
 //
@@ -70,8 +70,7 @@ int main(int argc, char *argv[]) {
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        "ReproOS first-boot installer wizard. "
-        "See ReproOS-Installer-PRD.md for the user-facing spec.");
+        "ReproOS first-boot installer wizard.");
     parser.addHelpOption();
     parser.addVersionOption();
     QCommandLineOption activitiesOpt(

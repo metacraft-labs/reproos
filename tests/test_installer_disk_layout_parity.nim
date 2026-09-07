@@ -413,7 +413,7 @@ block theQtWrapperUsesThem:
          "carries its own renderer or its own layout literal: " &
          leftovers.join(", "))
     break theQtWrapperUsesThem
-  # The stale claim the milestone names explicitly.
+  # The stale claim, named explicitly so it cannot creep back.
   if "must match libs/repro_profile" in src or
      "emitSystemHardwareJson for the same" in src:
     fail("t_disko_document_has_one_renderer: installer_state.cpp still " &

@@ -17,7 +17,7 @@
 // speak registry names, and the installer refusing on a private
 // vocabulary is what kept uefi-attested unselectable.
 //
-// Per ReproOS-Installer-PRD.md Sec 3.1 the ten wizard screens collect:
+// The ten wizard screens collect:
 //  - Welcome  (no state captured; orient the user)
 //  - Locale   -> timezone + locale
 //  - Keyboard -> keymap

@@ -1,9 +1,9 @@
 # M9.R.18.4 -- ReproOS Installer Qt6/QML CMakeLists.
 #
-# Per ReproOS-Installer-PRD.md Sec 7.1 the installer is a Qt6 + QML app
-# (Wayland-native). This CMakeLists.txt is the build entry point that
-# the reprobuild from-source recipe in repro.nim wraps via the M9.K
-# c_cpp_cmake convention. The binary is installed at
+# The installer is a Qt6 + QML app (Wayland-native). This
+# CMakeLists.txt is the build entry point that the reprobuild
+# from-source recipe in repro.nim wraps via the M9.K c_cpp_cmake
+# convention. The binary is installed at
 # /usr/bin/reproos-installer; the launcher script at
 # /usr/bin/reproos-installer-launcher (M9.R.18.1) execs it.
 #

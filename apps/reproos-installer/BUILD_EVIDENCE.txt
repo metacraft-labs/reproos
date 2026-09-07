@@ -32,7 +32,7 @@ Standalone-build verification (eli-wsl, 2026-06-23):
      /tmp/installer-build/reproos-installer --help
    Result:
      Usage: reproos-installer [options]
-     ReproOS first-boot installer wizard. See ReproOS-Installer-PRD.md
+     ReproOS first-boot installer wizard.
      Options:
        -h, --help                Displays help on commandline options.
        --help-all                Displays help, including generic Qt options.

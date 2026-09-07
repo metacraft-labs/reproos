@@ -90,8 +90,9 @@ package reproosWorkflows:
     # compiler, and the installer parity gate additionally compiles the
     # shipped disk_layouts.cpp as `c++`; both come out of the same clang
     # bin directory. `git` lets the disk-layout gate re-derive its golden
-    # from the pre-B1 driver instead of skipping that case. A `uses:` entry
-    # is necessary but NOT sufficient -- the action has to name it too,
+    # from an earlier revision of the driver instead of skipping that
+    # case. A `uses:` entry is necessary but NOT sufficient -- the
+    # action has to name it too,
     # which is what the .withToolIdentities([...]) calls below do.
     "nim"
     "mkdir"

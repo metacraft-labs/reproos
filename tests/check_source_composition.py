@@ -522,7 +522,7 @@ def main() -> None:
         if "devEnv:" in content:
             raise AssertionError(f"package module duplicates workflows through devEnv: {path}")
         if re.search(r"M9\.[A-Za-z0-9.]+", content) or "historical" in content.lower():
-            raise AssertionError(f"package module contains milestone archaeology: {path}")
+            raise AssertionError(f"package module contains stale plan-ID archaeology: {path}")
 
     iso_dependencies = build_dependencies(ISO_RECIPE)
     image_dependencies = build_dependencies(IMAGE_RECIPE)

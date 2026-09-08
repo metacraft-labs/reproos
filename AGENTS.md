@@ -164,6 +164,44 @@ Use Reprobuild as the only contributor command surface:
   on the `/proc/cmdline` each guest reports. `qemu`, `dosfstools` and
   `mtools` are deliberately **not** declared identities, for the same
   reason `veritysetup` is not.
+  `repro build test-measurement-manifest` is the gate for **what the image
+  will measure**. Before the kernel starts, the EFI stub extends TPM
+  PCR 11 with the unified kernel image's own sections — for each section,
+  first its name and then its content, each as an ordinary TCG event — so
+  the register is a pure function of the image and the build can write it
+  down. It does: `repro build measurement-manifest` emits
+  `reproos.attested-image.json`, a `reproos.attested-image.v1` document
+  carrying the digests of the image's outputs and the expected register.
+  The document is produced by `repro attest expect`, the same command a
+  verifier runs when it rebuilds this image and compares, so there is one
+  implementation of the schema and of the calculator rather than two
+  opinions about what an image measures; `repro/attest.nim` owns only the
+  EDGE — the typed request, which artifacts the document is a function
+  of, which backends it asks for and where it lands. The confidential-VM
+  tiers are emitted as **empty arrays** rather than omitted, because
+  "this build computed no expectation for you" and "the key is missing"
+  must not look alike. An unknown backend name is refused at the BUILD,
+  by both the recipe's request validation and the shipped command: after
+  a document is published, the only thing a verifier can do with an
+  expectation nobody can compute is reject it. Run this gate after
+  touching `repro/attest.nim`, `repro/uki.nim`, or the measurement-manifest
+  action in `recipes/reproos-image/package.nim`. Its always-on layer
+  exercises the schema and the calculator against real PE bytes assembled
+  over a synthetic stub, in about a second. A second layer runs whenever
+  the pinned EFI stub and a built `repro` binary are both present: it
+  emits the document twice through the shipped command and requires the
+  bytes to be identical, and it checks the measured section order back
+  against the pinned stub's own table so the order cannot be a
+  recollection. A third is opt-in (`REPROOS_PCR_BOOT_GATE=1`) and is the
+  one that makes the calculator mean anything: two transient QEMU guests,
+  each with its own swtpm-backed TPM 2.0, boot a real image through OVMF,
+  load the TPM drivers and read PCR 11 back with a raw `TPM2_PCR_Read`.
+  The second guest boots an image whose command line differs by one
+  character, and the register must move to the *newly predicted* value —
+  a calculator that returns a constant would pass the first guest and
+  fail the second. `qemu`, `swtpm`, `dosfstools`, `mtools` and `xz` are
+  deliberately **not** declared identities, for the same reason
+  `veritysetup` is not.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

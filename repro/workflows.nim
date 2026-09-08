@@ -1058,6 +1058,37 @@ package reproosWorkflows:
       ])
     discard target("test-generations", testGenerations)
 
+    # What the image will measure, said before it boots.
+    #
+    # A stub extends PCR 11 with the unified kernel image's own sections
+    # before it starts the kernel, so the register is a pure function of
+    # the image and the build can write it down. The always-on layer is
+    # the schema and the calculator; the artifact-conditional layer runs
+    # the SHIPPED `repro attest expect`; the opt-in layer boots the image
+    # with a software TPM attached and reads the register back out.
+    #
+    # `qemu-system-x86_64`, `swtpm`, `dosfstools`, `mtools` and `xz` are
+    # deliberately NOT declared: the boot layer is opt-in and ambient, and
+    # naming from-source packages would make an always-on gate bootstrap
+    # them.
+    let testMeasurementManifest = shell(
+      command = "bash tests/test-measurement-manifest.sh",
+      actionId = "reproos.test-measurement-manifest",
+      extraInputs = @[
+        "tests/test-measurement-manifest.sh",
+        "tests/nim-gate.sh",
+        "tests/test_measurement_manifest.nim",
+        "repro/attest.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/generations.nim",
+        "recipes/reproos-image/package.nim",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-measurement-manifest", testMeasurementManifest)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -1080,6 +1111,7 @@ package reproosWorkflows:
       testVerityRoot,
       testUki,
       testGenerations,
+      testMeasurementManifest,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

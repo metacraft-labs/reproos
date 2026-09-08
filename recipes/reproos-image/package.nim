@@ -14,6 +14,7 @@ import "../../repro/package_sets" as packageSets
 import "../../repro/disk_layouts" as diskLayouts
 import "../../repro/verity" as verity
 import "../../repro/uki" as ukiModule
+import "../../repro/attest" as attestModule
 import "../../repro/generations" as generations
 
 const
@@ -65,6 +66,16 @@ const
   ReproosUkiDigestOutput* = ReproosUkiDir & "/" & ukiModule.UkiDigestFileName
   ReproosUkiCmdlineOutput* =
     ReproosUkiDir & "/" & ukiModule.UkiCmdlineFileName
+
+  ReproosAttestActionId* = "reproosImage.build_measurement_manifest"
+  ReproosAttestDir* = "recipes/reproos-image/build/attest"
+  ReproosAttestManifestOutput* =
+    ReproosAttestDir & "/" & attestModule.AttestManifestFileName
+    ## What a TPM will report when this image boots, written beside the
+    ## image that will produce it. It is the build's half of every later
+    ## verification: a running machine's evidence is compared against this
+    ## document, and a verifier who does not want to trust it rebuilds the
+    ## image and re-derives the same bytes.
 
 # Keep this list aligned with bare commands invoked by the image driver.
 # ``sudo`` is host-provided because its setuid semantics cannot be supplied by
@@ -660,6 +671,52 @@ package reproosImage:
       automaticMonitorPolicy(@[ukiOutputDirAbs]))
     discard target("uki", buildUkiAction)
 
+    # What the image will measure, written before any machine has booted
+    # it. The document is computed by `repro attest expect` -- the same
+    # command a verifier runs when it rebuilds this image and compares --
+    # so there is one implementation of the schema and of the PCR
+    # calculator, exercised from both ends. What this recipe owns is the
+    # EDGE: which artifacts the document is a function of, which backends
+    # it asks for, and where it lands.
+    let attestRequest = attestModule.AttestExpectRequest(
+      ukiPath: "build/uki/" & ukiModule.UkiFileName,
+      verityImagePath: "build/verity/" & verity.VerityDataImageFileName,
+      verityRootHashPath: "build/verity/" & verity.VerityRootHashFileName,
+      # The same seed the partition table's identifiers are derived from,
+      # so the document names the configuration by the value that already
+      # decides every other identity in this build.
+      configFingerprint: identitySeed,
+      backends: @(attestModule.AttestBackends),
+      outputDir: "build/attest")
+    let attestRequestError =
+      attestModule.validateAttestExpectRequest(attestRequest)
+    if attestRequestError.len > 0:
+      raise newException(ValueError,
+        "recipes/reproos-image: " & attestRequestError)
+    var attestArgv = attestModule.attestExpectArgv(
+      "$PWD/../../" & reproCliInput, attestRequest)
+    var attestCommand = "set -euo pipefail; mkdir -p build/attest;"
+    for a in attestArgv:
+      attestCommand.add " " & quoteShellPosix(a)
+    let buildAttestAction = shell(
+      command = attestCommand,
+      actionId = ReproosAttestActionId,
+      deps = @[buildUkiAction.id, buildVerityRootAction.id],
+      extraInputs = @[
+        reproCliInput,
+        ReproosUkiOutput,
+        ReproosVerityDataImageOutput,
+        ReproosVerityRootHashOutput,
+      ],
+      extraOutputs = attestModule.attestOutputPaths(attestRequest))
+    appendRegisteredActionToolIdentityRefs(buildAttestAction.id, @["bash"])
+    setRegisteredActionCwd(buildAttestAction.id, acwdCustom,
+      "recipes/reproos-image")
+    let attestOutputDirAbs = projectRoot / ReproosAttestDir
+    setRegisteredActionDependencyPolicy(buildAttestAction.id,
+      automaticMonitorPolicy(@[attestOutputDirAbs]))
+    discard target("measurement-manifest", buildAttestAction)
+
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
     #
@@ -712,6 +769,7 @@ package reproosImage:
                   isoPackage.ReproosIsoRootfsActionId,
                   buildDiskInitrdAction.id,
                   buildUkiAction.id,
+                  buildAttestAction.id,
                   generationToolAction.id]
               else:
                 @[installerPackage.ReproosInstallerReadyActionId,

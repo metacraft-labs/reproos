@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -168,7 +170,8 @@ class ReproosVmWorkflowTests(unittest.TestCase):
             )
             command = calls[1][calls[1].index("--") + 1:]
             self.assertEqual(command[:2], ["/bin/sh", "-c"])
-            self.assertIn("/var/lib/reproos/health-status", command[2])
+            self.assertIn("root=/var/lib/reproos", command[2])
+            self.assertIn('health="$root/health-status"', command[2])
             self.assertIn("REPROOS_HEALTH:PASS", command[2])
             self.assertIn("enrollment.complete", command[2])
             self.assertIn("identity.json", command[2])
@@ -250,6 +253,82 @@ class ReproosVmWorkflowTests(unittest.TestCase):
             self.assertNotIn("private-key", (
                 paths["media"] / "authorized_keys"
             ).read_text())
+
+    @unittest.skipUnless(os.name == "posix", "guest probe requires a POSIX shell")
+    def test_installed_health_probe_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="reproos health '") as raw:
+            root = Path(raw)
+            files = {
+                "health-status": "REPROOS_HEALTH:PASS\n",
+                "enrollment.complete": "",
+                "identity.json": "{}\n",
+                "installation-receipt.json": "{}\n",
+            }
+            for name, contents in files.items():
+                (root / name).write_text(contents)
+
+            def run_probe(hostname="reproos-test"):
+                command = MODULE.installed_health_probe(hostname, str(root))
+                # Keep the real test/grep builtins and avoid waiting on failures.
+                command[2] = ("hostname() { printf '%s\\n' reproos-test; }; "
+                              "sleep() { :; }; " + command[2])
+                return subprocess.run(command, text=True, capture_output=True)
+
+            result = run_probe()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("REPROOS_SSH_ACCEPTANCE:PASS", result.stdout)
+            for failure in ["hostname", *files]:
+                with self.subTest(failure=failure):
+                    if failure == "hostname":
+                        result = run_probe("different-host")
+                    else:
+                        (root / failure).unlink()
+                        result = run_probe()
+                        (root / failure).write_text(files[failure])
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("REPROOS_SSH_ACCEPTANCE:PASS", result.stdout)
+
+    def test_installed_configuration_uses_manifest_disk_location(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw)
+            args = self.arguments(root, "verify-installed-boot")
+            state = args.state_dir
+            state.mkdir()
+            target = root / "external" / "installed.qcow2"
+            target.parent.mkdir()
+            target.write_bytes(b"installed")
+            manifest = {
+                "schema_version": 1, "installed_disk": str(target),
+                "expected_hostname": "reproos-smoke", "ssh_user": "repro",
+                "ssh_host_key_alias": "reproos-instance",
+            }
+            (state / "install-manifest.json").write_text(json.dumps(manifest))
+            enrollment = MODULE.enrollment_paths(state)
+            enrollment["root"].mkdir()
+            enrollment["private_key"].write_bytes(b"key")
+            enrollment["iso"].write_bytes(b"iso")
+            args.target_disk = None
+            self.assertEqual(MODULE.installed_configuration(args)[1], target)
+            args.target_disk = root / "wrong.qcow2"
+            with self.assertRaisesRegex(MODULE.VmWorkflowError, "does not match"):
+                MODULE.installed_configuration(args)
+
+            # Older manifests can recover an external disk with an explicit path.
+            manifest["installed_disk"] = target.name
+            (state / "install-manifest.json").write_text(json.dumps(manifest))
+            args.target_disk = target
+            self.assertEqual(MODULE.installed_configuration(args)[1], target)
+
+    def test_invalid_install_manifest_reports_workflow_error(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw)
+            args = self.arguments(root, "verify-installed-boot")
+            args.state_dir.mkdir()
+            for contents in ("{", "[]", '{"schema_version": 99}'):
+                with self.subTest(contents=contents):
+                    (args.state_dir / "install-manifest.json").write_text(contents)
+                    with self.assertRaises(MODULE.VmWorkflowError):
+                        MODULE.installed_configuration(args)
 
     def test_stale_known_hosts_requires_explicit_replacement(self):
         with tempfile.TemporaryDirectory(prefix="reproos-enrollment-") as raw:

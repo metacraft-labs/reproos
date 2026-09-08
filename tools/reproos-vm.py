@@ -204,7 +204,8 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
         "cpus": args.cpus,
         "disk_format": target.suffix.lower().lstrip("."),
         "disk_gb": args.disk_gb,
-        "installed_disk": target.name,
+        "installed_disk": (str(target.relative_to(state))
+                           if target.is_relative_to(state) else str(target)),
         "installed_disk_sha256": sha256(target),
         "installer_iso": iso.name,
         "installer_iso_sha256": sha256(iso),
@@ -228,18 +229,36 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     print(f"launch manifest: {manifest_path}")
 
 
-def boot_installed(args: argparse.Namespace,
-                   vmh_options: list[str],
-                   guest_command: list[str],
-                   diagnostics_name: str) -> None:
+def installed_configuration(args: argparse.Namespace) -> tuple[dict, Path, dict]:
     state = args.state_dir.resolve()
-    target = (args.target_disk or state / default_disk_name()).resolve()
-    if not target.is_file():
-        raise VmWorkflowError(f"installed disk is missing: {target}")
     manifest_path = state / "install-manifest.json"
     if not manifest_path.is_file():
         raise VmWorkflowError(f"install manifest is missing: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeError) as error:
+        raise VmWorkflowError(f"invalid install manifest: {manifest_path}") from error
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise VmWorkflowError("unsupported install manifest schema")
+    for key in ("installed_disk", "expected_hostname", "ssh_user",
+                "ssh_host_key_alias"):
+        if not isinstance(manifest.get(key), str) or not manifest[key]:
+            raise VmWorkflowError(f"install manifest has no {key}")
+    recorded_target = (state / manifest["installed_disk"]).resolve()
+    target = (args.target_disk or recorded_target).resolve()
+    if target != recorded_target:
+        # Schema 1 originally stored only a basename, even for external disks.
+        legacy_external = (
+            Path(manifest["installed_disk"]).name == manifest["installed_disk"]
+            and not recorded_target.exists()
+            and target.name == manifest["installed_disk"]
+        )
+        if not legacy_external:
+            raise VmWorkflowError("target disk does not match the install manifest")
+    if not target.is_file():
+        raise VmWorkflowError(f"installed disk is missing: {target}")
+    if target.suffix.lower() not in {".qcow2", ".vhdx"}:
+        raise VmWorkflowError("installed disk must end in .qcow2 or .vhdx")
     enrollment = enrollment_paths(state)
     for label, path in (
         ("enrollment ISO", enrollment["iso"]),
@@ -247,15 +266,15 @@ def boot_installed(args: argparse.Namespace,
     ):
         if not path.is_file():
             raise VmWorkflowError(f"{label} is missing: {path}")
-    expected_hostname = manifest.get("expected_hostname")
-    ssh_user = manifest.get("ssh_user")
-    ssh_host_key_alias = manifest.get("ssh_host_key_alias")
-    if not isinstance(expected_hostname, str) or not expected_hostname:
-        raise VmWorkflowError("install manifest has no expected_hostname")
-    if not isinstance(ssh_user, str) or not ssh_user:
-        raise VmWorkflowError("install manifest has no ssh_user")
-    if not isinstance(ssh_host_key_alias, str) or not ssh_host_key_alias:
-        raise VmWorkflowError("install manifest has no ssh_host_key_alias")
+    return manifest, target, enrollment
+
+
+def boot_installed(args: argparse.Namespace,
+                   vmh_options: list[str],
+                   guest_command: list[str],
+                   diagnostics_name: str) -> None:
+    state = args.state_dir.resolve()
+    manifest, target, enrollment = installed_configuration(args)
     media_kind = "vhdx" if target.suffix.lower() == ".vhdx" else "qcow2"
     diagnostics = state / diagnostics_name
     diagnostics.mkdir(parents=True, exist_ok=True)
@@ -275,39 +294,41 @@ def boot_installed(args: argparse.Namespace,
         "--timeout-sec", str(args.timeout_sec),
         "--ssh-ready-timeout-sec", str(args.ssh_ready_timeout_sec),
         "--ssh-forward-port", "auto",
-        "--ssh-user", ssh_user,
+        "--ssh-user", manifest["ssh_user"],
         "--ssh-private-key", str(enrollment["private_key"]),
         "--ssh-known-hosts", str(enrollment["known_hosts"]),
-        "--ssh-host-key-alias", ssh_host_key_alias,
+        "--ssh-host-key-alias", manifest["ssh_host_key_alias"],
         "--output-dir", str(diagnostics),
         *vmh_options,
         "--", *guest_command,
     ])
 
 
-def verify_installed_boot(args: argparse.Namespace,
-                          passthrough: list[str]) -> None:
-    manifest_path = args.state_dir.resolve() / "install-manifest.json"
-    if not manifest_path.is_file():
-        raise VmWorkflowError(f"install manifest is missing: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
-    expected_hostname = manifest.get("expected_hostname", "")
-    probe = (
-        "health=/var/lib/reproos/health-status; "
+def installed_health_probe(expected_hostname: str,
+                           health_root: str = "/var/lib/reproos") -> list[str]:
+    root = shlex.quote(health_root)
+    return ["/bin/sh", "-c", (
+        "set -eu; root=" + root + "; health=\"$root/health-status\"; "
         "i=0; while ! grep -qx REPROOS_HEALTH:PASS \"$health\" "
         "2>/dev/null && [ $i -lt 240 ]; "
         "do sleep 1; i=$((i + 1)); done; "
         "test \"$(hostname)\" = " + shlex.quote(expected_hostname) + "; "
         "grep -qx REPROOS_HEALTH:PASS \"$health\"; "
-        "test -s /var/lib/reproos/enrollment.complete; "
-        "test -s /var/lib/reproos/identity.json; "
+        "test -f \"$root/enrollment.complete\"; "
+        "test -s \"$root/identity.json\"; "
+        "test -s \"$root/installation-receipt.json\"; "
         "printf 'REPROOS_SSH_ACCEPTANCE:PASS hostname=%s\\n' "
         "\"$(hostname)\""
-    )
+    )]
+
+
+def verify_installed_boot(args: argparse.Namespace,
+                          passthrough: list[str]) -> None:
+    manifest, _, _ = installed_configuration(args)
     boot_installed(
         args,
         passthrough,
-        ["/bin/sh", "-c", probe],
+        installed_health_probe(manifest["expected_hostname"]),
         "verify-installed-boot")
 
 

@@ -1404,7 +1404,7 @@ def main() -> None:
             )
     require_contains(
         ROOT / "recipes/reproos-iso/scripts/build-iso.sh",
-        ["reproos_image_metadata.py", "-all-root -pseudo-override", "-no-hardlinks"],
+        ["reproos_image_metadata.py", "-all-root -root-mode 0755", "-pseudo-override", "-no-hardlinks"],
         "SquashFS staging",
     )
     require_contains(

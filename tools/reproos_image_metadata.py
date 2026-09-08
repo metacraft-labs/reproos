@@ -114,7 +114,9 @@ class Policy:
             for path in self.entries():
                 name = path.relative_to(self.root).as_posix()
                 if name == ".":
-                    name = "/"
+                    # Existing root inode modes require mksquashfs -root-mode;
+                    # pseudo records only override descendants of that inode.
+                    continue
                 if any(ord(c) < 32 for c in name):
                     raise ValueError(f"unsupported control character in guest path: {name!r}")
                 name = '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'

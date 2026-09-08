@@ -4,7 +4,8 @@
 boundary. Package install mirrors and the shared `de-rootfs` stage remain
 unprivileged build inputs; never recursively chown or chmod them as root.
 
-- ISO: `build-iso.sh` emits SquashFS pseudo metadata with `-all-root` and
+- ISO: `build-iso.sh` emits SquashFS pseudo metadata with `-all-root`,
+  `-root-mode 0755`, and
   `-pseudo-override`. The override is required for declared user-home owners.
   `-no-hardlinks` prevents sudo's privileged mode from reaching another alias.
 - Writable installed QCOW2: `build-reproos-image.sh` applies the same policy to
@@ -34,9 +35,11 @@ The source sudo plugin directory is linked at its compiled `/usr/libexec/sudo`
 path, and the sudo PAM service uses the image's common account/session policy
 instead of falling back to the deliberately denying `other` service.
 
-Run `repro build test-image-metadata` for small real SquashFS/tar fixtures,
-source/cache preservation, guest symlink resolution, and destination policy
-checks. It needs no VM or root access. Python and pinned host `mksquashfs` /
+Run `repro build test-image-metadata` on Linux for small real SquashFS/tar fixtures,
+source/cache preservation, guest symlink resolution, destination policy, and
+health-command exit-status checks. It needs no VM or root access. Other hosts
+report an explicit platform skip before fixture setup; the graph does not select
+the Linux archive tools there. Python, Bash and pinned host `mksquashfs` /
 `unsquashfs` are action tool identities; no source archive-tool bootstrap is
 required. Run `repro build test-image-reproducibility` and `repro lint` as well.
 The destination test observes chown calls without requiring root; archive tests

@@ -6,9 +6,11 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -28,6 +30,12 @@ def run(*args, **kwargs):
 
 
 class ImageMetadataTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if sys.platform != "linux":
+            raise unittest.SkipTest(
+                "test-image-metadata requires Linux: POSIX inode semantics and /proc mountinfo")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="reproos-image-metadata-")
         self.addCleanup(self.temporary.cleanup)
@@ -75,15 +83,17 @@ class ImageMetadataTests(unittest.TestCase):
     def test_real_squashfs_metadata_and_source_unchanged(self):
         for tool in ("mksquashfs", "unsquashfs"):
             self.assertIsNotNone(shutil.which(tool), f"declared tool missing: {tool}")
+        self.root.chmod(0o700)
         before = self.snapshot()
         policy = metadata.Policy(self.root)
         pseudo, image = self.work / "rootfs.pseudo", self.work / "rootfs.squashfs"
         policy.squashfs(pseudo)
-        run("mksquashfs", str(self.root), str(image), "-all-root", "-pseudo-override",
+        run("mksquashfs", str(self.root), str(image), "-all-root", "-root-mode", "0755", "-pseudo-override",
             "-pf", str(pseudo), "-no-hardlinks", "-no-xattrs", "-noappend",
             "-no-progress", "-quiet", "-processors", "1",
             env={**os.environ, "SOURCE_DATE_EPOCH": "1735689600"})
         listing = run("unsquashfs", "-lln", str(image))
+        self.assertRegex(listing, re.compile(r"^drwxr-xr-x\s+0/0\s+.* squashfs-root$", re.M))
         expected = {
             "etc": ("drwxr-xr-x", "0/0"),
             "usr/bin": ("drwxr-xr-x", "0/0"),
@@ -228,6 +238,30 @@ class ImageMetadataTests(unittest.TestCase):
         self.assertIn('busybox su -s /bin/sh "$expected_user"', health)
         self.assertIn("sudo -n /usr/bin/id -u", health)
         self.assertIn("sudo:root-setuid", health)
+        self.assertIn("-root-mode 0755", (ROOT / "recipes/reproos-iso/scripts/build-iso.sh").read_text())
+
+    def test_health_requires_successful_exit_and_root_stdout(self):
+        health = (ROOT / "recipes/reproos-image/scripts/reproos-health-check").read_text()
+        snippet = health.split("# Running sudo as root", 1)[1].split("\nexpected_groups=", 1)[0]
+        snippet = "# Running sudo as root" + snippet
+        fake = self.work / "busybox"
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "declared tool missing: bash")
+        snippet = snippet.replace("/usr/bin/busybox", shlex.quote(str(fake)))
+        for output, status, expected in (("0", 0, "PASS"), ("0", 7, "FAIL"),
+                                         ("1000", 0, "FAIL"), ("", 0, "FAIL")):
+            with self.subTest(output=output, status=status):
+                fake.write_text(f"#!{bash}\nprintf '%s\\n' {shlex.quote(output)}\nexit {status}\n")
+                fake.chmod(0o755)
+                result = run(bash, "-c", "expected_user=fixture\nuser_record_found=1\n"
+                             "pass() { printf 'PASS\\n'; }\nfail() { printf 'FAIL\\n'; }\n" + snippet)
+                self.assertEqual(result.strip(), expected)
+
+    def test_unsupported_hosts_skip_before_fixture_setup(self):
+        for platform in ("win32", "darwin"):
+            with self.subTest(platform=platform), patch.object(sys, "platform", platform):
+                with self.assertRaisesRegex(unittest.SkipTest, "requires Linux"):
+                    self.setUpClass()
 
 
 if __name__ == "__main__":

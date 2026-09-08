@@ -130,8 +130,9 @@ else
 fi
 # Running sudo as root would not test the configured user's escalation path.
 if [[ "$user_record_found" == 1 ]] &&
-    [[ "$(/usr/bin/busybox su -s /bin/sh "$expected_user" \
-      -c '/usr/bin/sudo -n /usr/bin/id -u' 2>/dev/null)" == 0 ]]; then
+    sudo_uid="$(/usr/bin/busybox su -s /bin/sh "$expected_user" \
+      -c '/usr/bin/sudo -n /usr/bin/id -u' 2>/dev/null)" &&
+    [[ "$sudo_uid" == 0 ]]; then
   pass "sudo:passwordless:$expected_user"
 else
   fail "sudo:passwordless:$expected_user"

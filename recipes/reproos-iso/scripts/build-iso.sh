@@ -168,7 +168,7 @@ if [ -n "$REPRO_DE_ROOTFS_DIR" ]; then
   # all-root otherwise wins over pseudo ownership (including user homes).
   # Separate hardlinks so sudo's setuid mode cannot privilege another alias.
   mksquashfs "$REPRO_DE_ROOTFS_DIR" "$WORK/live/filesystem.squashfs" \
-    -all-root -pseudo-override -pf "$WORK/rootfs.pseudo" -no-hardlinks \
+    -all-root -root-mode 0755 -pseudo-override -pf "$WORK/rootfs.pseudo" -no-hardlinks \
     -no-xattrs \
     -comp xz -Xbcj x86 \
     -noappend \

@@ -1003,9 +1003,12 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/reproos-health-check",
         "recipes/reproos-container/scripts/build-incus-image.sh",
       ],
-      cacheable = false).withToolIdentities([
-        "python3", "mksquashfs", "unsquashfs",
-      ])
+      cacheable = false).withToolIdentities(["python3"])
+    # Other hosts report an explicit skip before POSIX fixture setup, like the
+    # Linux guest gates; they must not provision Linux-only archive tools.
+    when defined(linux):
+      appendRegisteredActionToolIdentityRefs(testImageMetadata.id,
+        @["bash", "mksquashfs", "unsquashfs"])
     discard target("test-image-metadata", testImageMetadata)
 
     discard target("test-source-composition", sourceComposition)

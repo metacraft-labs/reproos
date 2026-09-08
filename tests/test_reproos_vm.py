@@ -78,6 +78,9 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                 return paths
 
             with mock.patch.object(MODULE, "run_vmh", side_effect=fake_vmh), \
+                    mock.patch.object(MODULE, "read_vmh_status", side_effect=
+                        lambda *_: {"state": "running" if any(
+                            call[0] == "boot" for call in calls) else "absent"}), \
                     mock.patch.object(
                         MODULE,
                         "prepare_enrollment",
@@ -113,6 +116,9 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                 calls[0][calls[0].index("--acceleration") + 1], "tcg"
             )
             self.assertEqual(calls[1][0], "boot")
+            self.assertIn("--keep", calls[1])
+            self.assertEqual(calls[1][calls[1].index("--name") + 1],
+                             "reproos-" + "a" * 32)
             self.assertEqual(calls[1][calls[1].index("--kind") + 1], "qcow2")
             self.assertTrue(
                 calls[1][calls[1].index("--source-image") + 1].endswith(
@@ -175,7 +181,9 @@ class ReproosVmWorkflowTests(unittest.TestCase):
             self.assertIn("REPROOS_HEALTH:PASS", command[2])
             self.assertIn("enrollment.complete", command[2])
             self.assertIn("identity.json", command[2])
-            ssh_command = calls[2][calls[2].index("--") + 1:]
+            self.assertEqual(calls[2][:2], ["instance", "exec"])
+            self.assertEqual(calls[3][:2], ["instance", "exec"])
+            ssh_command = calls[3][calls[3].index("--") + 1:]
             self.assertEqual(ssh_command, ["uname", "-a"])
             self.assertNotIn("reproos-unattended.iso", calls[2])
 
@@ -329,6 +337,151 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                     (args.state_dir / "install-manifest.json").write_text(contents)
                     with self.assertRaises(MODULE.VmWorkflowError):
                         MODULE.installed_configuration(args)
+
+    def test_running_instance_is_reused_for_interactive_ssh_and_literal_exec(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw), "ssh")
+            prefix = ["instance", "ssh", "same-instance", "--state-dir", raw]
+            with mock.patch.object(MODULE, "ensure_installed") as ensure, \
+                    mock.patch.object(MODULE, "instance_command",
+                                      return_value=prefix) as instance, \
+                    mock.patch.object(MODULE, "run_vmh") as run:
+                MODULE.ssh_installed(args, [])
+                instance.assert_called_once_with(args, "ssh")
+                run.assert_called_once_with(args.vm_harness, prefix)
+                ensure.assert_called_once_with(args)
+                run.reset_mock()
+                instance.reset_mock()
+                command = ["printf", "%s\\n", "space ' quote", "$(touch sentinel)", ""]
+                MODULE.ssh_installed(args, command)
+                instance.assert_called_once_with(args, "exec")
+                run.assert_called_once_with(args.vm_harness, [*prefix, "--", *command])
+
+    def test_stopped_instance_starts_without_recreating_disk_or_enrollment(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw), "installed")
+            for state in ["stopped", "destroyed"]:
+                with self.subTest(state=state), \
+                        mock.patch.object(MODULE, "installed_configuration",
+                            return_value=({"expected_hostname": "test"}, None, {})), \
+                        mock.patch.object(MODULE, "instance_status",
+                            side_effect=[{"state": state}, {"state": "running"}]), \
+                        mock.patch.object(MODULE, "instance_command",
+                            return_value=["instance", "start", "same-instance"]), \
+                        mock.patch.object(MODULE, "boot_installed") as boot, \
+                        mock.patch.object(MODULE, "prepare_enrollment") as enroll, \
+                        mock.patch.object(MODULE, "run_vmh") as run:
+                    self.assertEqual(MODULE.ensure_installed(args)["state"], "running")
+                    boot.assert_not_called()
+                    enroll.assert_not_called()
+                    run.assert_called_once_with(args.vm_harness,
+                        ["instance", "start", "same-instance"])
+
+    def test_inspection_and_teardown_never_materialize_a_vm(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            for operation in ["status", "logs", "stop", "destroy"]:
+                with self.subTest(operation=operation):
+                    args = self.arguments(Path(raw), operation)
+                    prefix = ["instance", operation, "same-instance"]
+                    with mock.patch.object(MODULE, "ensure_installed") as ensure, \
+                            mock.patch.object(MODULE, "instance_status",
+                                return_value={"state": "stopped"}), \
+                            mock.patch.object(MODULE, "instance_command",
+                                return_value=prefix), \
+                            mock.patch.object(MODULE, "run_vmh") as run, \
+                            mock.patch("builtins.print"):
+                        MODULE.inspect_installed(args, [])
+                        ensure.assert_not_called()
+                        if operation != "status":
+                            run.assert_called_once_with(args.vm_harness, prefix)
+
+    def test_unknown_or_failed_observation_never_triggers_boot(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw), "installed")
+            with mock.patch.object(MODULE, "installed_configuration",
+                    return_value=({}, None, {})), \
+                    mock.patch.object(MODULE, "instance_status",
+                        return_value={"state": "failed"}), \
+                    mock.patch.object(MODULE, "boot_installed") as boot:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "VM is failed"):
+                    MODULE.ensure_installed(args)
+                boot.assert_not_called()
+
+    def test_status_protocol_errors_are_not_treated_as_absence(self):
+        cases = [(1, "", "backend unavailable"), (0, "not-json", ""),
+                 (0, "{}", ""), (0, '{"state":"unknown"}', "")]
+        for code, stdout, stderr in cases:
+            with self.subTest(stdout=stdout, code=code), \
+                    mock.patch.object(MODULE.subprocess, "run", return_value=
+                        subprocess.CompletedProcess([], code, stdout, stderr)):
+                with self.assertRaises(MODULE.VmWorkflowError):
+                    MODULE.read_vmh_status("vm-harness", ["instance", "status", "test"])
+
+    def test_guest_command_exit_status_is_preserved(self):
+        with mock.patch.object(MODULE.subprocess, "run", return_value=
+                subprocess.CompletedProcess([], 23)):
+            with self.assertRaises(MODULE.VmWorkflowError) as raised:
+                MODULE.run_vmh("vm-harness", ["instance", "exec", "test", "--", "false"])
+            self.assertEqual(raised.exception.exit_code, 23)
+
+    def test_install_replacement_does_not_delete_disk_when_runtime_purge_fails(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw), "install")
+            args.replace = True
+            args.state_dir.mkdir()
+            args.target_disk.write_bytes(b"persistent guest data")
+            manifest = args.state_dir / "install-manifest.json"
+            manifest.write_text("retained manifest")
+            status = {"state": "running", "receipt_exists": True,
+                      "instance_id": "00000000-0000-4000-8000-000000000001"}
+            with mock.patch.object(MODULE, "instance_status", return_value=status), \
+                    mock.patch.object(MODULE, "instance_command",
+                        return_value=["instance", "destroy", "same-instance"]), \
+                    mock.patch.object(MODULE, "run_vmh",
+                        side_effect=MODULE.VmWorkflowError("instance operation is busy")) as run, \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enrollment:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "busy"):
+                    MODULE.install(args, [])
+                run.assert_called_once_with(args.vm_harness,
+                    ["instance", "destroy", "same-instance", "--instance-id",
+                     status["instance_id"], "--purge"])
+                enrollment.assert_not_called()
+            self.assertEqual(args.target_disk.read_bytes(), b"persistent guest data")
+            self.assertEqual(manifest.read_text(), "retained manifest")
+
+    def test_workflow_lock_rejects_concurrent_mutation_and_releases_on_error(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            state = Path(raw)
+            with self.assertRaisesRegex(RuntimeError, "failed operation"):
+                with MODULE.workflow_lock(state):
+                    with self.assertRaisesRegex(MODULE.VmWorkflowError, "busy"):
+                        with MODULE.workflow_lock(state, timeout=0):
+                            self.fail("concurrent operation acquired the instance")
+                    raise RuntimeError("failed operation")
+            with MODULE.workflow_lock(state, timeout=0):
+                pass
+
+    def test_removed_runtime_with_retained_receipt_reuses_the_active_disk(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw), "installed")
+            with mock.patch.object(MODULE, "installed_configuration",
+                    return_value=({}, None, {})), \
+                    mock.patch.object(MODULE, "instance_status", side_effect=[
+                        {"state": "absent", "receipt_exists": True},
+                        {"state": "running"}]), \
+                    mock.patch.object(MODULE, "instance_command",
+                        return_value=["instance", "start", "same-instance"]), \
+                    mock.patch.object(MODULE, "boot_installed") as boot, \
+                    mock.patch.object(MODULE, "run_vmh") as run:
+                MODULE.ensure_installed(args)
+                boot.assert_not_called()
+                run.assert_called_once()
+
+    def test_forwarded_guest_options_are_not_consumed_by_host_parser(self):
+        with mock.patch.object(MODULE, "ssh_installed") as ssh:
+            result = MODULE.main(["exec", "--", "printf", "--state-dir", "guest"])
+        self.assertEqual(result, 0)
+        self.assertEqual(ssh.call_args.args[1], ["printf", "--state-dir", "guest"])
 
     def test_stale_known_hosts_requires_explicit_replacement(self):
         with tempfile.TemporaryDirectory(prefix="reproos-enrollment-") as raw:

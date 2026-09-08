@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Install and verify ReproOS disks through vm-harness."""
+"""Install, inspect, and connect to ReproOS VMs through vm-harness."""
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import time
 import uuid
 
 
@@ -26,7 +28,9 @@ ENROLLMENT_LABEL = "REPROOS_ENROLL"
 
 
 class VmWorkflowError(RuntimeError):
-    pass
+    def __init__(self, message: str, exit_code: int = 1):
+        super().__init__(message)
+        self.exit_code = exit_code
 
 
 def sha256(path: Path) -> str:
@@ -50,14 +54,75 @@ def default_vm_harness() -> str:
     )
 
 
+@contextmanager
+def workflow_lock(state: Path, timeout: float = 10):
+    """Protect enrollment and base-disk replacement as well as VM operations."""
+    if state.is_symlink():
+        raise VmWorkflowError("VM state directory must not be a symlink")
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / ".workflow.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+        else:
+            import fcntl
+        deadline = time.monotonic() + timeout
+        while not locked:
+            try:
+                if os.name == "nt":
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except (BlockingIOError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise VmWorkflowError(f"VM workflow is busy: {state}") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def run_vmh(vmh: str, args: list[str]) -> None:
     command = [vmh, *args]
-    print("+ " + subprocess.list2cmdline(command), flush=True)
+    print("+ " + subprocess.list2cmdline(command), file=sys.stderr, flush=True)
     completed = subprocess.run(command, cwd=ROOT, check=False)
     if completed.returncode != 0:
         raise VmWorkflowError(
-            f"vm-harness exited with status {completed.returncode}"
+            f"vm-harness exited with status {completed.returncode}",
+            completed.returncode if completed.returncode > 0 else 1,
         )
+
+
+def read_vmh_status(vmh: str, arguments: list[str]) -> dict:
+    command = [vmh, *arguments, "--log-format", "json"]
+    print("+ " + subprocess.list2cmdline(command), file=sys.stderr, flush=True)
+    completed = subprocess.run(command, cwd=ROOT, text=True,
+                               capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise VmWorkflowError(
+            f"vm-harness status failed: {completed.stderr.strip()}")
+    try:
+        result = json.loads(completed.stdout)
+    except ValueError as error:
+        raise VmWorkflowError("vm-harness returned invalid status JSON") from error
+    if not isinstance(result, dict) or result.get("schema_version") != 1 or result.get("state") not in {
+        "absent", "running", "stopped", "destroyed", "failed", "creating",
+    }:
+        raise VmWorkflowError("vm-harness returned an unsupported instance status")
+    return result
 
 
 def run_checked(label: str, command: list[str]) -> None:
@@ -156,7 +221,6 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     for label, path in (("unattended ISO", iso), ("embedded profile", profile)):
         if not path.is_file():
             raise VmWorkflowError(f"{label} is missing: {path}")
-    state.mkdir(parents=True, exist_ok=True)
     if target.exists():
         if not args.replace:
             raise VmWorkflowError(
@@ -165,8 +229,20 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
             )
         if not target.is_file():
             raise VmWorkflowError(f"refusing to replace non-file target: {target}")
-        target.unlink()
+    state.mkdir(parents=True, exist_ok=True)
     manifest_path = state / "install-manifest.json"
+    if manifest_path.exists():
+        status = instance_status(args)
+        if status.get("receipt_exists", status["state"] != "absent"):
+            if not args.replace:
+                raise VmWorkflowError("persistent VM exists; pass --replace for a fresh installation")
+            instance_id = status.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                raise VmWorkflowError("refusing to replace a VM without its instance identity")
+            run_vmh(args.vm_harness, [*instance_command(args, "destroy"),
+                                     "--instance-id", instance_id, "--purge"])
+    if target.exists():
+        target.unlink()
     if manifest_path.exists():
         manifest_path.unlink()
     enrollment = prepare_enrollment(args, state)
@@ -229,7 +305,7 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     print(f"launch manifest: {manifest_path}")
 
 
-def installed_configuration(args: argparse.Namespace) -> tuple[dict, Path, dict]:
+def install_manifest(args: argparse.Namespace) -> dict:
     state = args.state_dir.resolve()
     manifest_path = state / "install-manifest.json"
     if not manifest_path.is_file():
@@ -244,6 +320,12 @@ def installed_configuration(args: argparse.Namespace) -> tuple[dict, Path, dict]
                 "ssh_host_key_alias"):
         if not isinstance(manifest.get(key), str) or not manifest[key]:
             raise VmWorkflowError(f"install manifest has no {key}")
+    return manifest
+
+
+def installed_configuration(args: argparse.Namespace) -> tuple[dict, Path, dict]:
+    state = args.state_dir.resolve()
+    manifest = install_manifest(args)
     recorded_target = (state / manifest["installed_disk"]).resolve()
     target = (args.target_disk or recorded_target).resolve()
     if target != recorded_target:
@@ -269,8 +351,17 @@ def installed_configuration(args: argparse.Namespace) -> tuple[dict, Path, dict]
     return manifest, target, enrollment
 
 
+def instance_command(args: argparse.Namespace, operation: str) -> list[str]:
+    manifest = install_manifest(args)
+    return ["instance", operation, manifest["ssh_host_key_alias"],
+            "--state-dir", str(args.state_dir.resolve() / "harness")]
+
+
+def instance_status(args: argparse.Namespace) -> dict:
+    return read_vmh_status(args.vm_harness, instance_command(args, "status"))
+
+
 def boot_installed(args: argparse.Namespace,
-                   vmh_options: list[str],
                    guest_command: list[str],
                    diagnostics_name: str) -> None:
     state = args.state_dir.resolve()
@@ -280,6 +371,9 @@ def boot_installed(args: argparse.Namespace,
     diagnostics.mkdir(parents=True, exist_ok=True)
     run_vmh(args.vm_harness, [
         "boot",
+        "--keep",
+        "--name", manifest["ssh_host_key_alias"],
+        "--state-dir", str(state / "harness"),
         "--backend", args.backend,
         "--source-image", str(target),
         "--kind", media_kind,
@@ -299,9 +393,38 @@ def boot_installed(args: argparse.Namespace,
         "--ssh-known-hosts", str(enrollment["known_hosts"]),
         "--ssh-host-key-alias", manifest["ssh_host_key_alias"],
         "--output-dir", str(diagnostics),
-        *vmh_options,
         "--", *guest_command,
     ])
+
+
+def ensure_installed(args: argparse.Namespace,
+                     diagnostics_name: str = "instance") -> dict:
+    manifest, _, _ = installed_configuration(args)
+    status = instance_status(args)
+    if status.get("ownership") == "mismatch":
+        raise VmWorkflowError("hypervisor identity does not match the retained instance")
+    if status["state"] == "absent" and not status.get("receipt_exists", False):
+        boot_installed(args, installed_health_probe(
+            manifest["expected_hostname"]), diagnostics_name)
+    elif status["state"] in {"absent", "stopped", "destroyed"}:
+        run_vmh(args.vm_harness, instance_command(args, "start"))
+    elif status["state"] != "running":
+        raise VmWorkflowError(
+            f"VM is {status['state']}; inspect vm-status and vm-logs before recovery")
+    status = instance_status(args)
+    if status["state"] != "running" or status.get("ownership") == "mismatch":
+        raise VmWorkflowError("installed VM did not reach its owned running state")
+    return status
+
+
+def start_installed(args: argparse.Namespace) -> None:
+    if not (args.state_dir.resolve() / "install-manifest.json").exists():
+        install(args, [])
+    status = ensure_installed(args)
+    manifest = install_manifest(args)
+    run_vmh(args.vm_harness, [*instance_command(args, "exec"), "--",
+                            *installed_health_probe(manifest["expected_hostname"])])
+    print(json.dumps(status, indent=2, sort_keys=True))
 
 
 def installed_health_probe(expected_hostname: str,
@@ -324,24 +447,43 @@ def installed_health_probe(expected_hostname: str,
 
 def verify_installed_boot(args: argparse.Namespace,
                           passthrough: list[str]) -> None:
+    if passthrough:
+        raise VmWorkflowError("unexpected verification arguments: " +
+                              subprocess.list2cmdline(passthrough))
     manifest, _, _ = installed_configuration(args)
-    boot_installed(
-        args,
-        passthrough,
-        installed_health_probe(manifest["expected_hostname"]),
-        "verify-installed-boot")
+    ensure_installed(args, "verify-installed-boot")
+    run_vmh(args.vm_harness, [*instance_command(args, "exec"), "--",
+                            *installed_health_probe(manifest["expected_hostname"])])
+    if args.screenshot:
+        run_vmh(args.vm_harness, [*instance_command(args, "screenshot"),
+            "--screenshot", str(args.screenshot.resolve()),
+            "--screenshot-delay-sec", str(args.screenshot_delay_sec)])
 
 
 def ssh_installed(args: argparse.Namespace, command: list[str]) -> None:
     if command[:1] == ["--"]:
         command = command[1:]
-    boot_installed(args, [], command or ["hostname"], "ssh")
+    ensure_installed(args)
+    operation = "exec" if command else "ssh"
+    run_vmh(args.vm_harness, [*instance_command(args, operation),
+                             *(["--", *command] if command else [])])
+
+
+def inspect_installed(args: argparse.Namespace, passthrough: list[str]) -> None:
+    if passthrough:
+        raise VmWorkflowError("unexpected lifecycle arguments: " +
+                              subprocess.list2cmdline(passthrough))
+    if args.command == "status":
+        print(json.dumps(instance_status(args), indent=2, sort_keys=True))
+    else:
+        run_vmh(args.vm_harness, instance_command(args, args.command))
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
-        "command", choices=["install", "verify-installed-boot", "ssh"])
+        "command", choices=["install", "installed", "verify-installed-boot",
+                            "ssh", "exec", "status", "logs", "stop", "destroy"])
     result.add_argument("--state-dir", type=Path, default=Path(
         os.environ.get("REPROOS_VM_STATE_DIR", ROOT / "build/reproos-vm")))
     result.add_argument("--target-disk", type=Path)
@@ -365,6 +507,8 @@ def parser() -> argparse.ArgumentParser:
         default=int(os.environ.get("REPROOS_VM_SSH_READY_TIMEOUT_SEC", "300")),
     )
     result.add_argument("--replace", action="store_true")
+    result.add_argument("--screenshot", type=Path)
+    result.add_argument("--screenshot-delay-sec", type=int, default=20)
     result.add_argument("--ssh-keygen", default=os.environ.get(
         "SSH_KEYGEN_BIN", "ssh-keygen"))
     result.add_argument("--xorriso", default=os.environ.get(
@@ -372,34 +516,49 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def dispatch(args: argparse.Namespace, passthrough: list[str]) -> None:
+    for name in ("cpus", "memory_mb", "disk_gb", "timeout_sec",
+                 "ssh_ready_timeout_sec"):
+        if getattr(args, name) <= 0:
+            raise VmWorkflowError(
+                "--" + name.replace("_", "-") + " must be positive"
+            )
+    if args.replace and args.command != "install":
+        raise VmWorkflowError("--replace is valid only with the install command")
+    if args.screenshot and args.command != "verify-installed-boot":
+        raise VmWorkflowError("--screenshot is valid only with verify-installed-boot")
+    if args.screenshot_delay_sec < 0:
+        raise VmWorkflowError("--screenshot-delay-sec must be nonnegative")
+    if args.command == "install":
+        install(args, passthrough)
+    elif args.command == "installed":
+        if passthrough:
+            raise VmWorkflowError("unexpected installed arguments")
+        start_installed(args)
+    elif args.command == "verify-installed-boot":
+        verify_installed_boot(args, passthrough)
+    elif args.command in {"ssh", "exec"}:
+        if args.command == "exec" and not passthrough:
+            raise VmWorkflowError("exec requires a guest command after --")
+        ssh_installed(args, passthrough)
+    else:
+        inspect_installed(args, passthrough)
+
+
 def main(argv: list[str]) -> int:
     args, passthrough = parser().parse_known_args(argv)
     if passthrough[:1] == ["--"]:
         passthrough = passthrough[1:]
     try:
-        for name in ("cpus", "memory_mb", "disk_gb", "timeout_sec"):
-            if getattr(args, name) <= 0:
-                raise VmWorkflowError(
-                    "--" + name.replace("_", "-") + " must be positive"
-                )
-        if args.command == "install":
-            install(args, passthrough)
-        elif args.command == "verify-installed-boot":
-            if args.replace:
-                raise VmWorkflowError(
-                    "--replace is valid only with the install command"
-                )
-            verify_installed_boot(args, passthrough)
+        if args.command in {"status", "logs"}:
+            dispatch(args, passthrough)
         else:
-            if args.replace:
-                raise VmWorkflowError(
-                    "--replace is valid only with the install command"
-                )
-            ssh_installed(args, passthrough)
+            with workflow_lock(args.state_dir):
+                dispatch(args, passthrough)
         return 0
     except (OSError, VmWorkflowError) as error:
         print(f"reproos-vm: {error}", file=sys.stderr)
-        return 1
+        return error.exit_code if isinstance(error, VmWorkflowError) else 1
 
 
 if __name__ == "__main__":

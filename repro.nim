@@ -14,6 +14,9 @@ import "./repro/workflows" as workflows
 package reproos:
   defaultToolProvisioning "from-source"
 
+  devEnv:
+    workflows.devEnvReproosWorkflowsPackage()
+
   build:
     installerPackage.buildReproosInstallerPackage()
     isoPackage.buildReproosIsoPackage()

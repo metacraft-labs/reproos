@@ -99,6 +99,14 @@ package reproosWorkflows:
     "clang"
     "git"
 
+  devEnv:
+    useTool("python3")
+    useTool("vm-harness")
+    useTool("ssh", packageSelector = "openssh")
+    task("vm-ssh",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py ssh"),
+      description = "Open an interactive shell in the retained installed VM")
+
   build:
     let sourceComposition = shell(
       command = "python3 tests/check_source_composition.py",
@@ -493,25 +501,44 @@ package reproosWorkflows:
     run("vm-install", build = installVm.id,
       owningPackage = "reproosWorkflows")
 
+    let installedVm = shell(
+      command = withHostVmRuntime(
+        "python3 tools/reproos-vm.py installed \"$@\""),
+      args = @["reproos-vm-installed"],
+      actionId = "reproos.vm-installed",
+      deps = @[isoPackage.ReproosUnattendedIsoBuildActionId],
+      extraInputs = @[
+        "tools/reproos-vm.py",
+        "tests/fixtures/auto-config-minimal.toml",
+      ],
+      cacheable = false).withToolIdentities([
+        "python3", "vm-harness", "openssh", "xorriso",
+      ])
+    run("vm-installed", build = installedVm.id,
+      owningPackage = "reproosWorkflows")
+
     let verifyInstalledVmBoot = shell(
       command = withHostVmRuntime(
         "python3 tools/reproos-vm.py verify-installed-boot \"$@\""),
       args = @["reproos-vm-verify-installed-boot"],
       actionId = "reproos.vm-verify-installed-boot",
       extraInputs = @["tools/reproos-vm.py"],
-      cacheable = false).withToolIdentities(["python3", "vm-harness"])
+      cacheable = false).withToolIdentities(["python3", "vm-harness", "openssh"])
     run("vm-verify-installed-boot", build = verifyInstalledVmBoot.id,
       owningPackage = "reproosWorkflows")
 
-    let sshInstalledVm = shell(
-      command = withHostVmRuntime(
-        "python3 tools/reproos-vm.py ssh \"$@\""),
-      args = @["reproos-vm-ssh"],
-      actionId = "reproos.vm-ssh",
-      extraInputs = @["tools/reproos-vm.py"],
-      cacheable = false).withToolIdentities(["python3", "vm-harness"])
-    run("vm-ssh", build = sshInstalledVm.id,
-      owningPackage = "reproosWorkflows")
+    for operation in ["exec", "status", "logs", "stop", "destroy"]:
+      let lifecycle = shell(
+        command = withHostVmRuntime(
+          "python3 tools/reproos-vm.py " & operation & " \"$@\""),
+        args = @["reproos-vm-" & operation],
+        actionId = "reproos.vm-" & operation,
+        extraInputs = @["tools/reproos-vm.py"],
+        cacheable = false).withToolIdentities([
+          "python3", "vm-harness", "openssh",
+        ])
+      run("vm-" & operation, build = lifecycle.id,
+        owningPackage = "reproosWorkflows")
 
     let e2eUnattendedVmInstall = shell(
       command = withHostVmRuntime(
@@ -531,11 +558,24 @@ package reproosWorkflows:
     discard target("e2e_unattended_vm_installs_and_boots_target_disk",
       e2eUnattendedVmInstall)
 
+    let e2eVmPersistentLifecycle = shell(
+      command = withHostVmRuntime(
+        "python3 tests/test-vm-persistent-lifecycle.py"),
+      actionId = "reproos.e2e-vm-persistent-lifecycle",
+      deps = @[e2eUnattendedVmInstall.id],
+      extraInputs = @[
+        "tests/test-vm-persistent-lifecycle.py", "tools/reproos-vm.py",
+      ],
+      cacheable = false).withToolIdentities([
+        "python3", "vm-harness", "openssh",
+      ])
+    discard target("e2e_vm_persistent_lifecycle", e2eVmPersistentLifecycle)
+
     let testVmSshHostKeyMismatch = shell(
       command = withHostVmRuntime(
         "bash tests/test-vm-ssh-host-key-mismatch.sh"),
       actionId = "reproos.test-vm-ssh-host-key-mismatch",
-      deps = @[e2eUnattendedVmInstall.id],
+      deps = @[e2eVmPersistentLifecycle.id],
       extraInputs = @[
         "tests/test-vm-ssh-host-key-mismatch.sh",
         "tools/reproos-vm.py",

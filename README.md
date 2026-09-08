@@ -133,8 +133,14 @@ repro run image-ssh
 repro run image-ssh -- uname -a
 repro run vm-install
 repro run vm-install -- --replace
+repro run vm-installed
 repro run vm-verify-installed-boot
-repro run vm-ssh -- uname -a
+repro run vm-ssh
+repro run vm-exec -- uname -a
+repro run vm-status
+repro run vm-logs
+repro run vm-stop
+repro run vm-destroy
 repro run incus-import
 repro run incus-launch
 repro run incus-shell
@@ -169,19 +175,47 @@ explicitly passed. `vm-verify-installed-boot` detaches the installer, attaches a
 separate first-boot enrollment ISO, accepts only the installed-disk receipt
 conditioned health marker, retains the installed-disk receipt marker in its
 serial evidence, and verifies the configured hostname over key-only SSH.
-`vm-ssh` boots the same disk with the same enrollment and runs an ad hoc command
-through vm-harness's loopback-only SSH forward. The first successful boot pins
-the guest host key in `build/reproos-vm/ssh_known_hosts`; later boots use a
-stable alias and reject a changed host key. Only an explicit
-`repro run vm-install -- --replace` resets this trust state.
+`vm-installed` installs if necessary, then starts or reuses a retained VM.
+`vm-ssh` opens an interactive terminal; `vm-exec -- COMMAND...` runs an ad hoc
+command through the same loopback-only SSH forward and preserves its exit code.
+For compatibility, `vm-ssh -- COMMAND...` also executes a command. The shell is
+a dev-environment task so terminal streams are inherited; automated checks and
+noninteractive operations remain named graph edges.
+
+The durable lifecycle currently requires Linux/libvirt. The first connection
+uses trust on first use and pins the guest host key in
+`build/reproos-vm/ssh_known_hosts`. Reconnects reuse the same writable disk,
+enrollment identity, and host-key alias. `vm-status` returns JSON with the
+instance UUID, actual writable disk, backend state, and diagnostic paths.
+`vm-logs` reads retained serial output. Neither command creates a VM.
+
+`vm-stop` shuts down the guest while preserving its definition and disk.
+`vm-destroy` also removes the runtime definition, but preserves its writable
+disk, backing image, firmware state, keys, and logs. `vm-installed` restores
+that same instance after either operation. Mutation commands refuse concurrent
+operations; finish an interactive session before stopping or replacing its VM.
+The runtime is explicitly retained until stopped or destroyed; automatic
+Reprobuild lease expiry is not yet enabled for these tasks.
+
+Only `vm-install -- --replace` purges the previous owned runtime and writable
+state before replacing the installation disk and enrollment. This discards
+guest changes and resets trust. Use a different `REPROOS_VM_STATE_DIR` to keep
+multiple installations. Boot settings are chosen on first creation; reconnects
+use the retained configuration rather than silently replacing it.
+
+`repro build e2e_vm_persistent_lifecycle` performs unattended installation and
+desktop acceptance, then verifies reconnect, stop/start, and destroy/restore.
+It checks a guest filesystem write, machine identity, and pinned SSH trust
+across these transitions and records `lifecycle.json` in the test state
+directory. It destroys the runtime at exit but retains diagnostics and disks.
 
 The unattended media embeds `tests/fixtures/auto-config-minimal.toml`; changing
 that file invalidates the rootfs action. Set `REPROOS_VM_STATE_DIR`,
 `REPROOS_VM_BACKEND`, `REPROOS_UNATTENDED_ISO`, or
 `REPROOS_VM_HARNESS_BIN` to override the local state, backend, media, or harness
 binary. Set `REPROOS_VM_ACCELERATION=tcg` when nested KVM is unavailable or
-unreliable; the default is `auto`. On libvirt the persistent
-disk is QCOW2; on Hyper-V it is VHDX.
+unreliable; the default is `auto`. Installation creates QCOW2 on libvirt and
+VHDX on Hyper-V; durable SSH lifecycle acceptance on Hyper-V is still pending.
 
 `installer-vm-screenshot` builds the ISO, waits for the first rendered wizard
 frame, captures it from a self-cleaning libvirt VM, and runs the GuiAssert

@@ -143,9 +143,15 @@ Use Reprobuild as the only contributor command surface:
 - `repro run vm-install` performs a real unattended install through
   `vm-harness` into a persistent target disk; `vm-verify-installed-boot`
   detaches the ISO and verifies installed-disk boot, enrollment, health, and
-  key-only SSH with persistent host-key verification. `repro run vm-ssh --
-  COMMAND...` runs an ad hoc command through the same self-cleaning vm-harness
-  lifecycle.
+  key-only SSH with persistent host-key verification. `repro run vm-installed`
+  installs if necessary and starts or reuses the retained Linux/libvirt VM.
+  `vm-ssh` opens an interactive terminal; `vm-exec -- COMMAND...` executes a
+  command in the same instance. Use `vm-status`, `vm-logs`, `vm-stop`, and
+  `vm-destroy` to inspect or stop it. Runtime destroy preserves disk and trust
+  state; `vm-install -- --replace` is destructive. Automatic lease expiry and
+  Hyper-V SSH lifecycle acceptance are pending. Interactive commands belong
+  in `devEnv` tasks with inherited terminal streams, not captured build
+  actions. Do not duplicate a task name as a run edge.
 - `repro run image-ssh -- COMMAND...` boots a self-cleaning installed VM and
   runs a command over SSH; with no command it verifies the configured hostname.
 - `repro run incus-launch` imports and starts the source-built container in an

@@ -519,7 +519,7 @@ def main() -> None:
 
     for path in modules[1:]:
         content = source(path)
-        if "devEnv:" in content:
+        if "devEnv:" in content and path != WORKFLOW_RECIPE:
             raise AssertionError(f"package module duplicates workflows through devEnv: {path}")
         if re.search(r"M9\.[A-Za-z0-9.]+", content) or "historical" in content.lower():
             raise AssertionError(f"package module contains stale plan-ID archaeology: {path}")
@@ -547,6 +547,12 @@ def main() -> None:
         raise AssertionError("workflow uses must provide GuiAssert's environment launcher")
 
     workflow_content = source(WORKFLOW_RECIPE)
+    declared_tasks = set(re.findall(r'\btask\("([^"]+)"', workflow_content))
+    declared_runs = set(re.findall(r'\brun\("([^"]+)"', workflow_content))
+    if declared_tasks & declared_runs:
+        raise AssertionError("a workflow is duplicated as a task and a run edge")
+    require_contains(ROOT_RECIPE, ["workflows.devEnvReproosWorkflowsPackage()"],
+                     "interactive workflow composition")
     for action_name in [
         "testInstallerVisuals",
         "inspectInstallerVmFrame",
@@ -563,10 +569,21 @@ def main() -> None:
             raise AssertionError(
                 f"GuiAssert action {action_name} does not declare the nix tool"
             )
-    if workflow_content.count("withHostVmRuntime(") != 15:
-        raise AssertionError(
-            "all VM-backed workflows must select the available libvirt runtime"
-        )
+    for action_name in [
+        "captureInstallerVmScreenshot", "testVmIncusParity", "bootIso",
+        "installVm", "installedVm", "verifyInstalledVmBoot",
+        "lifecycle", "e2eUnattendedVmInstall", "e2eVmPersistentLifecycle",
+        "testVmSshHostKeyMismatch",
+        "testIso", "bootImage", "testImageHealth", "testInstalledDesktop",
+        "sshImage", "testInstalledSsh",
+    ]:
+        if not re.search(
+            rf"let {action_name} = shell\(\s*command = withHostVmRuntime\(",
+            workflow_content,
+        ):
+            raise AssertionError(
+                f"VM action {action_name} must select the available libvirt runtime"
+            )
     require_contains(
         WORKFLOW_RECIPE,
         [
@@ -587,6 +604,8 @@ def main() -> None:
             '"boot-iso"',
             '"test-iso"',
             '"boot-image"',
+            'task("vm-ssh",',
+            'command = withHostVmRuntime("python3 tools/reproos-vm.py ssh")',
         ],
         "host VM runtime fallback",
     )
@@ -618,6 +637,7 @@ def main() -> None:
                 "test-installed-ssh",
                 "test-unattended-install",
                 "e2e_unattended_vm_installs_and_boots_target_disk",
+                "e2e_vm_persistent_lifecycle",
                 "test_vm_ssh_host_key_mismatch_fails_closed",
             ]],
             *[f'run("{name}"' for name in [
@@ -628,8 +648,8 @@ def main() -> None:
                 "cache-backfill",
                 "boot-iso",
                 "vm-install",
+                "vm-installed",
                 "vm-verify-installed-boot",
-                "vm-ssh",
                 "boot-image",
                 "image-ssh",
                 "incus-import",
@@ -652,6 +672,7 @@ def main() -> None:
             'actionId = "reproos.e2e-unattended-vm-install"',
             'actionId = "reproos.test-vm-ssh-host-key-mismatch"',
             "deps = @[e2eUnattendedVmInstall.id]",
+            "deps = @[e2eVmPersistentLifecycle.id]",
             "e2eUnattendedVmInstall)",
             "testVmSshHostKeyMismatch)",
         ],

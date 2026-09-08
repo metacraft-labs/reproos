@@ -13,6 +13,7 @@ import "../reproos-iso/package" as isoPackage
 import "../../repro/package_sets" as packageSets
 import "../../repro/disk_layouts" as diskLayouts
 import "../../repro/verity" as verity
+import "../../repro/uki" as ukiModule
 
 const
   ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"
@@ -36,6 +37,25 @@ const
     ## than re-deriving it, so there is one answer per build.
   ReproosVerityManifestOutput* =
     ReproosVerityRootDir & "/" & verity.VerityManifestFileName
+
+  ReproosUkiToolActionId* = "reproosImage.build_uki_tool"
+  ReproosUkiToolBinary* = "recipes/reproos-image/build/bin/reproos-uki"
+    ## The typed assembler. Built by ``nim.c`` — a typed DSL edge, not a
+    ## shell escape — so the compiler, the source and the binary are all
+    ## declared to the graph.
+  ReproosUkiActionId* = "reproosImage.build_uki"
+  ReproosUkiDir* = "recipes/reproos-image/build/uki"
+  ReproosUkiOutput* = ReproosUkiDir & "/" & ukiModule.UkiFileName
+    ## The unified kernel image: kernel, initrd, kernel command line and
+    ## EFI stub in one PE binary. What firmware loads, and what a launch
+    ## measurement covers in one piece — which is the whole reason the
+    ## root hash rides on the command line INSIDE it rather than in a
+    ## loader configuration file beside it.
+  ReproosUkiManifestOutput* =
+    ReproosUkiDir & "/" & ukiModule.UkiManifestFileName
+  ReproosUkiDigestOutput* = ReproosUkiDir & "/" & ukiModule.UkiDigestFileName
+  ReproosUkiCmdlineOutput* =
+    ReproosUkiDir & "/" & ukiModule.UkiCmdlineFileName
 
 # Keep this list aligned with bare commands invoked by the image driver.
 # ``sudo`` is host-provided because its setuid semantics cannot be supplied by
@@ -92,6 +112,14 @@ package reproosImage:
     "find"
     "gzip"
     "sed"
+    # The unified-kernel-image assembler is compiled from source by a
+    # typed `nim.c` edge in the build block below. `nim` and `clang`
+    # have no from-source recipe in reprobuild-packages, so under this
+    # project's `defaultToolProvisioning "from-source"` both fall
+    # through to the pinned nixpkgs channel rather than bootstrapping a
+    # toolchain.
+    "nim"
+    "clang"
 
   # The DSL currently extracts dependency declarations as string literals.
   # The graph-quality check keeps this block identical to the canonical set.
@@ -452,6 +480,139 @@ package reproosImage:
       automaticMonitorPolicy(@[verityOutputDirAbs]))
     discard target("verity-root", buildVerityRootAction)
 
+    # ---------------------------------------------------------------
+    # The unified kernel image.
+    #
+    # The read-only root already has a name that changes when any byte
+    # of it changes: the dm-verity root hash the verity action above
+    # writes. This is where that name is put somewhere a launch
+    # measurement covers.
+    #
+    # A GRUB command line could carry the root hash too, and it would be
+    # worth nothing: `grub.cfg` is a file on the ESP, firmware measures
+    # the loader binary rather than the string the loader chooses to
+    # pass on, and an attacker who edits one line boots the same signed
+    # GRUB with a different root hash and identical PCRs. A unified
+    # kernel image packs the kernel, the initrd, the command line and
+    # the EFI stub into ONE PE binary, so the command line is inside the
+    # thing that gets measured.
+    #
+    # Two properties of the edge below are load-bearing:
+    #
+    #   * The assembly is TYPED. `repro/uki.nim` owns the section set,
+    #     the section order, the PE arithmetic and the composition of
+    #     the command line out of the verity keys; the assembler is
+    #     compiled from source by `nim.c` (a typed DSL edge) and invoked
+    #     with an argv that `ukiAssembleArgv` renders from the same
+    #     typed request the inputs and outputs below are derived from.
+    #     There is no `objcopy` pipeline, no `ukify`, and no shell
+    #     script. Stated precisely, because the distinction matters:
+    #     the final process SPAWN below still goes through `shell`,
+    #     which is the only surface the DSL offers for running a binary
+    #     this project built (the installer is invoked the same way).
+    #     What is typed is the request, the validation, the declared
+    #     inputs, the declared outputs and the argv — not the exec.
+    #   * It reads the root hash from the FILE the verity action writes,
+    #     rather than being handed a value. The command line is
+    #     therefore a function of the staged root closure, which is what
+    #     makes "change one byte of the root and the measurement moves"
+    #     true rather than aspirational.
+    #
+    # SIGNING IS OUT OF SCOPE, deliberately. The image below is
+    # unsigned. `systemd-stub` measures the sections it consumes whether
+    # or not the PE carries an Authenticode signature, so an unsigned
+    # image is fully attestable on the TPM tier; Secure Boot firmware
+    # will refuse to load it, so `sbsign` and a key-custody story remain
+    # deferred. See the header of `repro/uki.nim`.
+    # `cc = "clang"` is not a preference, it is the fix for a MEASURED
+    # failure. `nim c` lowers Nim to C and shells out to a C compiler,
+    # and `nim.c` defaults that compiler to `gcc` -- declaring `gcc` as
+    # this edge's tool identity in the process. Under this project's
+    # `defaultToolProvisioning "from-source"` a completed source mirror
+    # outranks the pinned channel, and this workspace's from-source
+    # `gcc` mirror is broken: its `cc1` cannot load `libmpc.so.3`.
+    # Measured, before this argument existed: `repro build uki-tool`
+    # failed with that loader error on every translation unit. `clang`
+    # has no from-source recipe, so it falls through to the pinned
+    # nixpkgs channel -- which is the same reason the Nim gates compile
+    # with it.
+    let ukiToolAction = nim.c(
+      source = "tools/reproos_uki.nim",
+      binary = ReproosUkiToolBinary,
+      cc = "clang",
+      # `CC` too, and for a SECOND measured reason. nixpkgs' `nim.cfg`
+      # substitutes the caller's `$CC` into the backend's `.exe` setting
+      # (`clang.exe %= "$CC"`), and the engine replaces only `PATH` in an
+      # action -- every other variable is inherited. So a developer
+      # shell's `CC=gcc` reached this edge even with `--cc:clang`
+      # selected, and nim shelled out to a bare `gcc` the hermetic PATH
+      # does not carry: exit 127, with the clang flag set (`-ferror-limit`)
+      # visible in the failing command line. This is the same defect
+      # `tests/nim-gate.sh` pins for the Nim gates; the compiler an edge
+      # compiles with must come from its DECLARED identities, never from
+      # the caller's environment.
+      extraEnv = @[("CC", "clang")],
+      actionId = ReproosUkiToolActionId,
+      extraInputs = @["repro/uki.nim", "repro/verity.nim"])
+    discard target("uki-tool", ukiToolAction)
+
+    # The stub. Resolved by content, not by path: `repro/uki.nim` pins
+    # its sha256 and skips any candidate that is not those bytes, so a
+    # host carrying fifty systemd versions resolves to one answer or to
+    # none. A missing stub is reported by the action rather than raised
+    # here, so that a `repro build` which does not select the UKI target
+    # is not failed by a host that has no need of one.
+    let resolvedStub = ukiModule.resolveUkiStub()
+    let ukiRequest = ukiModule.UkiAssembleRequest(
+      stubPath: resolvedStub,
+      kernelPath: "../../../reprobuild-packages/packages/source/kernel/" &
+        ".repro/output/install/usr/lib/reproos-kernel/vmlinuz",
+      initrdPath: "build/reproos-disk-initramfs.img",
+      verityRootHashPath: "build/verity/" & verity.VerityRootHashFileName,
+      verityDataDevice: ukiModule.AttestedBootDeviceRefs.data,
+      verityHashDevice: ukiModule.AttestedBootDeviceRefs.hash,
+      stateVarDevice: ukiModule.AttestedBootDeviceRefs.stateVar,
+      stateHomeDevice: ukiModule.AttestedBootDeviceRefs.stateHome,
+      extraArgs: @[],
+      osReleaseVersion: "0.1.0",
+      unamePath: "../../../reprobuild-packages/packages/source/kernel/" &
+        ".repro/output/install/usr/lib/reproos-kernel/kernel.release",
+      sourceDateEpoch: 1735689600,
+      outputDir: "build/uki")
+    if resolvedStub.len > 0:
+      let requestError = ukiModule.validateUkiAssembleRequest(ukiRequest)
+      if requestError.len > 0:
+        raise newException(ValueError,
+          "recipes/reproos-image: " & requestError)
+    var ukiArgv = ukiModule.ukiAssembleArgv(
+      "$PWD/../../" & ReproosUkiToolBinary, ukiRequest)
+    var ukiCommand = "set -euo pipefail; mkdir -p build/uki;"
+    for a in ukiArgv:
+      ukiCommand.add " " & quoteShellPosix(a)
+    let buildUkiAction = shell(
+      command = ukiCommand,
+      actionId = ReproosUkiActionId,
+      deps = @[ukiToolAction.id, buildVerityRootAction.id,
+               buildDiskInitrdAction.id],
+      extraInputs = @[
+        ReproosUkiToolBinary,
+        ReproosVerityRootHashOutput,
+        ReproosDiskInitrdOutput,
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
+        "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/kernel.release",
+      ],
+      extraOutputs = ukiModule.ukiOutputPaths(ukiRequest))
+    # The assembler is a self-contained binary that reads files and
+    # writes files: it shells out to nothing, so the only identity this
+    # edge needs is the shell that starts it.
+    appendRegisteredActionToolIdentityRefs(buildUkiAction.id, @["bash"])
+    setRegisteredActionCwd(buildUkiAction.id, acwdCustom,
+      "recipes/reproos-image")
+    let ukiOutputDirAbs = projectRoot / ReproosUkiDir
+    setRegisteredActionDependencyPolicy(buildUkiAction.id,
+      automaticMonitorPolicy(@[ukiOutputDirAbs]))
+    discard target("uki", buildUkiAction)
+
     # The default fixture supports reproducible smoke builds. Tests can supply
     # a generated configuration through REPRO_AUTO_CONFIG.
     #
@@ -461,10 +622,20 @@ package reproosImage:
     # variable, and the packages this action can reach are decided by
     # its tool identities below. An assignment nothing reads looks like
     # a pin and is not one.
+    #
+    # The boot path the driver installs is decided by the layout, and
+    # the attested one needs the unified kernel image. It is named
+    # unconditionally so the assignment is visible in one place, and
+    # DEPENDED ON only when the selected layout actually boots from it
+    # -- an unconditional dependency would make every uefi-ext4 image
+    # build assemble a UKI it never installs, and fail on any host with
+    # no copy of the pinned stub.
+    let bootsFromUki = layoutRequest.name == "uefi-attested"
     let buildImageCommand = @[
       "set -euo pipefail;",
       "mkdir -p build;",
       "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
+      "REPROOS_UKI=\"$PWD/build/uki/" & ukiModule.UkiFileName & "\"",
       "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
       "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\"",
@@ -483,11 +654,15 @@ package reproosImage:
     let buildImageAction = shell(
       command = buildImageCommand,
       actionId = ReproosImageBuildActionId,
-      deps = @[
-        installerPackage.ReproosInstallerReadyActionId,
-        isoPackage.ReproosIsoRootfsActionId,
-        buildDiskInitrdAction.id,
-      ],
+      deps = (if bootsFromUki:
+                @[installerPackage.ReproosInstallerReadyActionId,
+                  isoPackage.ReproosIsoRootfsActionId,
+                  buildDiskInitrdAction.id,
+                  buildUkiAction.id]
+              else:
+                @[installerPackage.ReproosInstallerReadyActionId,
+                  isoPackage.ReproosIsoRootfsActionId,
+                  buildDiskInitrdAction.id]),
       extraInputs = @[
         reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",

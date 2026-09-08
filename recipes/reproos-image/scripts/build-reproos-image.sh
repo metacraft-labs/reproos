@@ -131,6 +131,12 @@ resolve_host_tool() {
   return 1
 }
 
+# Where the unified kernel image is installed on the ESP. This is the
+# same string repro/uki.nim declares as UkiEspFallbackPath; the UKI gate
+# compares the two, so a change on either side that is not made on the
+# other is a red test rather than an image that will not boot.
+UKI_ESP_PATH=EFI/BOOT/BOOTX64.EFI
+
 HOST_MOUNT_BIN="$(resolve_host_tool mount)"
 HOST_UMOUNT_BIN="$(resolve_host_tool umount)"
 HOST_MOUNTPOINT_BIN="$(resolve_host_tool mountpoint)"
@@ -596,39 +602,97 @@ MOUNTED_PATHS+=("$MNT_DIR")
 MOUNTED_PATHS+=("$MNT_DIR/boot")
 
 # ---------------------------------------------------------------
-# Phase 8: repro infra install-root.
+# Phase 8: repro infra install-root, and the boot path.
 #
 # --source = the staged Nix-style tree (NOT the live host root)
 # --target = our mount point
 # --device = the nbd device for grub-install
 # --disko  = our generated json
 # --hostname = from TOML
+#
+# WHICH BOOT PATH IS INSTALLED IS DECIDED BY THE LAYOUT, and the two
+# are not variations of one thing:
+#
+#   uefi-ext4     GRUB. The loader reads its command line out of
+#                 /boot/grub/grub.cfg, a file on the ESP. Nothing
+#                 measures that file, and nothing needs to: this layout
+#                 makes no integrity claim about its root.
+#
+#   uefi-attested A unified kernel image. The kernel, the initrd and
+#                 the kernel command line are inside ONE PE binary, so
+#                 firmware measures the command line along with
+#                 everything else it loads. That is the only reason the
+#                 dm-verity root hash on that command line means
+#                 anything: on a GRUB boot an attacker who can write to
+#                 the ESP can change the expected root hash and every
+#                 measurement still reads exactly as before.
+#
+# GRUB is not merely unused on the attested layout -- it is REMOVED.
+# `repro infra install-root` writes /boot/grub/grub.cfg even under
+# --no-grub, so leaving it in place would ship a second, unmeasured
+# description of how to boot the machine, and firmware that found it
+# first would use it.
 # ---------------------------------------------------------------
+INSTALL_ROOT_ARGS=(
+  --target "$MNT_DIR"
+  --source "$STAGE_DIR"
+  --device "$NBD_DEV"
+  --disko "$DISKO_JSON"
+  --hostname "$HOSTNAME_VAL"
+  --kernel "$SOURCE_KERNEL"
+  --initrd "$DISK_INITRD"
+)
+case "$REPROOS_DISK_LAYOUT" in
+  uefi-attested)
+    INSTALL_ROOT_ARGS+=(--no-grub)
+    : "${REPROOS_UKI:?REPROOS_UKI must point at the unified kernel image the recipe assembled; the attested layout has no other boot path}"
+    if [ ! -s "$REPROOS_UKI" ]; then
+      echo "[build-reproos-image] unified kernel image missing: $REPROOS_UKI" >&2
+      exit 70
+    fi
+    ;;
+esac
+
 echo "[build-reproos-image] repro infra install-root --target $MNT_DIR --source $STAGE_DIR --device $NBD_DEV"
 "$SUDO" LD_LIBRARY_PATH="$REPRO_CLI_LD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  "$REPRO_BIN" infra install-root \
-  --target "$MNT_DIR" \
-  --source "$STAGE_DIR" \
-  --device "$NBD_DEV" \
-  --disko "$DISKO_JSON" \
-  --hostname "$HOSTNAME_VAL" \
-  --kernel "$SOURCE_KERNEL" \
-  --initrd "$DISK_INITRD" \
+  "$REPRO_BIN" infra install-root "${INSTALL_ROOT_ARGS[@]}" \
   || { echo "[build-reproos-image] install-root failed" >&2; exit 70; }
 
-# M9.R.51: rewrite build-time NBD device paths to stable filesystem
-# labels. install-root's renderInstalledGrubCfg + renderFstab bake
-# $NBD_DEV (e.g. /dev/nbd0p2) into grub.cfg's root= and fstab's
-# device columns. Device names differ between QEMU, Hyper-V, and
-# physical systems, while the filesystem labels are part of the
-# declared disk layout and remain stable.
-NBD_BASE="$(basename "$NBD_DEV")"       # e.g. nbd0
-echo "[build-reproos-image] rewriting $NBD_BASE partitions to filesystem labels in grub.cfg + fstab"
-for f in "$MNT_DIR/boot/grub/grub.cfg" "$MNT_DIR/etc/fstab"; do
-  if [ -f "$f" ]; then
-    "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$f"
-  fi
-done
+case "$REPROOS_DISK_LAYOUT" in
+  uefi-attested)
+    # The removable-media fallback path, deliberately: it needs no NVRAM
+    # boot entry, so one built image boots on any UEFI machine and in a
+    # fresh VM whose variable store is empty.
+    echo "[build-reproos-image] installing the unified kernel image at $UKI_ESP_PATH"
+    "$SUDO" mkdir -p "$MNT_DIR/boot/${UKI_ESP_PATH%/*}"
+    "$SUDO" cp "$REPROOS_UKI" "$MNT_DIR/boot/$UKI_ESP_PATH"
+    "$SUDO" chmod 0644 "$MNT_DIR/boot/$UKI_ESP_PATH"
+    # Retire GRUB on this layout. See the block comment above: a
+    # grub.cfg left behind is an unmeasured second answer to "how does
+    # this machine boot".
+    "$SUDO" rm -rf "$MNT_DIR/boot/grub"
+    echo "[build-reproos-image] rewriting $(basename "$NBD_DEV") partitions to filesystem labels in fstab"
+    if [ -f "$MNT_DIR/etc/fstab" ]; then
+      NBD_BASE="$(basename "$NBD_DEV")"
+      "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$MNT_DIR/etc/fstab"
+    fi
+    ;;
+  *)
+    # M9.R.51: rewrite build-time NBD device paths to stable filesystem
+    # labels. install-root's renderInstalledGrubCfg + renderFstab bake
+    # $NBD_DEV (e.g. /dev/nbd0p2) into grub.cfg's root= and fstab's
+    # device columns. Device names differ between QEMU, Hyper-V, and
+    # physical systems, while the filesystem labels are part of the
+    # declared disk layout and remain stable.
+    NBD_BASE="$(basename "$NBD_DEV")"       # e.g. nbd0
+    echo "[build-reproos-image] rewriting $NBD_BASE partitions to filesystem labels in grub.cfg + fstab"
+    for f in "$MNT_DIR/boot/grub/grub.cfg" "$MNT_DIR/etc/fstab"; do
+      if [ -f "$f" ]; then
+        "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$f"
+      fi
+    done
+    ;;
+esac
 
 # ---------------------------------------------------------------
 # Phase 9: write etc/repro/{system,hardware}.nim from TOML.

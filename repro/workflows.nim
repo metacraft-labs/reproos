@@ -894,6 +894,48 @@ package reproosWorkflows:
       ])
     discard target("test-verity-root", testVerityRoot)
 
+    # The measured boot artifact.
+    #
+    # A unified kernel image puts the kernel, the initrd and the KERNEL
+    # COMMAND LINE into one PE binary, so the dm-verity root hash the
+    # command line pins is inside the thing firmware measures. On a GRUB
+    # boot it would not be: grub.cfg is an editable file on the ESP and
+    # firmware measures the loader, not the string the loader passes on.
+    #
+    # The always-on layer assembles real unified kernel images against a
+    # synthetic PE stub it builds from the specification, so it needs no
+    # artifact and no tool beyond the Nim gate set and runs in about a
+    # second. A second layer runs automatically whenever a copy of the
+    # PINNED EFI stub is present -- it assembles against the real stub
+    # and requires the SHIPPED tools/reproos_uki.nim to produce the same
+    # bytes -- and reports a visible skip naming the remedy when it is
+    # not. A third is opt-in (REPROOS_UKI_BOOT_GATE=1) and boots a real
+    # image off a FAT ESP through OVMF, reading /proc/cmdline out of the
+    # running guest.
+    #
+    # qemu, `dosfstools` and `mtools` are deliberately NOT declared as
+    # identities: the last two are from-source packages here, so naming
+    # them would make an always-on gate bootstrap them.
+    let testUki = shell(
+      command = "bash tests/test-uki.sh",
+      actionId = "reproos.test-uki",
+      extraInputs = @[
+        "tests/test-uki.sh",
+        "tests/nim-gate.sh",
+        "tests/test_uki.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "tools/reproos_uki.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-uki", testUki)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -913,6 +955,7 @@ package reproosWorkflows:
       testImageReproducibility,
       testDiskIdentityPinning,
       testVerityRoot,
+      testUki,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

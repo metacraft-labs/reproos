@@ -89,6 +89,42 @@ Use Reprobuild as the only contributor command surface:
   deliberately **not** declared tool identities: `cryptsetup` and
   `e2fsprogs` are from-source packages here, so naming them would make an
   always-on gate bootstrap them.
+  `repro build test-uki` is the gate for the **unified kernel image** —
+  the boot artifact the attested layout uses instead of GRUB. A UKI packs
+  the kernel, the initrd, the kernel command line and a pinned EFI stub
+  into one PE binary, so the dm-verity root hash the command line pins is
+  inside the binary firmware measures; a `grub.cfg` on the ESP is an
+  editable file that nothing measures, which is why the attested layout
+  does not get one. `repro/uki.nim` owns the section set, the section
+  order, the PE arithmetic and the composition of the command line from
+  the keys `repro/verity.nim` declares; `tools/reproos_uki.nim` is the
+  assembler the recipe's action runs, built by a `nim.c` edge and invoked
+  with an argv rendered from the same typed request the action's declared
+  inputs and outputs come from — there is no `objcopy` pipeline, no
+  `ukify` and no shell script on that path, though the spawn itself is a
+  `shell` edge because that is the only way the DSL runs a binary this
+  project built. The
+  EFI stub is **pinned by content**: `repro/uki.nim` carries its sha256
+  and refuses any other bytes, because the stub's bytes are inside the
+  measurement. Run this gate after touching `repro/uki.nim`,
+  `tools/reproos_uki.nim`, the UKI action in
+  `recipes/reproos-image/package.nim`, or the boot-path arm of
+  `build-reproos-image.sh`. Its always-on layer assembles real images
+  against a synthetic PE stub it builds from the specification, so it
+  needs nothing installed and runs in about a second. A second layer runs
+  automatically whenever a copy of the pinned stub is present — it
+  assembles against the real stub and requires the shipped assembler to
+  produce the same bytes as the module — and reports a visible skip
+  naming the remedy when the stub is absent. A third is opt-in
+  (`REPROOS_UKI_BOOT_GATE=1`) and boots a real UKI off a FAT ESP through
+  OVMF in a transient QEMU guest, asserting on the `/proc/cmdline` the
+  running kernel reports. `qemu`, `dosfstools` and `mtools` are
+  deliberately **not** declared identities, for the same reason
+  `veritysetup` is not. **Signing is out of scope**: every image is
+  unsigned. `systemd-stub` measures the sections it consumes whether or
+  not the PE is signed, so an unsigned UKI is fully attestable on the TPM
+  tier; Secure Boot firmware refuses to load one, so `sbsign` and a
+  key-custody story remain deferred.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

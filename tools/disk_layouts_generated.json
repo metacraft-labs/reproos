@@ -18,7 +18,7 @@
       "name": "uefi-attested",
       "summary": "ESP + a read-only root + separate /var, /home and swap; the shape an attestable image needs",
       "buildable": false,
-      "unbuildableReason": "the integrity-checked root image is built, but the image driver does not install it onto this layout yet and boot still goes through GRUB, whose command line is not measured; the result would be a read-only root whose root hash nothing attests to",
+      "unbuildableReason": "boot now goes through a unified kernel image whose command line pins the root hash inside the measured binary, but the image driver still does not write the integrity-checked root image or its hash tree onto this layout, and the layout carries no volume for the hash tree; the result would be a measured command line naming volumes that are not there",
       "minDiskSizeGb": 16,
       "defaultEspSizeMib": 512
     }

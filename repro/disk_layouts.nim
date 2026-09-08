@@ -98,11 +98,12 @@ const
         "the shape an attestable image needs",
       status: dlsDeclared,
       unbuildableReason:
-        "the integrity-checked root image is built, but the image " &
-        "driver does not install it onto this layout yet and boot still " &
-        "goes through GRUB, whose command line is not measured; the " &
-        "result would be a read-only root whose root hash nothing " &
-        "attests to",
+        "boot now goes through a unified kernel image whose command " &
+        "line pins the root hash inside the measured binary, but the " &
+        "image driver still does not write the integrity-checked root " &
+        "image or its hash tree onto this layout, and the layout " &
+        "carries no volume for the hash tree; the result would be a " &
+        "measured command line naming volumes that are not there",
       minDiskSizeGb: 16,
       defaultEspSizeMib: 512),
   ]
@@ -211,14 +212,15 @@ proc uefiAttestedLayout(p: DiskLayoutParams): DiskLayout =
   ## volumes at the sizes above.
   ##
   ## What it does NOT yet do: install the verity data image and its hash
-  ## tree onto that root partition, or pin the root hash on a kernel
-  ## command line that anything measures, or encrypt the state volumes.
-  ## The verity image and its root hash ARE built —
-  ## ``recipes/reproos-image/scripts/build-verity-root.sh`` produces them
-  ## from the staged tree, and ``repro/verity.nim`` declares their shape —
-  ## but the root partition below is still a plain ext4 that is merely
-  ## *mounted* read-only. It is the slot the verity image goes into, not
-  ## yet a measured root.
+  ## tree onto that root partition, or carry a volume for the hash tree
+  ## at all, or encrypt the state volumes. The verity image and its root
+  ## hash ARE built — ``recipes/reproos-image/scripts/build-verity-root.sh``
+  ## produces them from the staged tree, and ``repro/verity.nim`` declares
+  ## their shape — and the root hash IS pinned on a measured kernel
+  ## command line now, inside the unified kernel image ``repro/uki.nim``
+  ## assembles. But the root partition below is still a plain ext4 that is
+  ## merely *mounted* read-only. It is the slot the verity image goes
+  ## into, not yet a measured root.
   var partitions: OrderedTable[string, PartitionSpec]
   partitions["esp"] = espPartition(p.espSizeMib)
   partitions["root"] = part("linux", AttestedRootSize,

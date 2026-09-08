@@ -179,8 +179,11 @@ serial evidence, and verifies the configured hostname over key-only SSH.
 `vm-ssh` opens an interactive terminal; `vm-exec -- COMMAND...` runs an ad hoc
 command through the same loopback-only SSH forward and preserves its exit code.
 For compatibility, `vm-ssh -- COMMAND...` also executes a command. The shell is
-a dev-environment task so terminal streams are inherited; automated checks and
-noninteractive operations remain named graph edges.
+a dev-environment task so terminal streams are inherited. Manual lifecycle and
+inspection commands are also tasks, preserving their output and exit status;
+automated checks and image-dependent operations remain named graph edges.
+Arguments after `vm-ssh --` or `vm-exec --` belong to the guest command;
+select the local instance through `REPROOS_VM_STATE_DIR`.
 
 The durable lifecycle currently requires Linux/libvirt. The first connection
 uses trust on first use and pins the guest host key in

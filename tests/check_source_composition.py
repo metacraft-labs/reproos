@@ -551,6 +551,17 @@ def main() -> None:
     declared_runs = set(re.findall(r'\brun\("([^"]+)"', workflow_content))
     if declared_tasks & declared_runs:
         raise AssertionError("a workflow is duplicated as a task and a run edge")
+    manual_vm_tasks = {f"vm-{operation}" for operation in [
+        "ssh", "exec", "status", "logs", "stop", "destroy",
+    ]}
+    if not manual_vm_tasks.issubset(declared_tasks):
+        raise AssertionError("manual VM commands must be tasks with inherited streams")
+    for task_name in manual_vm_tasks:
+        if not re.search(
+            rf'task\("{task_name}",\s*command = withHostVmRuntime\(',
+            workflow_content,
+        ):
+            raise AssertionError(f"VM task {task_name} must select the host VM runtime")
     require_contains(ROOT_RECIPE, ["workflows.devEnvReproosWorkflowsPackage()"],
                      "interactive workflow composition")
     for action_name in [
@@ -572,7 +583,7 @@ def main() -> None:
     for action_name in [
         "captureInstallerVmScreenshot", "testVmIncusParity", "bootIso",
         "installVm", "installedVm", "verifyInstalledVmBoot",
-        "lifecycle", "e2eUnattendedVmInstall", "e2eVmPersistentLifecycle",
+        "e2eUnattendedVmInstall", "e2eVmPersistentLifecycle",
         "testVmSshHostKeyMismatch",
         "testIso", "bootImage", "testImageHealth", "testInstalledDesktop",
         "sshImage", "testInstalledSsh",
@@ -607,7 +618,8 @@ def main() -> None:
             'task("vm-ssh",',
             'useTool("ssh")',
             '"ssh-keygen"',
-            'command = withHostVmRuntime("python3 tools/reproos-vm.py ssh")',
+            'command = withHostVmRuntime("python3 tools/reproos-vm.py ssh --")',
+            'command = withHostVmRuntime("python3 tools/reproos-vm.py exec --")',
         ],
         "host VM runtime fallback",
     )

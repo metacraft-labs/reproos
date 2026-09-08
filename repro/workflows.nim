@@ -105,8 +105,23 @@ package reproosWorkflows:
     useTool("vm-harness")
     useTool("ssh")
     task("vm-ssh",
-      command = withHostVmRuntime("python3 tools/reproos-vm.py ssh"),
+      command = withHostVmRuntime("python3 tools/reproos-vm.py ssh --"),
       description = "Open an interactive shell in the retained installed VM")
+    task("vm-exec",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py exec --"),
+      description = "Execute a command in the retained installed VM")
+    task("vm-status",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py status"),
+      description = "Inspect installed VM identity and runtime state")
+    task("vm-logs",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py logs"),
+      description = "Read retained installed VM serial output")
+    task("vm-stop",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py stop"),
+      description = "Stop the installed VM and preserve its writable disk")
+    task("vm-destroy",
+      command = withHostVmRuntime("python3 tools/reproos-vm.py destroy"),
+      description = "Remove installed VM runtime and preserve persistent state")
 
   build:
     let sourceComposition = shell(
@@ -529,19 +544,6 @@ package reproosWorkflows:
       ])
     run("vm-verify-installed-boot", build = verifyInstalledVmBoot.id,
       owningPackage = "reproosWorkflows")
-
-    for operation in ["exec", "status", "logs", "stop", "destroy"]:
-      let lifecycle = shell(
-        command = withHostVmRuntime(
-          "python3 tools/reproos-vm.py " & operation & " \"$@\""),
-        args = @["reproos-vm-" & operation],
-        actionId = "reproos.vm-" & operation,
-        extraInputs = @["tools/reproos-vm.py"],
-        cacheable = false).withToolIdentities([
-          "python3", "vm-harness", "ssh", "ssh-keygen",
-        ])
-      run("vm-" & operation, build = lifecycle.id,
-        owningPackage = "reproosWorkflows")
 
     let e2eUnattendedVmInstall = shell(
       command = withHostVmRuntime(

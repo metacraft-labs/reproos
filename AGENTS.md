@@ -149,8 +149,8 @@ Use Reprobuild as the only contributor command surface:
   command in the same instance. Use `vm-status`, `vm-logs`, `vm-stop`, and
   `vm-destroy` to inspect or stop it. Runtime destroy preserves disk and trust
   state; `vm-install -- --replace` is destructive. Automatic lease expiry and
-  Hyper-V SSH lifecycle acceptance are pending. Interactive commands belong
-  in `devEnv` tasks with inherited terminal streams, not captured build
+  Hyper-V SSH lifecycle acceptance are pending. Manual lifecycle and inspection
+  commands belong in `devEnv` tasks with inherited streams, not captured build
   actions. Do not duplicate a task name as a run edge.
 - `repro run image-ssh -- COMMAND...` boots a self-cleaning installed VM and
   runs a command over SSH; with no command it verifies the configured hostname.

@@ -280,6 +280,56 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertTrue(all(item["resumed"] for item in report["packages"]))
         self.assertEqual(self.graph_log.read_text(encoding="utf-8"), "iso\n")
 
+    def test_resume_rechecks_entries_removed_from_the_cache(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only")
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        self.state.write_text(json.dumps([BETA_KEY]), encoding="utf-8")
+        resumed = self.run_backfill("--verify-only", "--resume")
+
+        self.assertEqual(resumed.returncode, 1)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["verifiedEntryCount"], 1)
+        self.assertEqual(report["packages"][0]["missingAfter"], [ALPHA_KEY])
+        self.assertFalse(report["packages"][0]["resumed"])
+        self.assertTrue(report["packages"][1]["resumed"])
+        self.assertFalse(self.log.exists())
+
+    def test_resume_republishes_entries_removed_from_the_cache(self) -> None:
+        self.state.write_text("[]", encoding="utf-8")
+        first = self.run_backfill()
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        self.state.write_text(json.dumps([BETA_KEY]), encoding="utf-8")
+        resumed = self.run_backfill("--resume")
+
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["publishedPackageCount"], 1)
+        self.assertEqual(report["hitBeforeCount"], 1)
+        self.assertEqual(report["verifiedEntryCount"], 2)
+        self.assertEqual(self.log.read_text(encoding="utf-8"), "alpha\nbeta\nalpha\n")
+
+    def test_resume_counts_only_current_verification_and_publication(self) -> None:
+        self.state.write_text("[]", encoding="utf-8")
+        first = self.run_backfill()
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        resumed = self.run_backfill("--verify-only", "--resume")
+
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["publishedPackageCount"], 0)
+        self.assertEqual(report["hitBeforeCount"], 2)
+        for item in report["packages"]:
+            self.assertEqual(item["status"], "hit")
+            self.assertEqual(item["missingBefore"], [])
+            self.assertEqual(item["reportedPublicationKeys"], [])
+
     def test_resume_restores_transitive_source_package_closure(self) -> None:
         gamma_dir = self.packages_root / "packages" / "source" / "gamma"
         gamma_dir.mkdir(parents=True)

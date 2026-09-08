@@ -710,18 +710,44 @@ def main(argv: list[str] | None = None) -> int:
             if not resumed_names:
                 return
             for package in resumed_names:
-                print(f"[{package}] resumed", flush=True)
                 item = dict(resume_items[package])
-                item["resumed"] = True
                 keys = item["cacheKeys"]
-                missing_before = item.get("missingBefore", [])
+                started = time.monotonic()
+                try:
+                    verified = all(
+                        cache_lookup(
+                            repro,
+                            key,
+                            packages_root / "packages" / "source" / package,
+                            env,
+                            args.lookup_timeout_sec,
+                        )[0]
+                        for key in keys
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    verified = False
+                if not verified:
+                    # A saved graph is reusable, but its cache hits can expire.
+                    # Retry through the normal audit/publication path.
+                    del resume_items[package]
+                    continue
+                print(f"[{package}] resumed and reverified", flush=True)
+                item.update(
+                    status="hit",
+                    resumed=True,
+                    missingBefore=[],
+                    missingAfter=[],
+                    reportedPublicationKeys=[],
+                    elapsedSeconds=round(time.monotonic() - started, 3),
+                    error="",
+                )
                 record(
                     package,
                     item,
                     {
                         "cacheEntryCount": len(keys),
-                        "hitBeforeCount": len(keys) - len(missing_before),
-                        "publishedPackageCount": int(item["status"] == "published"),
+                        "hitBeforeCount": len(keys),
+                        "publishedPackageCount": 0,
                         "verifiedEntryCount": len(keys),
                     },
                 )

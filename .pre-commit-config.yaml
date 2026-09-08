@@ -1,0 +1,11 @@
+repos:
+  - repo: local
+    hooks:
+      - id: repro-lint
+        name: ReproOS graph and source composition
+        # Lint uses the activated contributor toolchain, not guest package builds.
+        entry: repro lint --tool-provisioning=path --daemon=off
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]

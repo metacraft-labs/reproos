@@ -7,4 +7,3 @@ __pycache__/
 *.py[cod]
 result
 result-*
-.pre-commit-config.yaml

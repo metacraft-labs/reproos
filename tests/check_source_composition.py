@@ -605,10 +605,16 @@ def main() -> None:
             '"test-iso"',
             '"boot-image"',
             'task("vm-ssh",',
+            'useTool("ssh")',
+            '"ssh-keygen"',
             'command = withHostVmRuntime("python3 tools/reproos-vm.py ssh")',
         ],
         "host VM runtime fallback",
     )
+    if '"openssh"' in workflow_content:
+        raise AssertionError(
+            "host workflows must select ssh/ssh-keygen commands, not the guest openssh package"
+        )
 
     require_contains(
         WORKFLOW_RECIPE,

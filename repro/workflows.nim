@@ -82,7 +82,8 @@ package reproosWorkflows:
     "python3"
     "nix"
     "vm-harness"
-    "openssh"
+    "ssh"
+    "ssh-keygen"
     "xorriso"
     # The Nim-gate tool set. `nim` compiles every tests/test_*.nim gate and
     # `mkdir` creates its build directory. `clang` is the compiler those
@@ -102,7 +103,7 @@ package reproosWorkflows:
   devEnv:
     useTool("python3")
     useTool("vm-harness")
-    useTool("ssh", packageSelector = "openssh")
+    useTool("ssh")
     task("vm-ssh",
       command = withHostVmRuntime("python3 tools/reproos-vm.py ssh"),
       description = "Open an interactive shell in the retained installed VM")
@@ -324,7 +325,7 @@ package reproosWorkflows:
         "tests/test_incus_publication.py",
         "tools/reproos-incus-publication.py",
       ],
-      cacheable = false).withToolIdentities(["python3", "openssh"])
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
     discard target("test-incus-publication", testIncusPublication)
 
     let testIncusSecondHost = shell(
@@ -335,7 +336,7 @@ package reproosWorkflows:
         "tests/remote-incus-acceptance.sh",
         "tools/reproos-incus-publication.py",
       ],
-      cacheable = false).withToolIdentities(["bash", "openssh"])
+      cacheable = false).withToolIdentities(["bash", "ssh", "ssh-keygen"])
     discard target("test-incus-second-host", testIncusSecondHost)
 
     let testVmIncusParityChecker = shell(
@@ -398,7 +399,7 @@ package reproosWorkflows:
       actionId = "reproos.incus-publish",
       deps = @[containerPackage.ReproosIncusImageActionId],
       extraInputs = @["tools/reproos-incus-publication.py"],
-      cacheable = false).withToolIdentities(["python3", "openssh"])
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
     run("incus-publish", build = publishIncus.id,
       owningPackage = "reproosWorkflows")
 
@@ -407,7 +408,7 @@ package reproosWorkflows:
       args = @["reproos-incus-pull"],
       actionId = "reproos.incus-pull",
       extraInputs = @["tools/reproos-incus-publication.py"],
-      cacheable = false).withToolIdentities(["python3", "openssh"])
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
     run("incus-pull", build = pullIncus.id,
       owningPackage = "reproosWorkflows")
 
@@ -420,7 +421,7 @@ package reproosWorkflows:
         "tools/reproos-incus.sh",
       ],
       cacheable = false).withToolIdentities([
-        "bash", "python3", "vm-harness", "openssh",
+        "bash", "python3", "vm-harness", "ssh", "ssh-keygen",
       ])
     discard target("test-incus-lifecycle", testIncusLifecycle)
 
@@ -468,7 +469,7 @@ package reproosWorkflows:
         containerPackage.ReproosIncusProjectionOutput,
       ],
       cacheable = false).withToolIdentities([
-        "bash", "python3", "vm-harness", "openssh",
+        "bash", "python3", "vm-harness", "ssh", "ssh-keygen",
       ])
     discard target("test-vm-incus-parity", testVmIncusParity)
 
@@ -496,7 +497,7 @@ package reproosWorkflows:
         "tests/fixtures/auto-config-minimal.toml",
       ],
       cacheable = false).withToolIdentities([
-        "python3", "vm-harness", "openssh", "xorriso",
+        "python3", "vm-harness", "ssh", "ssh-keygen", "xorriso",
       ])
     run("vm-install", build = installVm.id,
       owningPackage = "reproosWorkflows")
@@ -512,7 +513,7 @@ package reproosWorkflows:
         "tests/fixtures/auto-config-minimal.toml",
       ],
       cacheable = false).withToolIdentities([
-        "python3", "vm-harness", "openssh", "xorriso",
+        "python3", "vm-harness", "ssh", "ssh-keygen", "xorriso",
       ])
     run("vm-installed", build = installedVm.id,
       owningPackage = "reproosWorkflows")
@@ -523,7 +524,9 @@ package reproosWorkflows:
       args = @["reproos-vm-verify-installed-boot"],
       actionId = "reproos.vm-verify-installed-boot",
       extraInputs = @["tools/reproos-vm.py"],
-      cacheable = false).withToolIdentities(["python3", "vm-harness", "openssh"])
+      cacheable = false).withToolIdentities([
+        "python3", "vm-harness", "ssh", "ssh-keygen",
+      ])
     run("vm-verify-installed-boot", build = verifyInstalledVmBoot.id,
       owningPackage = "reproosWorkflows")
 
@@ -535,7 +538,7 @@ package reproosWorkflows:
         actionId = "reproos.vm-" & operation,
         extraInputs = @["tools/reproos-vm.py"],
         cacheable = false).withToolIdentities([
-          "python3", "vm-harness", "openssh",
+          "python3", "vm-harness", "ssh", "ssh-keygen",
         ])
       run("vm-" & operation, build = lifecycle.id,
         owningPackage = "reproosWorkflows")
@@ -553,7 +556,7 @@ package reproosWorkflows:
         "tests/fixtures/auto-config-minimal.toml",
       ],
       cacheable = false).withToolIdentities([
-        "bash", "python3", "nix", "vm-harness", "openssh", "xorriso",
+        "bash", "python3", "nix", "vm-harness", "ssh", "ssh-keygen", "xorriso",
       ])
     discard target("e2e_unattended_vm_installs_and_boots_target_disk",
       e2eUnattendedVmInstall)
@@ -567,7 +570,7 @@ package reproosWorkflows:
         "tests/test-vm-persistent-lifecycle.py", "tools/reproos-vm.py",
       ],
       cacheable = false).withToolIdentities([
-        "python3", "vm-harness", "openssh",
+        "python3", "vm-harness", "ssh", "ssh-keygen",
       ])
     discard target("e2e_vm_persistent_lifecycle", e2eVmPersistentLifecycle)
 
@@ -581,7 +584,7 @@ package reproosWorkflows:
         "tools/reproos-vm.py",
       ],
       cacheable = false).withToolIdentities([
-        "bash", "python3", "vm-harness", "openssh",
+        "bash", "python3", "vm-harness", "ssh", "ssh-keygen",
       ])
     discard target("test_vm_ssh_host_key_mismatch_fails_closed",
       testVmSshHostKeyMismatch)

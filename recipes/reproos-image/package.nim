@@ -666,6 +666,7 @@ package reproosImage:
       extraInputs = @[
         reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "tools/reproos_image_metadata.py",
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-image/scripts/reproos-sway.conf",
         "recipes/reproos-image/scripts/reproos-desktop.qml",

@@ -929,8 +929,8 @@ def main() -> None:
         "installed account health checks",
     )
     require_contains(
-        BUILD_ISO_SCRIPT,
-        ['var/empty m 0755 0 0'],
+        ROOT / "tools/reproos_image_metadata.py",
+        ['name == "var/empty"', "mode = 0o755"],
         "OpenSSH privilege-separation directory metadata",
     )
     require_contains(
@@ -1095,8 +1095,8 @@ def main() -> None:
             'alias=reproos-incus',
             'generation=$generation',
             'reproos.generation: $generation',
-            "--sort=name",
-            '--mtime="@$epoch"',
+            "reproos_image_metadata.py",
+            'SOURCE_DATE_EPOCH="$epoch"',
             "packages/source/kernel",
             "projection-report.json",
         ],
@@ -1404,7 +1404,7 @@ def main() -> None:
             )
     require_contains(
         ROOT / "recipes/reproos-iso/scripts/build-iso.sh",
-        ['-p "home/live m 0700 1000 1002"'],
+        ["reproos_image_metadata.py", "-all-root -pseudo-override", "-no-hardlinks"],
         "SquashFS staging",
     )
     require_contains(

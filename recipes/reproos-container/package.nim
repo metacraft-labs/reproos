@@ -68,6 +68,7 @@ package reproosContainer:
 
     let imageCommand = @[
       "set -euo pipefail;",
+      "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
       "bash scripts/build-incus-image.sh" &
         " ../reproos-iso/build/de-rootfs" &
         " build/projection" &
@@ -86,6 +87,7 @@ package reproosContainer:
         isoPackage.ReproosIsoRootfsOutput,
         ReproosIncusProjectionOutput,
         "recipes/reproos-container/scripts/build-incus-image.sh",
+        "tools/reproos_image_metadata.py",
         "recipes/reproos-container/scripts/project-incus-config.py",
       ],
       extraOutputs = @[

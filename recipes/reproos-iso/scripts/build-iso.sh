@@ -163,9 +163,12 @@ if [ -n "$REPRO_DE_ROOTFS_DIR" ]; then
   # stale image. Reprobuild's directory materialization intentionally does
   # not preserve host ownership, so encode the live user's home ownership in
   # the SquashFS metadata instead of relying on the staging-tree uid/gid.
+  python3 "$SCRIPT_DIR_SELF/../../../tools/reproos_image_metadata.py" \
+    squashfs "$REPRO_DE_ROOTFS_DIR" --output "$WORK/rootfs.pseudo"
+  # all-root otherwise wins over pseudo ownership (including user homes).
+  # Separate hardlinks so sudo's setuid mode cannot privilege another alias.
   mksquashfs "$REPRO_DE_ROOTFS_DIR" "$WORK/live/filesystem.squashfs" \
-    -p "home/live m 0700 1000 1002" \
-    -p "var/empty m 0755 0 0" \
+    -all-root -pseudo-override -pf "$WORK/rootfs.pseudo" -no-hardlinks \
     -no-xattrs \
     -comp xz -Xbcj x86 \
     -noappend \

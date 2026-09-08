@@ -116,6 +116,27 @@ else
   fail "user:$expected_user"
 fi
 
+for root_owned in /etc /usr/bin /etc/sudo.conf /etc/sudoers; do
+  if [[ "$(stat -Lc %u "$root_owned" 2>/dev/null)" == 0 ]]; then
+    pass "ownership:$root_owned"
+  else
+    fail "ownership:$root_owned"
+  fi
+done
+if [[ "$(stat -Lc '%u:%g:%a' /usr/bin/sudo 2>/dev/null)" == 0:0:4755 ]]; then
+  pass "sudo:root-setuid"
+else
+  fail "sudo:root-setuid"
+fi
+# Running sudo as root would not test the configured user's escalation path.
+if [[ "$user_record_found" == 1 ]] &&
+    [[ "$(/usr/bin/busybox su -s /bin/sh "$expected_user" \
+      -c '/usr/bin/sudo -n /usr/bin/id -u' 2>/dev/null)" == 0 ]]; then
+  pass "sudo:passwordless:$expected_user"
+else
+  fail "sudo:passwordless:$expected_user"
+fi
+
 expected_groups="$({
   awk '
     BEGIN { section="" }

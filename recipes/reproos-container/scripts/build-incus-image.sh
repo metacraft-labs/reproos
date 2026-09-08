@@ -81,22 +81,9 @@ templates: {}
 EOF
 
 raw="$work/reproos-incus.tar"
-tar_flags=(
-  --sort=name
-  --mtime="@$epoch"
-  --owner=0
-  --group=0
-  --numeric-owner
-  --format=posix
-  --pax-option=delete=atime,delete=ctime
-)
-tar "${tar_flags[@]}" \
-  --exclude=rootfs/home/repro \
-  -C "$work" -cf "$raw" metadata.yaml rootfs
-if [[ -d "$work/rootfs/home/repro" ]]; then
-  tar "${tar_flags[@]}" --owner=1000 --group=1000 \
-    -C "$work" -rf "$raw" rootfs/home/repro
-fi
+SOURCE_DATE_EPOCH="$epoch" python3 \
+  "$(dirname "$0")/../../../tools/reproos_image_metadata.py" \
+  tar "$work/rootfs" --metadata "$work/metadata.yaml" --output "$raw"
 xz -6 --threads=1 --check=crc64 -c "$raw" >"$image.tmp"
 mv "$image.tmp" "$image"
 

@@ -925,6 +925,22 @@ link_base_recipe_binaries() {
       ln -sfn "$helper_target" "$STAGE_DIR/usr/libexec/$helper_name"
     done
   fi
+  # sudo loads plugins from its compiled libexec directory, not the linker
+  # search path. Keep the complete source plugin directory at that guest path.
+  if [ "$recipe" = "sudo" ]; then
+    if [ ! -f "$install_usr/libexec/sudo/sudoers.so" ]; then
+      echo "[stage-de-rootfs] required source sudo policy plugin missing" >&2
+      return 1
+    fi
+    if [ -e "$STAGE_DIR/usr/libexec/sudo" ] && \
+       [ ! -L "$STAGE_DIR/usr/libexec/sudo" ]; then
+      echo "[stage-de-rootfs] sudo libexec destination must be a source link" >&2
+      return 1
+    fi
+    mkdir -p "$STAGE_DIR/usr/libexec"
+    ln -sfn "${install_usr#$STAGE_DIR}/libexec/sudo" \
+      "$STAGE_DIR/usr/libexec/sudo"
+  fi
   # D-Bus 1.16 installs its daemon configuration below datadir. The daemon's
   # compiled default is /usr/share/dbus-1/system.conf, so expose the source
   # files at that FHS path alongside service policy fragments.
@@ -2611,5 +2627,16 @@ else
   echo "[stage-de-rootfs] no source ldconfig at $chroot_ldconfig" >&2
   exit 1
 fi
+
+# Both supported profiles are passwordless: live uses sudo, installed config
+# requires wheel membership. Replace the FHS entry, not its package-store target.
+rm -f "$STAGE_DIR/etc/sudoers"
+cp "$SCRIPT_DIR_SELF/../config/sudoers" "$STAGE_DIR/etc/sudoers"
+chmod 0440 "$STAGE_DIR/etc/sudoers"
+# Without a sudo PAM service the fail-closed 'other' service denies accounts
+# even when sudoers authorizes a passwordless command.
+rm -f "$STAGE_DIR/etc/pam.d/sudo"
+cp "$SCRIPT_DIR_SELF/../config/pam-sudo" "$STAGE_DIR/etc/pam.d/sudo"
+chmod 0644 "$STAGE_DIR/etc/pam.d/sudo"
 
 echo "[stage-de-rootfs] stage-dir bytes=$(du -sb "$STAGE_DIR" | awk '{print $1}')"

@@ -2017,6 +2017,11 @@ echo "  mnt esp:       $MNT_DIR/boot ($(df -h "$MNT_DIR/boot" 2>/dev/null | tail
 # Cleanup trap handles errors; on success we unmount cleanly so
 # the qcow2 is fully flushed before we move it.
 # ---------------------------------------------------------------
+# Normalize the private installed copy, never the shared source stage. The ESP
+# is FAT and cannot store Unix inode ownership or permission bits.
+"$SUDO" "$(command -v python3)" \
+  "$SCRIPT_DIR_SELF/../../../tools/reproos_image_metadata.py" \
+  apply "$MNT_DIR" --skip boot
 "$SUDO" /usr/bin/env LD_LIBRARY_PATH= "$HOST_SYNC_BIN"
 sleep 2
 # Unmount in reverse order (esp before root) so we don't try to

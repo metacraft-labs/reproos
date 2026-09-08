@@ -24,6 +24,7 @@ import repro_dsl_stdlib/packages/git
 # `mkdir` (and the rest of the coreutils command names) live here.
 import repro_dsl_stdlib/packages/host_system_tools
 import repro_resources/run_edge
+import ./image_metadata_tools
 
 import "../apps/reproos-installer/package" as installerPackage
 import "../recipes/reproos-iso/package" as isoPackage
@@ -80,6 +81,8 @@ package reproosWorkflows:
     "gzip"
     "sed"
     "python3"
+    "mksquashfs"
+    "unsquashfs"
     "nix"
     "vm-harness"
     "ssh"
@@ -129,6 +132,7 @@ package reproosWorkflows:
       actionId = "reproos.check-source-composition",
       extraInputs = @[
         "tests/check_source_composition.py",
+        "tools/reproos_image_metadata.py",
         "AGENTS.md",
         "README.md",
         "repro.nim",
@@ -866,6 +870,9 @@ package reproosWorkflows:
         "tests/test-image-reproducibility.sh",
         "tests/nim-gate.sh",
         "tests/test_reproos_image_reproducibility.nim",
+        "tools/reproos_image_metadata.py",
+        "recipes/reproos-container/package.nim",
+        "recipes/reproos-container/scripts/build-incus-image.sh",
         "tests/test-iso-reproducibility.sh",
         "tests/fixtures/auto-config-minimal.toml",
         "repro/disk_layouts.nim",
@@ -981,6 +988,26 @@ package reproosWorkflows:
       ])
     discard target("test-uki", testUki)
 
+    let testImageMetadata = shell(
+      command = "python3 tests/test_image_metadata.py",
+      actionId = "reproos.test-image-metadata",
+      extraInputs = @[
+        "tests/test_image_metadata.py",
+        "tools/reproos_image_metadata.py",
+        "repro/image_metadata_tools.nim",
+        "recipes/reproos-iso/config/sudoers",
+        "recipes/reproos-iso/config/pam-sudo",
+        "recipes/reproos-iso/scripts/build-iso.sh",
+        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/reproos-health-check",
+        "recipes/reproos-container/scripts/build-incus-image.sh",
+      ],
+      cacheable = false).withToolIdentities([
+        "python3", "mksquashfs", "unsquashfs",
+      ])
+    discard target("test-image-metadata", testImageMetadata)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -998,6 +1025,7 @@ package reproosWorkflows:
       testIncusPublication,
       testIsoReproducibility,
       testImageReproducibility,
+      testImageMetadata,
       testDiskIdentityPinning,
       testVerityRoot,
       testUki,

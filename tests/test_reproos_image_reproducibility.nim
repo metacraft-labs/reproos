@@ -91,6 +91,9 @@ const
   ImageDriver = "recipes/reproos-image/scripts/build-reproos-image.sh"
   InitramfsBuilder = "recipes/reproos-iso/scripts/build-initramfs.sh"
   IsoBuilder = "recipes/reproos-iso/scripts/build-iso.sh"
+  ContainerRecipe = "recipes/reproos-container/package.nim"
+  ContainerBuilder = "recipes/reproos-container/scripts/build-incus-image.sh"
+  ImageMetadataPolicy = "tools/reproos_image_metadata.py"
   IsoGateWrapper = "tests/test-iso-reproducibility.sh"
   WorkflowRecipe = "repro/workflows.nim"
   ImageScriptsDir = "recipes/reproos-image/scripts"
@@ -400,6 +403,8 @@ const ImageCriticalActions = [
   ActionEnv(label: "reproosImage.build_image", recipe: ImageRecipe,
             anchor: "let buildImageCommand = @[",
             knobs: @["REPROOS_DISKO_IDENTITY"]),
+  ActionEnv(label: "reproosIncus.build_image", recipe: ContainerRecipe,
+            anchor: "let imageCommand = @[", knobs: @[]),
 ]
 
 proc readSource(root, rel: string): string =
@@ -520,6 +525,8 @@ proc buildInputManifest(root, runDir: string; order: Enumeration): Manifest =
                      declaredInputsArtifact(root))
   result.materialise(runDir, "image-staged-scripts",
                      stagedScriptsArtifact(root, order))
+  result.materialise(runDir, "image-metadata-policy",
+                     readSource(root, ImageMetadataPolicy))
 
 # ---------------------------------------------------------------------------
 # The artifact-producer contract: the flags that make each authored
@@ -534,6 +541,23 @@ type
     forbidden: seq[string]
 
 const ProducerRules = [
+  ProducerRule(
+    artifact: "rootfs.tar",
+    script: ImageMetadataPolicy,
+    required: @[
+      "sorted(path.iterdir())", "entry.mtime = epoch",
+      "entry.uname = entry.gname = \"\"", "entry.pax_headers = {}",
+      "entry.uid, entry.gid, entry.mode = self.metadata(path)",
+    ],
+    forbidden: @[]),
+  ProducerRule(
+    artifact: "reproos-incus.tar.xz",
+    script: ContainerBuilder,
+    required: @[
+      "SOURCE_DATE_EPOCH=\"$epoch\" python3", "reproos_image_metadata.py",
+      "xz -6 --threads=1 --check=crc64",
+    ],
+    forbidden: @[]),
   ProducerRule(
     artifact: "reproos-initramfs.img",
     script: InitramfsBuilder,
@@ -823,6 +847,9 @@ const ScratchSources = [
   InitramfsBuilder,
   IsoBuilder,
   AutoConfigFixture,
+  ContainerRecipe,
+  ContainerBuilder,
+  ImageMetadataPolicy,
 ]
 
 proc scratchTree(dest: string) =
@@ -856,6 +883,20 @@ type
 
 proc injections(): seq[Injection] =
   @[
+    Injection(
+      name: "the tar metadata writer no longer sorts directory entries",
+      expect: "rootfs.tar",
+      viaManifest: false,
+      apply: proc (root: string): bool =
+        replaceWithin(root / ImageMetadataPolicy, "",
+          "sorted(path.iterdir())", "path.iterdir()")),
+    Injection(
+      name: "the tar metadata writer no longer pins timestamps",
+      expect: "rootfs.tar",
+      viaManifest: false,
+      apply: proc (root: string): bool =
+        replaceWithin(root / ImageMetadataPolicy, "",
+          "entry.mtime = epoch", "entry.mtime = path.stat().st_mtime")),
     Injection(
       name: "a wall-clock SOURCE_DATE_EPOCH in the image action",
       expect: "env/reproosImage.build_image",

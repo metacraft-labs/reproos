@@ -627,6 +627,10 @@ def main() -> None:
         raise AssertionError(
             "host workflows must select ssh/ssh-keygen commands, not the guest openssh package"
         )
+    if workflow_content.index("unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH;") > (
+        workflow_content.index("libvirtd -d;")
+    ):
+        raise AssertionError("guest library paths must be cleared before libvirt startup")
 
     require_contains(
         WORKFLOW_RECIPE,

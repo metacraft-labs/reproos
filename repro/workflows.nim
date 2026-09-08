@@ -45,7 +45,8 @@ proc withHostVmRuntime(command: string): string =
   ## package closure used by ReproOS build actions.
   ## These no-op references declare overrides consumed by nested scripts as
   ## reprobuild environment passthroughs.
-  ": \"${REPROOS_VM_STATE_DIR:-}\" \"${REPROOS_VM_BACKEND:-}\" " &
+  "unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH; " &
+    ": \"${REPROOS_VM_STATE_DIR:-}\" \"${REPROOS_VM_BACKEND:-}\" " &
     "\"${REPROOS_VM_ACCELERATION:-}\" \"${REPROOS_UNATTENDED_ISO:-}\" " &
     "\"${REPROOS_VM_HARNESS_BIN:-}\" \"${VM_HARNESS_BIN:-}\" " &
     "\"${GUI_ASSERT_ROOT:-}\" \"${SSH_KEYGEN_BIN:-}\" " &
@@ -66,8 +67,7 @@ proc withHostVmRuntime(command: string): string =
     "[ -S \"$session_sock\" ] || { " &
     "echo 'ReproOS VM workflow: libvirt session did not start' >&2; " &
     "exit 69; }; export XDG_RUNTIME_DIR=\"$runtime_dir\"; " &
-    "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " &
-    "unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH; " & command
+    "export LIBVIRT_DEFAULT_URI=qemu:///session; fi; " & command
 
 package reproosWorkflows:
   defaultToolProvisioning "from-source"

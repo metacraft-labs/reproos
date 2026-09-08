@@ -46,7 +46,7 @@ inline constexpr int MinEspSizeMib = 128;
 // by repro/disk_layouts.nim's legalDiskLayoutListing().
 inline constexpr const char *LegalDiskLayoutListing =
     R"REPROOS_LAYOUT(    uefi-ext4 — ESP + a single writable ext4 root; the layout every ReproOS image has shipped with
-    uefi-attested — ESP + a read-only root + separate /var, /home and swap; the shape an attestable image needs (declared, not yet buildable))REPROOS_LAYOUT";
+    uefi-attested — ESP + two integrity-checked read-only root slots + separate /var, /home and swap; the shape an attestable image needs (declared, not yet buildable))REPROOS_LAYOUT";
 
 inline constexpr DiskLayoutPreset DiskLayoutPresets[] = {
     {
@@ -145,10 +145,10 @@ hardware "@REPROOS_ID@":
     },
     {
         /* name */ "uefi-attested",
-        /* summary */ "ESP + a read-only root + separate /var, /home and swap; the shape an attestable image needs",
+        /* summary */ "ESP + two integrity-checked read-only root slots + separate /var, /home and swap; the shape an attestable image needs",
         /* buildable */ false,
-        /* unbuildableReason */ "boot now goes through a unified kernel image whose command line pins the root hash inside the measured binary, but the image driver still does not write the integrity-checked root image or its hash tree onto this layout, and the layout carries no volume for the hash tree; the result would be a measured command line naming volumes that are not there",
-        /* minDiskSizeGb */ 16,
+        /* unbuildableReason */ "boot goes through a unified kernel image whose command line pins the root hash inside the measured binary, and this layout now carries both root slots and both hash-tree volumes that command line names, but the image driver still does not write the integrity-checked root image or its hash tree onto them; the result would be a measured command line naming volumes that exist and are empty",
+        /* minDiskSizeGb */ 20,
         /* defaultEspSizeMib */ 512,
         /* documentTemplate */
         R"REPROOS_LAYOUT({
@@ -179,17 +179,36 @@ hardware "@REPROOS_ID@":
               "subvols": []
             }
           },
-          "root": {
+          "root-a": {
             "type": "linux",
             "size": "4G",
             "bootable": false,
             "content": {
-              "kind": "filesystem",
-              "format": "ext4",
-              "mountpoint": "/",
-              "mountOptions": ["ro"],
-              "label": "reproos-root",
-              "subvols": []
+              "kind": "none"
+            }
+          },
+          "roothash-a": {
+            "type": "linux",
+            "size": "64M",
+            "bootable": false,
+            "content": {
+              "kind": "none"
+            }
+          },
+          "root-b": {
+            "type": "linux",
+            "size": "4G",
+            "bootable": false,
+            "content": {
+              "kind": "none"
+            }
+          },
+          "roothash-b": {
+            "type": "linux",
+            "size": "64M",
+            "bootable": false,
+            "content": {
+              "kind": "none"
             }
           },
           "swap": {
@@ -261,16 +280,22 @@ hardware "@REPROOS_ID@":
                 mountpoint: "/boot"
                 mountOptions: @["umask=0077"]
                 label: "ESP"
-          "root":
+          "root-a":
             kind: "linux"
             size: "4G"
             bootable: false
-            content:
-              filesystem:
-                format: "ext4"
-                mountpoint: "/"
-                mountOptions: @["ro"]
-                label: "reproos-root"
+          "roothash-a":
+            kind: "linux"
+            size: "64M"
+            bootable: false
+          "root-b":
+            kind: "linux"
+            size: "4G"
+            bootable: false
+          "roothash-b":
+            kind: "linux"
+            size: "64M"
+            bootable: false
           "swap":
             kind: "swap"
             size: "2G"

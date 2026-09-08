@@ -130,6 +130,40 @@ Use Reprobuild as the only contributor command surface:
   not the PE is signed, so an unsigned UKI is fully attestable on the TPM
   tier; Secure Boot firmware refuses to load one, so `sbsign` and a
   key-custody story remain deferred.
+  `repro build test-generations` is the gate for **generation switching
+  under attestation**. The launch measurement is taken once, at boot, over
+  the unified kernel image firmware loaded, and nothing extends it — so an
+  attested instance runs **one generation for the lifetime of a boot**.
+  Applying a new configuration *stages* it: `repro/generations.nim` writes
+  the new unified kernel image into the ESP slot the machine is **not**
+  running from, points the next boot at it, reports `reboot-required`, and
+  leaves the running generation's artifacts untouched. Rollback re-selects
+  the previous pair, which has been sitting in its slot since it was
+  staged. Asking for the switch to take effect on the running system is
+  **refused**, and the refusal is keyed on there being a measurement to
+  contradict: the same write into the same slot is accepted when nothing
+  is measured. `tools/reproos_generation.nim` is the shipped stager, built
+  by a `nim.c` edge, and the image driver stages the installed image
+  through it as generation `a`. The ESP index is **metadata**: firmware
+  loads the bytes at `EFI/BOOT/BOOTX64.EFI` and reads no index, so
+  `verifyGenerationStore` checks the index against the artifacts rather
+  than trusting it. A generation's verity pair is named by `PARTUUID=` and
+  never by filesystem label — a dm-verity hash device carries no
+  filesystem, and with two slots staged both data carriers hold an ext4
+  image with the same label. Run this gate after touching
+  `repro/generations.nim`, `tools/reproos_generation.nim`, the attested arm
+  of `build-reproos-image.sh`, or the attested layout preset. Its always-on
+  layer stages real unified kernel images against a synthetic PE stub it
+  builds from the specification, so it needs nothing installed. A second
+  layer runs automatically whenever a copy of the pinned EFI stub is
+  present and requires the shipped stager to produce the same store bytes
+  as the module. A third is opt-in (`REPROOS_GENERATION_BOOT_GATE=1`) and
+  boots one real FAT32 ESP four times through OVMF — the first generation,
+  the first generation's own slot *after* the second has been staged, the
+  second after the reboot, and the first again after a rollback — asserting
+  on the `/proc/cmdline` each guest reports. `qemu`, `dosfstools` and
+  `mtools` are deliberately **not** declared identities, for the same
+  reason `veritysetup` is not.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

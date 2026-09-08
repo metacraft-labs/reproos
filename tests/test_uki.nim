@@ -87,10 +87,13 @@
 ## 2 and 3 use the real pinned stub, the real shipped tool, a real
 ## kernel, real firmware and a real QEMU.
 
-import std/[options, os, osproc, strutils, times]
+import std/[options, os, osproc, strutils, tables, times]
+
+import repro_profile/types
 
 import "../repro/uki"
 import "../repro/verity"
+import "../repro/generations"
 import "../repro/disk_layouts"
 
 import nimcrypto/[hash, sha2]
@@ -109,6 +112,11 @@ const
   PinnedEpoch = 1735689600'i64
     ## The epoch the image recipe pins. Used here so the gate and the
     ## recipe agree on what a reproducible build's timestamp is.
+
+  GateSeed = "reproos-image-v1:uki-gate-a"
+    ## A build identity seed. The volumes an attested command line names
+    ## are derived from one, per generation slot, exactly as the recipe
+    ## derives them — see ``repro/generations.nim``.
 
   GuestInitSource = """
 /* The guest's /init. Freestanding on purpose: raw syscalls, no libc, no
@@ -158,6 +166,10 @@ void _start(void) {
   sys(SYS_exit, 0, 0, 0, 0, 0);
 }
 """
+
+let GateBootDevices = attestedBootDevices(GateSeed, gsA)
+  ## The volumes generation A's command line names, derived exactly as the
+  ## recipe derives them.
 
 var
   failures = 0
@@ -269,8 +281,8 @@ let katRootHash = block:
   verityRootHash(spec, data)
 
 let katCmdline = attestedKernelCmdline(katRootHash,
-  AttestedBootDeviceRefs.data, AttestedBootDeviceRefs.hash,
-  AttestedBootDeviceRefs.stateVar, AttestedBootDeviceRefs.stateHome)
+  GateBootDevices.data, GateBootDevices.hash,
+  GateBootDevices.stateVar, GateBootDevices.stateHome)
 
 block layerAssemblerStructure:
   let stub = syntheticStub()
@@ -454,8 +466,8 @@ block tUkiCmdlinePinsVerityRootHash:
         "one changed byte of the root closure changes the verity root " &
         "hash (the premise this case rests on)")
   let cmdlineB = attestedKernelCmdline(rootHashB,
-    AttestedBootDeviceRefs.data, AttestedBootDeviceRefs.hash,
-    AttestedBootDeviceRefs.stateVar, AttestedBootDeviceRefs.stateHome)
+    GateBootDevices.data, GateBootDevices.hash,
+    GateBootDevices.stateVar, GateBootDevices.stateHome)
   let imageB = assembleUki(stub, synthSpec(cmdlineB), PinnedEpoch)
   check(ukiCmdline(imageB) != carried and
         katRootHash notin ukiCmdline(imageB),
@@ -772,29 +784,49 @@ block layerDeclarationsAgree:
     check("unified kernel image" in reason,
           "it says the boot path is a unified kernel image now")
     check("hash tree" in reason,
-          "and it names what is still missing: nothing writes the verity " &
-          "artifacts onto this layout and the layout has no volume for " &
-          "the hash tree")
+          "and it names what is still missing: the layout carries a " &
+          "hash-tree volume per generation slot now, and nothing writes " &
+          "the verity data image or its Merkle tree onto them")
     check(preset.get().status == dlsDeclared and reason.len > 0,
           "the attested preset is STILL refused -- a measured command " &
-          "line naming volumes that are not there would be worse than a " &
+          "line naming volumes nothing ever writes would be worse than a " &
           "refusal")
 
-  # And the reference the command line uses must be the one the layout
-  # declares, or the boot would look for a volume by the wrong name.
-  let layouts = readFile(RepoRoot / "repro/disk_layouts.nim")
-  var wrongLabels: seq[string] = @[]
-  for label in ["reproos-root", "reproos-var", "reproos-home"]:
-    if ("\"" & label & "\"") notin layouts:
-      wrongLabels.add label
-  check(wrongLabels.len == 0,
-        "every volume the measured command line names by label is a " &
-        "label repro/disk_layouts.nim declares" &
-        (if wrongLabels.len > 0: " -- missing " & wrongLabels.join(", ")
+  # And every volume the measured command line names must be one the
+  # layout declares, or the boot would look for something that is not
+  # there. The verity pair is named by PARTUUID and the state volumes by
+  # label; ``repro/generations.nim`` owns both decisions and explains why
+  # a filesystem label cannot name either half of a verity pair.
+  let params = DiskLayoutParams(id: "reproos", device: "/dev/nbd0",
+                                espSizeMib: 512, diskSizeGb: 32)
+  let attested = buildDiskLayout("uefi-attested", params)
+  var undeclared: seq[string] = @[]
+  for slot in [gsA, gsB]:
+    for name in [rootPartitionName(slot), hashPartitionName(slot)]:
+      if name notin attested.disks[AttestedDiskName].partitions:
+        undeclared.add name
+  check(undeclared.len == 0,
+        "both halves of both generations' verity pairs are volumes the " &
+        "attested layout declares" &
+        (if undeclared.len > 0: " -- missing " & undeclared.join(", ")
          else: ""))
-  check("reproos-roothash" notin layouts,
-        "and the one label that is NOT declared is the hash tree's, " &
-        "which is exactly what the refusal above says is missing")
+  var missingStateLabels: seq[string] = @[]
+  for label in [StateVarLabel, StateHomeLabel]:
+    var found = false
+    for _, p in attested.disks[AttestedDiskName].partitions:
+      if p.content.kind == cfsFilesystem and p.content.label == label:
+        found = true
+    if not found: missingStateLabels.add label
+  check(missingStateLabels.len == 0,
+        "and the state volumes the command line names by label carry " &
+        "those labels" &
+        (if missingStateLabels.len > 0: " -- missing " &
+          missingStateLabels.join(", ") else: ""))
+  check(GateBootDevices.data.startsWith("PARTUUID=") and
+        GateBootDevices.hash.startsWith("PARTUUID="),
+        "the verity pair is named by PARTUUID rather than by filesystem " &
+        "label: a Merkle tree carries no filesystem, and with two slots " &
+        "staged both data carriers hold an image with the same label")
 
 # =====================================================================
 # Layer 2 — the real, pinned stub and the shipped tool.
@@ -859,10 +891,10 @@ block layerRealStubAndShippedTool:
       kernelPath: kernelPath,
       initrdPath: initrdPath,
       verityRootHashPath: rootHashPath,
-      verityDataDevice: AttestedBootDeviceRefs.data,
-      verityHashDevice: AttestedBootDeviceRefs.hash,
-      stateVarDevice: AttestedBootDeviceRefs.stateVar,
-      stateHomeDevice: AttestedBootDeviceRefs.stateHome,
+      verityDataDevice: GateBootDevices.data,
+      verityHashDevice: GateBootDevices.hash,
+      stateVarDevice: GateBootDevices.stateVar,
+      stateHomeDevice: GateBootDevices.stateHome,
       extraArgs: @[],
       osReleaseVersion: "0.1.0",
       unamePath: "",
@@ -1192,9 +1224,9 @@ block layerRealBoot:
           # the product would boot with.
           let bootCmdline = "console=ttyS0 panic=1 " &
             attestedKernelCmdline(katRootHash,
-              AttestedBootDeviceRefs.data, AttestedBootDeviceRefs.hash,
-              AttestedBootDeviceRefs.stateVar,
-              AttestedBootDeviceRefs.stateHome)
+              GateBootDevices.data, GateBootDevices.hash,
+              GateBootDevices.stateVar,
+              GateBootDevices.stateHome)
           let spec = UkiSpec(
             stubPath: artifacts.stub,
             kernelPath: artifacts.kernel,

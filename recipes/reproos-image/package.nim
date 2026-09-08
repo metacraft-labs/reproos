@@ -14,6 +14,7 @@ import "../../repro/package_sets" as packageSets
 import "../../repro/disk_layouts" as diskLayouts
 import "../../repro/verity" as verity
 import "../../repro/uki" as ukiModule
+import "../../repro/generations" as generations
 
 const
   ReproosDiskInitrdActionId* = "reproosImage.build_disk_initrd"
@@ -43,6 +44,14 @@ const
     ## The typed assembler. Built by ``nim.c`` — a typed DSL edge, not a
     ## shell escape — so the compiler, the source and the binary are all
     ## declared to the graph.
+  ReproosGenerationToolActionId* = "reproosImage.build_generation_tool"
+  ReproosGenerationToolBinary* =
+    "recipes/reproos-image/build/bin/reproos-generation"
+    ## The generation stager. It puts a unified kernel image into one of
+    ## the ESP's two generation slots and points the next boot at it; on
+    ## an attested machine it refuses to write the slot the machine is
+    ## running from, because the launch measurement of this boot was taken
+    ## over exactly those bytes.
   ReproosUkiActionId* = "reproosImage.build_uki"
   ReproosUkiDir* = "recipes/reproos-image/build/uki"
   ReproosUkiOutput* = ReproosUkiDir & "/" & ukiModule.UkiFileName
@@ -556,6 +565,26 @@ package reproosImage:
       extraInputs = @["repro/uki.nim", "repro/verity.nim"])
     discard target("uki-tool", ukiToolAction)
 
+    # The generation stager, built the same way and for the same reasons
+    # (`cc`/`CC` pinned to clang; see the two paragraphs above).
+    #
+    # It is a separate binary from the assembler because it runs at a
+    # different time and on a different machine: the assembler produces a
+    # unified kernel image during the build, while the stager puts one
+    # onto an ESP -- during the image build for the first generation, and
+    # on the installed machine for every one after it. An attested
+    # instance is where an apply has to be told that it may stage but not
+    # switch, and this is the binary that tells it.
+    let generationToolAction = nim.c(
+      source = "tools/reproos_generation.nim",
+      binary = ReproosGenerationToolBinary,
+      cc = "clang",
+      extraEnv = @[("CC", "clang")],
+      actionId = ReproosGenerationToolActionId,
+      extraInputs = @["repro/generations.nim", "repro/uki.nim",
+                      "repro/verity.nim"])
+    discard target("generation-tool", generationToolAction)
+
     # The stub. Resolved by content, not by path: `repro/uki.nim` pins
     # its sha256 and skips any candidate that is not those bytes, so a
     # host carrying fifty systemd versions resolves to one answer or to
@@ -563,16 +592,34 @@ package reproosImage:
     # here, so that a `repro build` which does not select the UKI target
     # is not failed by a host that has no need of one.
     let resolvedStub = ukiModule.resolveUkiStub()
+    # The volumes this generation's command line names. An installed image
+    # is generation A: it is the first one on the machine, and the first
+    # `repro infra apply` stages its successor into slot B rather than
+    # over the top of it. The specifiers are PARTITION GUIDs derived from
+    # the same identity seed the partition table's own identifiers come
+    # from, so the measured command line names the exact partitions the
+    # apply will create, before either the image or the machine exists —
+    # and a filesystem label could not do it, because a Merkle tree
+    # carries no filesystem and both root carriers hold an image with the
+    # same one.
+    let installedSlot = generations.gsA
+    let bootDevices = generations.attestedBootDevices(
+      identitySeed, installedSlot)
+    let bootDeviceError =
+      generations.validateAttestedBootDevices(bootDevices)
+    if bootDeviceError.len > 0:
+      raise newException(ValueError,
+        "recipes/reproos-image: " & bootDeviceError)
     let ukiRequest = ukiModule.UkiAssembleRequest(
       stubPath: resolvedStub,
       kernelPath: "../../../reprobuild-packages/packages/source/kernel/" &
         ".repro/output/install/usr/lib/reproos-kernel/vmlinuz",
       initrdPath: "build/reproos-disk-initramfs.img",
       verityRootHashPath: "build/verity/" & verity.VerityRootHashFileName,
-      verityDataDevice: ukiModule.AttestedBootDeviceRefs.data,
-      verityHashDevice: ukiModule.AttestedBootDeviceRefs.hash,
-      stateVarDevice: ukiModule.AttestedBootDeviceRefs.stateVar,
-      stateHomeDevice: ukiModule.AttestedBootDeviceRefs.stateHome,
+      verityDataDevice: bootDevices.data,
+      verityHashDevice: bootDevices.hash,
+      stateVarDevice: bootDevices.stateVar,
+      stateHomeDevice: bootDevices.stateHome,
       extraArgs: @[],
       osReleaseVersion: "0.1.0",
       unamePath: "../../../reprobuild-packages/packages/source/kernel/" &
@@ -636,6 +683,12 @@ package reproosImage:
       "mkdir -p build;",
       "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
       "REPROOS_UKI=\"$PWD/build/uki/" & ukiModule.UkiFileName & "\"",
+      "REPROOS_GENERATION_BIN=\"$PWD/../../" &
+        ReproosGenerationToolBinary & "\"",
+      "REPROOS_VERITY_ROOTHASH_FILE=\"$PWD/build/verity/" &
+        verity.VerityRootHashFileName & "\"",
+      "REPROOS_VERITY_DATA_DEVICE=\"" & bootDevices.data & "\"",
+      "REPROOS_VERITY_HASH_DEVICE=\"" & bootDevices.hash & "\"",
       "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
       "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\"",
@@ -658,7 +711,8 @@ package reproosImage:
                 @[installerPackage.ReproosInstallerReadyActionId,
                   isoPackage.ReproosIsoRootfsActionId,
                   buildDiskInitrdAction.id,
-                  buildUkiAction.id]
+                  buildUkiAction.id,
+                  generationToolAction.id]
               else:
                 @[installerPackage.ReproosInstallerReadyActionId,
                   isoPackage.ReproosIsoRootfsActionId,

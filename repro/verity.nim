@@ -343,6 +343,15 @@ proc verityHashBlocks*(spec: VeritySpec; dataBlocks: int): int =
   for s in spec.verityLevelSizes(dataBlocks):
     result += s
 
+proc verityHashDeviceBytes*(spec: VeritySpec; dataBlocks: int): int64 =
+  ## How large a volume the whole hash device needs: the superblock, which
+  ## occupies one full hash block, plus the tree.
+  ##
+  ## Exposed because the partition table has to declare a volume big enough
+  ## to hold it, and a size guessed there rather than derived here is a
+  ## number that silently stops fitting when the root grows.
+  int64(1 + spec.verityHashBlocks(dataBlocks)) * int64(spec.hashBlockSize)
+
 # ---------------------------------------------------------------------
 # The construction.
 # ---------------------------------------------------------------------

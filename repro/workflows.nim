@@ -1011,6 +1011,53 @@ package reproosWorkflows:
         @["bash", "mksquashfs", "unsquashfs"])
     discard target("test-image-metadata", testImageMetadata)
 
+    # One generation per boot, and a reboot to change it.
+    #
+    # The launch measurement is taken once, at boot, over the unified
+    # kernel image the firmware loaded, and nothing extends it. So an
+    # attested instance runs one generation for the lifetime of a boot: an
+    # apply STAGES the new one into the slot the machine is not running
+    # from, reports reboot-required, and leaves the running generation's
+    # artifacts untouched; a rollback re-selects the previous pair, which
+    # has been sitting in its slot since it was staged. Asking for the
+    # switch to take effect on the running system is refused, and the
+    # refusal is keyed on there being a measurement to contradict rather
+    # than being a blanket no.
+    #
+    # The always-on layer stages real unified kernel images -- assembled
+    # against a synthetic PE stub it builds from the specification -- into
+    # a real store on a real directory, so it needs no artifact and no
+    # tool beyond the Nim gate set. A second layer runs automatically
+    # whenever a copy of the pinned EFI stub is present and requires the
+    # SHIPPED tools/reproos_generation.nim to produce the same store bytes
+    # as the module. A third is opt-in
+    # (REPROOS_GENERATION_BOOT_GATE=1) and boots one real FAT32 ESP four
+    # times through OVMF, reading /proc/cmdline out of each guest.
+    #
+    # qemu, `dosfstools` and `mtools` are deliberately NOT declared as
+    # identities: the last two are from-source packages here, so naming
+    # them would make an always-on gate bootstrap them.
+    let testGenerations = shell(
+      command = "bash tests/test-generations.sh",
+      actionId = "reproos.test-generations",
+      extraInputs = @[
+        "tests/test-generations.sh",
+        "tests/nim-gate.sh",
+        "tests/test_generations.nim",
+        "repro/generations.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "tools/reproos_generation.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-generations", testGenerations)
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -1032,6 +1079,7 @@ package reproosWorkflows:
       testDiskIdentityPinning,
       testVerityRoot,
       testUki,
+      testGenerations,
       testIso,
       testImageBootSmoke,
       testInitramfsVerityTpm,

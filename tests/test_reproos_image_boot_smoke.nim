@@ -73,7 +73,7 @@ const
   ReferenceTranscript = "tests/fixtures/reproos-boot-serial-m9r71-v4.log"
   ImageEnvOverride = "REPROOS_IMAGE"
   RecipeImageOutput = "recipes/reproos-image/build/reproos-installed.qcow2"
-  AttestationVmNamePrefix = "reproos-att-a1-"
+  AttestationVmNamePrefix = "reproos-att-boot-smoke-"
     ## Every VM this test creates is uniquely named under a
     ## ``reproos-att-`` prefix so that (a) a sweep can find whatever a
     ## crashed run left behind and (b) nothing this test does can ever

@@ -110,7 +110,6 @@ def load_graph(
             "--prepare-only",
             "--progress=line",
             "--log=summary",
-            "--no-runquota",
         ]
     )
     prepared = run_command(prepare_command, cwd=cwd, env=env, timeout=timeout)
@@ -236,7 +235,6 @@ def publish_package(
         f"--write-report={build_report_path}",
         "--progress=line",
         "--log=summary",
-        "--no-runquota",
     ]
     result = run_command(build_command, cwd=package_dir, env=env, timeout=timeout)
     if result.returncode != 0:
@@ -258,7 +256,6 @@ def publish_package(
         f"--write-report={report_path}",
         "--progress=line",
         "--log=summary",
-        "--no-runquota",
     ]
     result = run_command(publish_command, cwd=package_dir, env=env, timeout=timeout)
     if result.returncode != 0:

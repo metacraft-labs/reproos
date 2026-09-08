@@ -38,6 +38,11 @@ alpha_key = "a" * 64
 beta_key = "b" * 64
 gamma_key = "d" * 64
 
+if (args and args[0] == "build" and
+        os.environ.get("FAKE_REJECT_RUNQUOTA_BYPASS") and "--no-runquota" in args):
+    print("cache workflow bypassed RunQuota", file=sys.stderr)
+    raise SystemExit(6)
+
 def same_path(left, right):
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(
         os.path.realpath(right)
@@ -230,6 +235,15 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertEqual(report["packages"][0]["status"], "missing")
         self.assertFalse(self.log.exists())
         self.assertNotIn("iso\n", self.graph_log.read_text(encoding="utf-8"))
+
+    def test_preparation_build_and_publication_keep_runquota_enabled(self) -> None:
+        self.extra_env["FAKE_REJECT_RUNQUOTA_BYPASS"] = "1"
+        self.state.write_text("[]", encoding="utf-8")
+        result = self.run_backfill()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["publishedPackageCount"], 2)
 
     def test_parallel_publication_is_rejected_before_graph_preparation(self) -> None:
         self.state.write_text("[]", encoding="utf-8")

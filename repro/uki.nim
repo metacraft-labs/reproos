@@ -478,38 +478,13 @@ const
     ## only on some builds moves the measurement for reasons an operator
     ## cannot see.
 
-type
-  AttestedBootDevices* = object
-    ## The volumes an attested command line names.
-    data*: string      ## the verity data image
-    hash*: string      ## the Merkle tree over it
-    stateVar*: string
-    stateHome*: string
-
-const AttestedBootDeviceRefs* = AttestedBootDevices(
-  data: "LABEL=reproos-root",
-  hash: "LABEL=reproos-roothash",
-  stateVar: "LABEL=reproos-var",
-  stateHome: "LABEL=reproos-home")
-  ## How the attested command line names its volumes.
-  ##
-  ## ``LABEL=`` rather than a device path, because ``/dev/vda2`` on QEMU
-  ## is ``/dev/nvme0n1p2`` on a laptop and ``/dev/sda2`` on a server,
-  ## and the initrd resolves ``LABEL=`` with ``findfs`` before any udev
-  ## exists. The labels are the ones ``repro/disk_layouts.nim`` declares
-  ## and ``build-verity-root.sh`` writes.
-  ##
-  ## ONE of these does not exist yet, and saying so here is the point of
-  ## naming them in one place: ``reproos-roothash`` is the volume the
-  ## dm-verity Merkle tree lives on, and the attested layout does not
-  ## carry one. The tree's placement — a volume of its own, or a tail
-  ## offset inside the root volume — is not settled, and settling it is
-  ## part of teaching the image driver to write the verity artifacts onto
-  ## the partition table. Until that lands the attested layout is refused
-  ## at plan time and the refusal says exactly this. What IS settled, and
-  ## is what a unified kernel image is for, is that the command line
-  ## naming them is inside the measured image rather than in a loader
-  ## configuration file anything can edit.
+## The volumes an attested command line names are NOT declared here. Which
+## volume a generation's verity pair lives on is a property of the
+## GENERATION, not of the image format: two generations coexist on one
+## machine and each names its own pair. ``repro/generations.nim`` owns that
+## decision, derives the specifiers from the build's identity seed, and
+## states why they are partition GUIDs rather than filesystem labels. This
+## module composes whatever it is handed into the command line it measures.
 
 proc attestedKernelCmdline*(rootHash, dataDevice, hashDevice,
                             varDevice, homeDevice: string;

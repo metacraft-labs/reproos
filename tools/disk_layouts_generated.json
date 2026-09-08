@@ -16,10 +16,10 @@
     },
     {
       "name": "uefi-attested",
-      "summary": "ESP + a read-only root + separate /var, /home and swap; the shape an attestable image needs",
+      "summary": "ESP + two integrity-checked read-only root slots + separate /var, /home and swap; the shape an attestable image needs",
       "buildable": false,
-      "unbuildableReason": "boot now goes through a unified kernel image whose command line pins the root hash inside the measured binary, but the image driver still does not write the integrity-checked root image or its hash tree onto this layout, and the layout carries no volume for the hash tree; the result would be a measured command line naming volumes that are not there",
-      "minDiskSizeGb": 16,
+      "unbuildableReason": "boot goes through a unified kernel image whose command line pins the root hash inside the measured binary, and this layout now carries both root slots and both hash-tree volumes that command line names, but the image driver still does not write the integrity-checked root image or its hash tree onto them; the result would be a measured command line naming volumes that exist and are empty",
+      "minDiskSizeGb": 20,
       "defaultEspSizeMib": 512
     }
   ]

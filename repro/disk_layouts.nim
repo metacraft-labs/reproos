@@ -48,6 +48,8 @@ import std/[options, sha1, strutils, tables]
 import repro_profile/types
 import repro_profile/disk_identity
 
+import "./generations" as generations
+
 type
   DiskLayoutStatus* = enum
     ## Whether the image driver can install a preset today.
@@ -94,17 +96,19 @@ const
       defaultEspSizeMib: 512),
     DiskLayoutPreset(
       name: "uefi-attested",
-      summary: "ESP + a read-only root + separate /var, /home and swap; " &
-        "the shape an attestable image needs",
+      summary: "ESP + two integrity-checked read-only root slots + " &
+        "separate /var, /home and swap; the shape an attestable image " &
+        "needs",
       status: dlsDeclared,
       unbuildableReason:
-        "boot now goes through a unified kernel image whose command " &
-        "line pins the root hash inside the measured binary, but the " &
-        "image driver still does not write the integrity-checked root " &
-        "image or its hash tree onto this layout, and the layout " &
-        "carries no volume for the hash tree; the result would be a " &
-        "measured command line naming volumes that are not there",
-      minDiskSizeGb: 16,
+        "boot goes through a unified kernel image whose command line " &
+        "pins the root hash inside the measured binary, and this layout " &
+        "now carries both root slots and both hash-tree volumes that " &
+        "command line names, but the image driver still does not write " &
+        "the integrity-checked root image or its hash tree onto them; " &
+        "the result would be a measured command line naming volumes " &
+        "that exist and are empty",
+      minDiskSizeGb: 20,
       defaultEspSizeMib: 512),
   ]
 
@@ -123,6 +127,28 @@ const
     ## was taken over exactly those bytes. A percentage size would move
     ## every time the closure moved, and with it the block count the
     ## verity table declares.
+    ##
+    ## There are TWO of these. An attested instance runs one generation
+    ## for the lifetime of a boot and a new one is staged beside it, so
+    ## the previous generation's root has to survive intact until the
+    ## machine has booted the new one and the operator is satisfied —
+    ## which is the whole of what makes rollback atomic.
+  AttestedHashTreeSize* = "64M"
+    ## The dm-verity Merkle tree over one root slot, on a volume of its
+    ## own. Sized from the geometry rather than guessed: at
+    ## ``repro/verity.nim``'s 4096-byte blocks and sha256 digests, a 4 GiB
+    ## data image has 1 048 576 data blocks and a three-level tree of
+    ## 8 192 + 64 + 1 hash blocks, so 8 257 blocks plus the superblock —
+    ## 32.3 MiB. 64 MiB is that with room to spare, and
+    ## ``tests/test_generations.nim`` re-derives the requirement through
+    ## the verity module rather than trusting this comment.
+    ##
+    ## A volume of its OWN rather than a tail offset inside the root
+    ## volume: the tree is taken over exactly the data image's bytes, so
+    ## anything appended to that image is either inside the tree's own
+    ## coverage (impossible) or changes the block count the verity table
+    ## declares. Keeping them apart also means the data volume can be
+    ## written with a single copy of a file the build already produced.
   AttestedSwapSize* = "2G"
   AttestedVarSize* = "4G"
   AttestedHomeSize* = "100%"
@@ -203,34 +229,63 @@ proc uefiExt4Layout(p: DiskLayoutParams): DiskLayout =
     device: p.device, `type`: "gpt", partitions: partitions)
   result.pools = @[]
 
+proc carrier(size: string): PartitionSpec =
+  ## A partition the layout creates and puts NO filesystem on.
+  ##
+  ## The two root slots and the two hash-tree volumes are carriers: what
+  ## goes onto them is a finished image the build produced — a verity data
+  ## image whose ext4 superblock, UUID and directory-hash seed are all
+  ## covered by the root hash, and a Merkle tree that is not a filesystem
+  ## at all. Letting the apply driver run ``mkfs`` here would overwrite the
+  ## first and be meaningless for the second, and a filesystem created at
+  ## install time is exactly the sort of thing whose bytes are not a
+  ## function of the build.
+  part("linux", size, ContentSpec(kind: cfsNone))
+
 proc uefiAttestedLayout(p: DiskLayoutParams): DiskLayout =
   ## The attestable shape: everything measured is read-only, everything
-  ## writable is off the measured surface and on its own volume.
+  ## writable is off the measured surface and on its own volume, and there
+  ## are TWO of everything a generation needs.
   ##
-  ## What this DOES declare, today: the partition table — an ESP, a root
-  ## partition mounted ``ro``, and distinct ``/var``, ``/home`` and swap
-  ## volumes at the sizes above.
+  ## What this declares: an ESP; two root-slot carriers and their two
+  ## Merkle-tree carriers, named by ``repro/generations.nim`` so that the
+  ## measured command line of a generation and the volume it will be
+  ## written to are one declaration; and distinct ``/var``, ``/home`` and
+  ## swap volumes.
   ##
-  ## What it does NOT yet do: install the verity data image and its hash
-  ## tree onto that root partition, or carry a volume for the hash tree
-  ## at all, or encrypt the state volumes. The verity image and its root
-  ## hash ARE built — ``recipes/reproos-image/scripts/build-verity-root.sh``
-  ## produces them from the staged tree, and ``repro/verity.nim`` declares
-  ## their shape — and the root hash IS pinned on a measured kernel
-  ## command line now, inside the unified kernel image ``repro/uki.nim``
-  ## assembles. But the root partition below is still a plain ext4 that is
-  ## merely *mounted* read-only. It is the slot the verity image goes
-  ## into, not yet a measured root.
+  ## Nothing mounts at ``/`` here, and that is the point rather than an
+  ## omission: on this layout the root filesystem is
+  ## ``/dev/mapper/reproos-root``, a dm-verity device the initramfs
+  ## activates from the root hash on the measured kernel command line. A
+  ## partition mounted at ``/`` would be a second, unchecked answer to
+  ## what the root is.
+  ##
+  ## What it does NOT yet do: write the verity data image and its Merkle
+  ## tree onto those carriers, or encrypt the state volumes. Both images
+  ## ARE built — ``recipes/reproos-image/scripts/build-verity-root.sh``
+  ## produces them from the staged tree, ``repro/verity.nim`` declares
+  ## their shape, and the root hash is pinned on the measured command line
+  ## inside the unified kernel image ``repro/uki.nim`` assembles — but
+  ## nothing copies them onto a disk. That is why this preset is refused
+  ## at plan time, and it is the whole of what the refusal now says.
   var partitions: OrderedTable[string, PartitionSpec]
   partitions["esp"] = espPartition(p.espSizeMib)
-  partitions["root"] = part("linux", AttestedRootSize,
-    fsContent("ext4", "/", "reproos-root", @["ro"]))
+  for slot in [generations.gsA, generations.gsB]:
+    partitions[generations.rootPartitionName(slot)] =
+      carrier(AttestedRootSize)
+    partitions[generations.hashPartitionName(slot)] =
+      carrier(AttestedHashTreeSize)
   partitions["swap"] = part("swap", AttestedSwapSize, swapContent())
   partitions["var"] = part("linux", AttestedVarSize,
-    fsContent("ext4", "/var", "reproos-var", @["defaults"]))
+    fsContent("ext4", "/var", generations.StateVarLabel, @["defaults"]))
   partitions["home"] = part("linux", AttestedHomeSize,
-    fsContent("ext4", "/home", "reproos-home", @["defaults"]))
-  result.disks["main"] = DiskSpec(
+    fsContent("ext4", "/home", generations.StateHomeLabel, @["defaults"]))
+  # The disk's name in the layout is part of the partition-GUID
+  # derivation, so it comes from the same constant the command line's
+  # ``PARTUUID=`` values are derived under rather than from a literal
+  # here. Two spellings would derive two sets of identifiers and the
+  # measured command line would name partitions that were never created.
+  result.disks[generations.AttestedDiskName] = DiskSpec(
     device: p.device, `type`: "gpt", partitions: partitions)
   result.pools = @[]
 

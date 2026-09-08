@@ -54,16 +54,19 @@
 ##
 ## ## t_uefi_attested_partition_table
 ##
-## The staged uefi-attested layout has an ESP, a root partition mounted
-## read-only, and distinct ``/var``, ``/home`` and swap volumes at the
-## sizes the preset declares.
+## The staged uefi-attested layout has an ESP, TWO carrier pairs -- a root
+## and a Merkle-tree volume per generation slot -- and distinct ``/var``,
+## ``/home`` and swap volumes at the sizes the preset declares. Nothing
+## mounts at ``/``: on this layout the root is the dm-verity device the
+## initramfs activates from the root hash on the measured kernel command
+## line.
 ##
-## It does NOT prove that the root is verity-protected, measured, or
-## bootable. Today ``uefi-attested`` declares a *shape*: the root is a
-## plain ext4 mounted ``ro``, a slot for a verity image, and there is no
-## UKI and no encryption of the state volumes. The preset
-## is refused at plan time for exactly that reason, and this gate asserts
-## the refusal rather than pretending the layout is installable.
+## It does NOT prove that any of those volumes is ever written, or that
+## the layout is installable. ``uefi-attested`` declares a *shape*; the
+## image driver still does not put the verity data image or its Merkle
+## tree onto the carriers, and the state volumes are not encrypted. The
+## preset is refused at plan time for exactly that reason, and this gate
+## asserts the refusal rather than pretending otherwise.
 ##
 ## ## Mocking
 ##
@@ -79,6 +82,7 @@ import std/[options, os, osproc, strutils, tables]
 import repro_profile/types
 import repro_profile/emit
 
+import "../repro/generations"
 import "../repro/disk_layouts"
 
 const
@@ -605,23 +609,44 @@ block attestedPartitionTable:
          "/boot filesystem")
     break attestedPartitionTable
 
-  # A read-only root.
-  let rootName = partitionAtMountpoint(layout, "/")
-  if rootName.isNone:
-    fail("t_uefi_attested_partition_table: nothing mounts at /")
+  # The root. On this layout NOTHING mounts at /, and that is the shape
+  # rather than an omission: the root is the dm-verity device the
+  # initramfs activates from the root hash on the measured kernel command
+  # line, so the partitions below are carriers for a finished image and a
+  # partition mounted at / would be a second, unchecked answer to what the
+  # root is. There are TWO of them, because an attested instance runs one
+  # generation for the lifetime of a boot and the previous generation's
+  # root has to stay intact for a rollback to be atomic.
+  if partitionAtMountpoint(layout, "/").isSome:
+    fail("t_uefi_attested_partition_table: a partition mounts at /, which " &
+         "would be an unchecked second answer to what the root is on a " &
+         "layout whose root is a dm-verity device")
     break attestedPartitionTable
-  let root = partitionOf(layout, rootName.get()).get()
-  if "ro" notin root.content.mountOptions:
-    fail("t_uefi_attested_partition_table: the root partition is not " &
-         "read-only; mountOptions = " & root.content.mountOptions.join(","))
-    break attestedPartitionTable
-  if root.size != AttestedRootSize:
-    fail("t_uefi_attested_partition_table: the root is " & root.size &
-         ", not the declared " & AttestedRootSize)
-    break attestedPartitionTable
+  var rootSlots: seq[string] = @[]
+  for slot in [gsA, gsB]:
+    for (name, declared) in [(rootPartitionName(slot), AttestedRootSize),
+                             (hashPartitionName(slot), AttestedHashTreeSize)]:
+      let found = partitionOf(layout, name)
+      if found.isNone:
+        fail("t_uefi_attested_partition_table: no " & name & " volume; a " &
+             "generation is a unified kernel image AND the verity pair its " &
+             "measured command line names, and there are two generations")
+        break attestedPartitionTable
+      let spec = found.get()
+      if spec.size != declared:
+        fail("t_uefi_attested_partition_table: " & name & " is " &
+             spec.size & ", not the declared " & declared)
+        break attestedPartitionTable
+      if spec.content.kind != cfsNone:
+        fail("t_uefi_attested_partition_table: " & name & " declares " &
+             "content the apply would create; what goes there is a " &
+             "finished image whose bytes the root hash covers, and an " &
+             "mkfs at install time would overwrite it")
+        break attestedPartitionTable
+      rootSlots.add name
 
   # Distinct /var and /home volumes.
-  var seen: seq[string] = @[rootName.get()]
+  var seen: seq[string] = rootSlots
   for (mountpoint, declaredSize) in [("/var", AttestedVarSize),
                                      ("/home", AttestedHomeSize)]:
     let name = partitionAtMountpoint(layout, mountpoint)
@@ -679,8 +704,9 @@ block attestedPartitionTable:
              " takes the remainder but is not last")
         break attestedPartitionTable
 
-  pass("t_uefi_attested_partition_table: ESP + read-only root + distinct " &
-       "/var, /home and swap at the declared sizes (" &
+  pass("t_uefi_attested_partition_table: ESP + two carrier pairs for two " &
+       "generations' integrity-checked roots + distinct /var, /home and " &
+       "swap at the declared sizes (" &
        $layout.disks["main"].partitions.len & " partitions)")
 
 block attestedIsDeclaredNotBuildable:

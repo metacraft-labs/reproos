@@ -646,6 +646,10 @@ case "$REPROOS_DISK_LAYOUT" in
   uefi-attested)
     INSTALL_ROOT_ARGS+=(--no-grub)
     : "${REPROOS_UKI:?REPROOS_UKI must point at the unified kernel image the recipe assembled; the attested layout has no other boot path}"
+    : "${REPROOS_GENERATION_BIN:?REPROOS_GENERATION_BIN must point at the generation stager the recipe built; the attested ESP carries a generation store rather than a bare boot binary}"
+    : "${REPROOS_VERITY_ROOTHASH_FILE:?REPROOS_VERITY_ROOTHASH_FILE must name the root hash the verity build produced}"
+    : "${REPROOS_VERITY_DATA_DEVICE:?REPROOS_VERITY_DATA_DEVICE must name the carrier this generation's verity data image goes on}"
+    : "${REPROOS_VERITY_HASH_DEVICE:?REPROOS_VERITY_HASH_DEVICE must name the carrier this generation's Merkle tree goes on}"
     if [ ! -s "$REPROOS_UKI" ]; then
       echo "[build-reproos-image] unified kernel image missing: $REPROOS_UKI" >&2
       exit 70
@@ -663,18 +667,40 @@ case "$REPROOS_DISK_LAYOUT" in
     # The removable-media fallback path, deliberately: it needs no NVRAM
     # boot entry, so one built image boots on any UEFI machine and in a
     # fresh VM whose variable store is empty.
-    echo "[build-reproos-image] installing the unified kernel image at $UKI_ESP_PATH"
-    "$SUDO" mkdir -p "$MNT_DIR/boot/${UKI_ESP_PATH%/*}"
-    "$SUDO" cp "$REPROOS_UKI" "$MNT_DIR/boot/$UKI_ESP_PATH"
+    # The installed image is GENERATION A, and it is put on the ESP
+    # through the same stager an apply uses rather than by copying the
+    # binary into place here. That is not tidiness: an attested machine
+    # boots one generation for the lifetime of a boot and a new one is
+    # staged BESIDE it, so the ESP has to carry a generation store from
+    # the first install -- two slots and an index -- or the first apply
+    # would have nowhere to stage into and no previous pair to leave
+    # selectable. The stager writes the slot, records what is in it, and
+    # copies the selected slot's bytes to the fallback path UEFI loads.
+    echo "[build-reproos-image] staging generation a into the ESP generation store"
+    "$SUDO" "$REPROOS_GENERATION_BIN" stage \
+      --esp "$MNT_DIR/boot" \
+      --uki "$REPROOS_UKI" \
+      --slot a \
+      --attested \
+      --verity-root-hash-file "$REPROOS_VERITY_ROOTHASH_FILE" \
+      --verity-data "$REPROOS_VERITY_DATA_DEVICE" \
+      --verity-hash "$REPROOS_VERITY_HASH_DEVICE" \
+      || { echo "[build-reproos-image] staging generation a failed" >&2; exit 70; }
     "$SUDO" chmod 0644 "$MNT_DIR/boot/$UKI_ESP_PATH"
     # Retire GRUB on this layout. See the block comment above: a
     # grub.cfg left behind is an unmeasured second answer to "how does
     # this machine boot".
     "$SUDO" rm -rf "$MNT_DIR/boot/grub"
-    echo "[build-reproos-image] rewriting $(basename "$NBD_DEV") partitions to filesystem labels in fstab"
+    echo "[build-reproos-image] rewriting $(basename "$NBD_DEV") partitions in fstab"
     if [ -f "$MNT_DIR/etc/fstab" ]; then
       NBD_BASE="$(basename "$NBD_DEV")"
-      "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|LABEL=reproos-root|g" "$MNT_DIR/etc/fstab"
+      # The ESP is a real filesystem this layout creates, so a label
+      # names it. The ROOT is not: on this layout / is the dm-verity
+      # device the initramfs activates from the root hash on the
+      # measured command line, and the partition install-root wrote
+      # into fstab is only the carrier the data image sits on. Naming
+      # the carrier at / would mount the unchecked bytes.
+      "$SUDO" sed -i -E "s|/dev/${NBD_BASE}p1|LABEL=ESP|g; s|/dev/${NBD_BASE}p2|/dev/mapper/reproos-root|g" "$MNT_DIR/etc/fstab"
     fi
     ;;
   *)

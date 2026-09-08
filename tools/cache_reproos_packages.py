@@ -605,7 +605,6 @@ def main(argv: list[str] | None = None) -> int:
                 "REPRO_BINARY_CACHE_URL": args.cache_url,
                 "REPRO_BINARY_CACHE_SCOPE": args.cache_scope,
                 "REPRO_DAEMON": "off",
-                "REPROBUILD_NO_RUNQUOTA": "1",
                 "REPRO_FROM_SOURCE_ROOT": str(packages_root / "packages" / "source"),
             }
         )

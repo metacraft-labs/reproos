@@ -38,8 +38,8 @@ alpha_key = "a" * 64
 beta_key = "b" * 64
 gamma_key = "d" * 64
 
-if (args and args[0] == "build" and
-        os.environ.get("FAKE_REJECT_RUNQUOTA_BYPASS") and "--no-runquota" in args):
+if (args and args[0] == "build" and os.environ.get("FAKE_REJECT_RUNQUOTA_BYPASS") and
+        ("--no-runquota" in args or os.environ.get("REPROBUILD_NO_RUNQUOTA") == "1")):
     print("cache workflow bypassed RunQuota", file=sys.stderr)
     raise SystemExit(6)
 
@@ -238,6 +238,7 @@ class CacheBackfillTests(unittest.TestCase):
 
     def test_preparation_build_and_publication_keep_runquota_enabled(self) -> None:
         self.extra_env["FAKE_REJECT_RUNQUOTA_BYPASS"] = "1"
+        self.extra_env["REPROBUILD_NO_RUNQUOTA"] = ""
         self.state.write_text("[]", encoding="utf-8")
         result = self.run_backfill()
         self.assertEqual(result.returncode, 0, result.stderr)

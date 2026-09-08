@@ -63,6 +63,11 @@ Use Reprobuild as the only contributor command surface:
   own command line — a `${SOURCE_DATE_EPOCH:-…}` fallback inside the
   script is not a pin; and `test-iso-reproducibility` is held to the same
   contract by this gate, so the two cannot drift.
+  `repro build test-image-metadata` checks real SquashFS/tar metadata, source
+  preservation, sudo privileges, and health-command exit status on Linux without
+  a VM or root access. Other hosts report an explicit platform skip. Run it
+  after changing image ownership policy or its packaging/health callers; see
+  `docs/image-metadata.md` for the declared tool contract.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

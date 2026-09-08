@@ -65,6 +65,7 @@ repro build test_unattended_vm_rejects_live_media_false_positive
 repro build test-source-composition
 repro build test-iso-reproducibility
 repro build test-image-reproducibility
+repro build test-image-metadata
 repro build test-iso
 repro build test-image-health
 repro build test-installed-desktop
@@ -83,6 +84,10 @@ repro build test-vm-incus-parity
 repro build incus-acceptance
 repro build incus-remote-acceptance
 ```
+
+`test-image-metadata` checks real archive ownership, sudo privileges, and health
+exit-status handling on Linux without a VM or root access. Other hosts report an
+explicit platform skip. See [Image Metadata](docs/image-metadata.md).
 
 The unattended test compares the wizard's generated configuration with the
 reviewed fixture, applies it to the installed image build, waits for the boot

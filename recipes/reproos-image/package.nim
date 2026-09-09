@@ -333,8 +333,12 @@ package reproosImage:
 
   build:
     let projectRoot = activeProviderProjectRoot()
-    let reprobuildRoot = getEnv("REPROBUILD_SRC", "../reprobuild")
-    let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"
+    let reprobuildRoot = block:
+      let configured = getEnv("REPROBUILD_SRC")
+      if configured.len > 0: configured
+      else: "../reprobuild"
+    let reproCliInput = absolutePath(
+      reprobuildRoot / "build" / "bin" / "repro", projectRoot)
 
     # The installed system needs a disk-root initramfs rather than the ISO's
     # live-media initramfs. Build and cache it independently of privileged
@@ -483,7 +487,7 @@ package reproosImage:
         "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
           installerPackage.ReproosInstallerBinary & "\"",
         "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
-        "REPRO_BIN=\"" & reproCliInput & "\"",
+        "REPRO_BIN=" & quoteShellPosix(reproCliInput),
         "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
         "bash scripts/stage-installed-root.sh build/installed-root",
         ">build/stage-installed-root.log 2>&1",
@@ -833,7 +837,7 @@ package reproosImage:
       raise newException(ValueError,
         "recipes/reproos-image: " & attestRequestError)
     var attestArgv = attestModule.attestExpectArgv(
-      "$PWD/../../" & reproCliInput, attestRequest)
+      reproCliInput, attestRequest)
     var attestCommand = "set -euo pipefail; mkdir -p build/attest;"
     for a in attestArgv:
       attestCommand.add " " & quoteShellPosix(a)
@@ -896,7 +900,7 @@ package reproosImage:
         $layoutRequest.params.espSizeMib & "\"",
       "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
       "REPROOS_DISKO_IDENTITY='" & diskIdentitySpecLine & "'",
-      "REPRO_BIN=\"" & reproCliInput & "\"",
+      "REPRO_BIN=" & quoteShellPosix(reproCliInput),
       "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
       "bash scripts/build-reproos-image.sh build/reproos-installed.qcow2",
       ">build/reproos-image-build.log 2>&1",

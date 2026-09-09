@@ -482,8 +482,9 @@ def main() -> None:
     require_contains(
         IMAGE_RECIPE,
         [
-            'let reproCliInput = reprobuildRoot / "build" / "bin" / "repro"',
-            '"REPRO_BIN=\\\"" & reproCliInput & "\\\""',
+            'let reproCliInput = absolutePath(',
+            'reprobuildRoot / "build" / "bin" / "repro", projectRoot)',
+            '"REPRO_BIN=" & quoteShellPosix(reproCliInput)',
             "reproCliInput,",
         ],
         "pinned image assembly CLI",

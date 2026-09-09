@@ -33,13 +33,14 @@
 ##
 ## ## The layers, and what each is worth
 ##
-##   1. **The schema and the calculator** (always on, ~1s, no external
-##      tool and no artifact). Real PE bytes assembled here against a
+##   1. **The schema, calculator and recipe command** (always on, seconds,
+##      no build artifact). Real PE bytes assembled here against a
 ##      synthetic PE32+ stub — a fixture, not a mock, since the code under
 ##      test is the real reader and the real renderer. PROVES the document
 ##      is deterministic, that every refusal fires, and that the measured
 ##      ORDER is the stub's rather than the file's. PROVES NOTHING about
-##      any machine.
+##      any machine. The recipe command runs an argv-capture fixture using
+##      the gate's declared bash/mkdir tools, including SDK paths with spaces.
 ##
 ##   2. **The shipped emitter** (artifact-conditional, ~10s). The real
 ##      pinned stub, a real unified kernel image, a real dm-verity image,
@@ -73,16 +74,18 @@
 ##
 ## ## Mocking
 ##
-## None. The synthetic stub in layer 1 is a fixture built from the PE
-## specification. Layers 2 and 3 use the real pinned stub, the real
+## No core implementation is mocked. The synthetic stub in layer 1 is a
+## fixture built from the PE specification; the argv-capture executable
+## records a command invocation without implementing the manifest emitter.
+## Layers 2 and 3 use the real pinned stub, the real
 ## shipped CLI, real firmware, a real software TPM and a real QEMU.
 
-import std/[json, os, osproc, streams, strutils, tables, times]
+import std/[json, macros, os, osproc, streams, strutils, tables, tempfiles, times]
 
 import repro_attest
 
-import "../repro/attest"
-import "../repro/uki"
+import "../repro/attest" as attestModule
+import "../repro/uki" as ukiModule
 import "../repro/verity"
 import "../repro/generations"
 
@@ -573,6 +576,159 @@ block layerRecipeDeclarationsAgree:
         MeasuredVerityRootHashName == VerityRootHashFileName,
         "the artifacts the manifest reads are the ones the verity build " &
         "writes")
+
+macro imageSdkCommand(root, seed: untyped; selector: static[string]): untyped =
+  # Compile the recipe's actual construction and the expression passed to
+  # shell(command = ...), without evaluating the unrelated image build graph.
+  let recipe = parseStmt(staticRead(RepoRoot / "recipes/reproos-image/package.nim"))
+  let body = newStmtList()
+  body.add newLetStmt(ident"projectRoot", root)
+  body.add newLetStmt(ident"identitySeed", seed)
+  var buildBody: NimNode
+  for node in recipe:
+    if node.kind == nnkConstSection:
+      let constants = node.copyNimTree()
+      for definition in constants:
+        if definition.kind == nnkConstDef and definition[0].kind == nnkPostfix:
+          definition[0] = definition[0][1]
+      body.add constants
+    elif node.kind in {nnkCall, nnkCommand} and node[0].eqIdent("package") and
+        node[1].eqIdent("reproosImage"):
+      for section in node[^1]:
+        if section.kind in {nnkCall, nnkCommand} and section[0].eqIdent("build"):
+          buildBody = section[^1]
+  if buildBody.isNil:
+    error("image recipe has no build body")
+  if selector != "attest":
+    proc findBinding(node: NimNode; name: string): NimNode =
+      if node.kind in {nnkLetSection, nnkVarSection} and $node[0][0] == name:
+        return node[0][2]
+      for child in node:
+        let found = findBinding(child, name)
+        if not found.isNil: return found
+    proc leftLiteral(node: NimNode): string =
+      if node.kind in {nnkStrLit, nnkTripleStrLit}: return node.strVal
+      if node.kind == nnkInfix and node[0].eqIdent("&"):
+        return leftLiteral(node[1])
+    proc findAssignment(node: NimNode): NimNode =
+      if leftLiteral(node).startsWith("REPRO_BIN="): return node
+      for child in node:
+        let found = findAssignment(child)
+        if not found.isNil: return found
+    for name in ["reprobuildRoot", "reproCliInput"]:
+      let value = findBinding(buildBody, name)
+      if value.isNil: error("image recipe lost binding: " & name)
+      body.add newLetStmt(ident(name), value.copyNimTree())
+    let action = findBinding(buildBody, selector)
+    if action.isNil or not action[0].eqIdent("shell"):
+      error("image recipe lost shell action: " & selector)
+    var construction: NimNode
+    for argument in action:
+      if argument.kind == nnkExprEqExpr and argument[0].eqIdent("command"):
+        construction = findBinding(buildBody, $argument[1])
+    if construction.isNil: error("image action lost its command: " & selector)
+    let assignment = findAssignment(construction)
+    if assignment.isNil: error("image command lost REPRO_BIN: " & selector)
+    body.add newTree(nnkInfix, ident"&", assignment.copyNimTree(),
+      newLit("; \"$REPRO_BIN\""))
+    return newBlockStmt(body)
+  var emitting = false
+  var command: NimNode
+  for statement in buildBody:
+    let name = if statement.kind in {nnkLetSection, nnkVarSection}:
+                 $statement[0][0]
+               else: ""
+    if name in ["reprobuildRoot", "reproCliInput"]:
+      body.add statement.copyNimTree()
+    if name == "attestRequest":
+      emitting = true
+    if name == "buildAttestAction":
+      let call = statement[0][2]
+      if not call[0].eqIdent("shell"):
+        error("measurement action no longer uses the shell constructor", call)
+      for argument in call:
+        if argument.kind == nnkExprEqExpr and argument[0].eqIdent("command"):
+          command = argument[1].copyNimTree()
+      break
+    if emitting:
+      body.add statement.copyNimTree()
+  if command.isNil:
+    error("measurement action has no command argument")
+  body.add newTree(nnkTupleConstr, command, ident"attestRequest")
+  result = newBlockStmt(body)
+
+block layerRecipeSdkPaths:
+  let work = createTempDir("reproos-attest-paths-", "")
+  let savedSdk = getEnv("REPROBUILD_SRC")
+  let hadSdk = existsEnv("REPROBUILD_SRC")
+  let savedCapture = getEnv("REPROOS_ATTEST_ARGV_CAPTURE")
+  let hadCapture = existsEnv("REPROOS_ATTEST_ARGV_CAPTURE")
+  let savedCwd = getCurrentDir()
+  try:
+    let bash = findExe("bash")
+    if bash.len == 0:
+      raise newException(IOError, "measurement argv fixture requires declared bash")
+    let root = work / "project with spaces"
+    let actionDir = root / "recipes/reproos-image"
+    createDir(actionDir)
+    createDir(work / "unrelated caller")
+    setCurrentDir(work / "unrelated caller")
+    let capture = work / "argv"
+    putEnv("REPROOS_ATTEST_ARGV_CAPTURE", capture)
+    for sdkMode in ["unset", "empty", "relative", "absolute"]:
+      let sdkNames = if sdkMode in ["unset", "empty"]: @["reprobuild"]
+                     else: @["sdk", "sdk with spaces and 'quotes'",
+                             "sdk with \"quotes\" and $cash"]
+      for sdkName in sdkNames:
+        let sdkRoot = work / sdkName
+        let cli = sdkRoot / "build/bin/repro"
+        createDir(cli.parentDir)
+        writeFile(cli, "#!" & bash & "\n" &
+          "printf '%s\\0' \"$0\" \"$@\" > \"$REPROOS_ATTEST_ARGV_CAPTURE\"\n")
+        setFilePermissions(cli, {fpUserRead, fpUserWrite, fpUserExec})
+        case sdkMode
+        of "unset": delEnv("REPROBUILD_SRC")
+        of "empty": putEnv("REPROBUILD_SRC", "")
+        of "relative": putEnv("REPROBUILD_SRC", "../" & sdkName)
+        else: putEnv("REPROBUILD_SRC", sdkRoot)
+        let (command, request) = imageSdkCommand(root, GateFingerprint, "attest")
+        if fileExists(capture): removeFile(capture)
+        let process = startProcess(bash, workingDir = actionDir,
+          args = @["-c", command], options = {poStdErrToStdOut})
+        let output = process.outputStream.readAll()
+        let code = process.waitForExit()
+        process.close()
+        let label = "measurement action SDK " & sdkMode & "=" & getEnv("REPROBUILD_SRC")
+        check(code == 0, label & " launches its CLI from the action cwd: " & output)
+        check(fileExists(capture), label & " reaches the argv capture executable")
+        if code == 0 and fileExists(capture):
+          var received = readFile(capture).split('\0')
+          received.setLen(received.len - 1)
+          check(received == attestExpectArgv(cli, request),
+                label & " preserves the executable and every argument exactly")
+        for (construction, imageCommand) in [
+            ("stageInstalledRootAction", imageSdkCommand(root, GateFingerprint,
+              "stageInstalledRootAction")),
+            ("buildImageAction", imageSdkCommand(root, GateFingerprint,
+              "buildImageAction"))]:
+          if fileExists(capture): removeFile(capture)
+          let imageProcess = startProcess(bash, workingDir = actionDir,
+            args = @["-c", imageCommand], options = {poStdErrToStdOut})
+          let imageOutput = imageProcess.outputStream.readAll()
+          let imageCode = imageProcess.waitForExit()
+          imageProcess.close()
+          let imageLabel = construction & " SDK " & sdkMode & "=" & getEnv("REPROBUILD_SRC")
+          check(imageCode == 0, imageLabel & " launches its declared CLI: " & imageOutput)
+          check(fileExists(capture), imageLabel & " reaches the declared CLI fixture")
+          if imageCode == 0 and fileExists(capture):
+            check(readFile(capture) == cli & '\0',
+                  imageLabel & " selects the exact executable without a PATH fallback")
+  finally:
+    setCurrentDir(savedCwd)
+    if hadSdk: putEnv("REPROBUILD_SRC", savedSdk) else: delEnv("REPROBUILD_SRC")
+    if hadCapture: putEnv("REPROOS_ATTEST_ARGV_CAPTURE", savedCapture)
+    else: delEnv("REPROOS_ATTEST_ARGV_CAPTURE")
+    removeDir(work)
 
 # =====================================================================
 # Layer 2 — the real stub and the shipped emitter.

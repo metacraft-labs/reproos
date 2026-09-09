@@ -211,6 +211,20 @@ proc filesystemExpectations(node, device: string; c: ContentSpec;
            c.format & " at " & node & "; a format this gate does not know " &
            "about would be pinned by nothing and reported by nothing")
       @[]
+  of cfsNone:
+    # A carrier. The apply creates the partition and puts NOTHING on it,
+    # because what goes there is a finished image the build produced --
+    # an integrity-checked root and the Merkle tree over it, whose own
+    # identifiers are inside bytes the root hash already covers. There is
+    # no filesystem here to identify and no tool that could pin one, so
+    # an empty list is the correct answer rather than a gap.
+    #
+    # The partition itself is NOT unpinned: `expectationsFor` adds a GPT
+    # partition GUID expectation for every partition before it calls
+    # this, whatever its content kind, and on this layout that GUID is
+    # load-bearing -- it is what the measured kernel command line names
+    # the carrier by.
+    @[]
   else:
     # No ReproOS preset declares LUKS, LVM or ZFS content. If one starts
     # to, this gate has to learn what its identifiers are before it can

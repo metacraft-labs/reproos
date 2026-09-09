@@ -90,6 +90,13 @@ const
   GoldenUefiExt4 = RepoRoot / "tests" / "golden" / "disko-uefi-ext4.json"
   DriverPath = RepoRoot / "recipes" / "reproos-image" / "scripts" /
     "build-reproos-image.sh"
+  ImageConfigPath = RepoRoot / "recipes" / "reproos-image" / "scripts" /
+    "image-config.sh"
+    ## The ONE reader of a validated auto-config.toml. The image build has
+    ## two halves -- the driver installs a disk, a separate action stages
+    ## and configures the root before its hash is taken -- and both read
+    ## the config through this fragment, so the defaults below live in one
+    ## place rather than two.
   RecipePath = RepoRoot / "recipes" / "reproos-image" / "package.nim"
 
   PreB1Revision = "e7b8fe379a2bcc50b019c658de83a26c48b1d37a"
@@ -490,23 +497,51 @@ block driverDefaultsStillAgreeWithThePlan:
   ## The golden was rendered with the driver's defaults. If the two
   ## readers of auto-config.toml ever disagree about what "unset" means,
   ## the byte comparison above would be measuring the wrong inputs.
-  if not fileExists(DriverPath):
+  if not fileExists(DriverPath) or not fileExists(ImageConfigPath):
+    fail("t_uefi_ext4_disko_document_unchanged: the shared config reader " &
+         ImageConfigPath & " is missing, so the defaults cannot be checked " &
+         "against the plan at all")
     break driverDefaultsStillAgreeWithThePlan
   let driver = readFile(DriverPath)
+  let imageConfig = readFile(ImageConfigPath)
   var wrong: seq[string]
-  if "DISK_SIZE_GB=\"${DISK_SIZE_GB:-" & $DefaultDiskSizeGb & "}\"" notin driver:
+  if "DISK_SIZE_GB=\"${DISK_SIZE_GB:-" & $DefaultDiskSizeGb & "}\"" notin imageConfig:
     wrong.add("size_gb default != " & $DefaultDiskSizeGb)
-  if "ESP_SIZE_MIB=\"${ESP_SIZE_MIB:-" & $DefaultEspSizeMib & "}\"" notin driver:
+  if "ESP_SIZE_MIB=\"${ESP_SIZE_MIB:-" & $DefaultEspSizeMib & "}\"" notin imageConfig:
     wrong.add("esp_size_mib default != " & $DefaultEspSizeMib)
-  if "DISK_TYPE=\"${DISK_TYPE:-" & DefaultDiskLayoutName & "}\"" notin driver:
+  if "DISK_TYPE=\"${DISK_TYPE:-" & DefaultDiskLayoutName & "}\"" notin imageConfig:
     wrong.add("layout default != " & DefaultDiskLayoutName)
   if wrong.len > 0:
-    fail("t_uefi_ext4_disko_document_unchanged: the driver and repro/" &
-         "disk_layouts.nim disagree about the config defaults: " &
+    fail("t_uefi_ext4_disko_document_unchanged: the shared config reader and " &
+         "repro/disk_layouts.nim disagree about the config defaults: " &
          wrong.join("; "))
     break driverDefaultsStillAgreeWithThePlan
+  # ...and there is only ONE reader. A driver that re-derived a default of
+  # its own would make the check above true and the build wrong.
+  # Every default the shared reader owns, not two of the three: leaving
+  # ESP_SIZE_MIB out let the driver re-derive it and kept this green.
+  for name in ["DISK_SIZE_GB", "ESP_SIZE_MIB", "DISK_TYPE"]:
+    if name & "=\"${" & name & ":-" in driver:
+      fail("t_uefi_ext4_disko_document_unchanged: the image driver applies " &
+           "its own auto-config.toml default for " & name & " as well as " &
+           "image-config.sh's; two readers of one document are two answers")
+      break driverDefaultsStillAgreeWithThePlan
+  # A SOURCE LINE, not a mention. `image-config.sh` appears in the
+  # driver's shellcheck directive and in its comments, so `notin driver`
+  # stayed true with the `.` line deleted and the driver reading nothing.
+  var sourcesSharedReader = false
+  for line in driver.splitLines():
+    let l = line.strip()
+    if l.startsWith(". ") and "image-config.sh" in l:
+      sourcesSharedReader = true
+      break
+  if not sourcesSharedReader:
+    fail("t_uefi_ext4_disko_document_unchanged: the image driver does not " &
+         "SOURCE image-config.sh (a comment naming it is not a source " &
+         "line), so nothing ties its defaults to the plan's")
+    break driverDefaultsStillAgreeWithThePlan
   pass("t_uefi_ext4_disko_document_unchanged: the driver and the plan apply the " &
-       "same auto-config.toml defaults")
+       "same auto-config.toml defaults, through one shared reader")
 
 block theDriverWritesExactlyThoseBytes:
   ## The last gap in the byte claim: the plan renders the document, but

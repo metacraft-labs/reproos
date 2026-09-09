@@ -147,6 +147,9 @@ package reproosWorkflows:
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
         "recipes/reproos-iso/scripts/build-iso.sh",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/configure-installed-root.sh",
+        "recipes/reproos-image/scripts/stage-installed-root.sh",
+        "recipes/reproos-image/scripts/image-config.sh",
         "apps/reproos-installer/qml/main.qml",
         "apps/reproos-installer/qml/screens/DeSelect.qml",
         "apps/reproos-installer/qml/screens/Activities.qml",
@@ -783,6 +786,7 @@ package reproosWorkflows:
         "repro/disk_layouts.nim",
         "recipes/reproos-image/package.nim",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/image-config.sh",
       ],
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang", "git",
@@ -1051,6 +1055,7 @@ package reproosWorkflows:
         "tools/reproos_generation.nim",
         "recipes/reproos-image/package.nim",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/stage-installed-root.sh",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
       cacheable = false).withToolIdentities([
@@ -1106,6 +1111,58 @@ package reproosWorkflows:
       ])
     discard target("test-attested-carriers", testAttestedCarriers)
 
+    # The ORDER the attested image is built in.
+    #
+    # The root of an attested image is a finished dm-verity image whose
+    # bytes a measured command line names, so every step that configures
+    # it has to run BEFORE the hash is taken -- and the arm that installs
+    # it must be unable to mount a carrier writably, because a read-write
+    # mount that writes nothing already breaks the pair. The always-on
+    # layer reads the shipped driver, stager, configuration script, mount
+    # guard and recipe; the opt-in layer configures a real root, images
+    # it, applies the real layout to a real disk, verifies the pair
+    # against the hash the command line pins, and falsifies that with a
+    # zero-write mount.
+    #
+    # `sudo`, qemu, `sgdisk`, `cryptsetup` and `e2fsprogs` are
+    # deliberately NOT declared as identities, for the same reason as the
+    # carrier gate above.
+    let testAttestedRootOrder = shell(
+      command = "bash tests/test-attested-root-order.sh",
+      actionId = "reproos.test-attested-root-order",
+      extraInputs = @[
+        "tests/test-attested-root-order.sh",
+        "tests/nim-gate.sh",
+        "tests/test_attested_root_order.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/generations.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "repro/package_sets.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/stage-installed-root.sh",
+        "recipes/reproos-image/scripts/configure-installed-root.sh",
+        "recipes/reproos-image/scripts/image-config.sh",
+        "recipes/reproos-image/scripts/mount-guard.sh",
+        "recipes/reproos-image/scripts/write-verity-carriers.sh",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+        "recipes/reproos-image/scripts/reproos-health-check",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/reproos-network",
+        "recipes/reproos-image/scripts/reproos-network-wait",
+        "recipes/reproos-image/scripts/reproos-network.service",
+        "recipes/reproos-image/scripts/reproos-udhcpc-hook",
+        "recipes/reproos-image/scripts/reproos-sway.conf",
+        "recipes/reproos-image/scripts/reproos-desktop.qml",
+        "recipes/reproos-image/scripts/repro-sway-diag",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-attested-root-order", testAttestedRootOrder)
+
     # What the image will measure, said before it boots.
     #
     # A stub extends PCR 11 with the unified kernel image's own sections
@@ -1160,6 +1217,7 @@ package reproosWorkflows:
       testUki,
       testGenerations,
       testAttestedCarriers,
+      testAttestedRootOrder,
       testMeasurementManifest,
       testIso,
       testImageBootSmoke,

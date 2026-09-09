@@ -195,7 +195,7 @@ proc caseDriverCallsTheWriterOnTheAttestedLayoutOnly() =
 
   # It has to happen before anything is mounted: a carrier holds no
   # filesystem, and the driver's root mount is for the other layout.
-  let mountAt = driver.find("Phase 7: mount the partitions")
+  let mountAt = driver.find("Phase 7: mount what this layout has a reason")
   if mountAt < 0:
     fail("t_image_driver_writes_the_verity_pair: the driver no longer has " &
          "the mount phase this ordering check is anchored on")

@@ -25,6 +25,20 @@ const
   ReproosImageOutput* =
     "recipes/reproos-image/build/reproos-installed.qcow2"
 
+  ReproosStageInstalledRootActionId* = "reproosImage.stage_installed_root"
+  ReproosInstalledRootOutput* = "recipes/reproos-image/build/installed-root"
+    ## The INSTALLED root, as a directory, complete before anything takes
+    ## a hash over it.
+    ##
+    ## This exists because of an order rather than for tidiness. On the
+    ## attested layout the root filesystem's bytes are named by a
+    ## dm-verity root hash that is baked into a unified kernel image
+    ## firmware measures, so every step that configures the root -- the
+    ## configuration bundle, the accounts, the services, the desktop --
+    ## has to have already happened when ``build_verity_root`` runs. The
+    ## image driver installs this; it does not build it, and it does not
+    ## write to it.
+
   ReproosVerityRootActionId* = "reproosImage.build_verity_root"
   ReproosVerityRootDir* = "recipes/reproos-image/build/verity"
   ReproosVerityDataImageOutput* =
@@ -437,6 +451,80 @@ package reproosImage:
     let diskIdentitySpecLine = diskIdentitySpec.replace("\n", "\\n")
 
     # ---------------------------------------------------------------
+    # The installed root, staged BEFORE its hash is taken.
+    #
+    # On the writable-root layout the image driver mounts the root and
+    # then spends nine phases configuring it, and that is fine there:
+    # nothing has made a claim about those bytes.
+    #
+    # On the attested layout it is not fine, and the failure is silent.
+    # The root is a finished image whose every byte the root hash covers,
+    # that hash is inside the unified kernel image firmware measures, and
+    # the image is a mountable ext4 sitting at offset 0 of a carrier --
+    # so the old order MOUNTED IT, configured it, exited 0, and shipped
+    # an image whose root no longer matched the root hash on its own
+    # measured command line. A read-write mount that writes nothing is
+    # enough to do it: ext4 stamps the superblock's mount state on mount.
+    #
+    # So the configuration moves ahead of the hash, into its own action
+    # over a plain directory. This action is registered ONLY for the
+    # attested layout: the writable-root build configures its root in
+    # place, on a filesystem it just created, and would otherwise pay for
+    # a second full copy of the closure it then threw away.
+    let isAttestedLayout = layoutRequest.name == "uefi-attested"
+    var stageInstalledRootDeps: seq[string] = @[]
+    if isAttestedLayout:
+      let stageInstalledRootCommand = @[
+        "set -euo pipefail;",
+        "mkdir -p build;",
+        "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
+        "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
+        "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
+        "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
+          installerPackage.ReproosInstallerBinary & "\"",
+        "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
+        "REPRO_BIN=\"" & reproCliInput & "\"",
+        "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
+        "bash scripts/stage-installed-root.sh build/installed-root",
+        ">build/stage-installed-root.log 2>&1",
+      ].join(" ")
+      let stageInstalledRootAction = shell(
+        command = stageInstalledRootCommand,
+        actionId = ReproosStageInstalledRootActionId,
+        deps = @[installerPackage.ReproosInstallerReadyActionId,
+                 isoPackage.ReproosIsoRootfsActionId],
+        extraInputs = @[
+          "recipes/reproos-image/scripts/stage-installed-root.sh",
+          "recipes/reproos-image/scripts/configure-installed-root.sh",
+          "recipes/reproos-image/scripts/image-config.sh",
+          installerPackage.ReproosInstallerBinary,
+          isoPackage.ReproosIsoRootfsOutput,
+          reproCliInput,
+        ],
+        # Declared outputs are resolved against the action's cwd
+        # (`recipes/reproos-image`, set below), so this is the relative
+        # spelling -- exactly as the sibling actions and the ISO recipe's
+        # `build/de-rootfs` do it. `ReproosInstalledRootOutput` is the
+        # project-root-relative form and belongs in the extraInputs of
+        # the actions that CONSUME this tree, not here: using it here
+        # would name a path under
+        # `recipes/reproos-image/recipes/reproos-image/`, which nothing
+        # produces.
+        extraOutputs = @["build/installed-root"])
+      # The same profile the image driver gets, because it runs the same
+      # configuration phases: the desktop packages are symlinked into the
+      # tree by path, so the action has to be able to see them.
+      appendRegisteredActionToolIdentityRefs(stageInstalledRootAction.id,
+        reproosImageRuntimeTools & packageSets.ReproosGraphicalRootfsPackages)
+      setRegisteredActionCwd(stageInstalledRootAction.id, acwdCustom,
+        "recipes/reproos-image")
+      let installedRootAbs = projectRoot / ReproosInstalledRootOutput
+      setRegisteredActionDependencyPolicy(stageInstalledRootAction.id,
+        automaticMonitorPolicy(@[installedRootAbs]))
+      discard target("installed-root", stageInstalledRootAction)
+      stageInstalledRootDeps = @[stageInstalledRootAction.id]
+
+    # ---------------------------------------------------------------
     # The integrity-checked read-only root.
     #
     # A read-only root that nothing checks is only a mount option: it
@@ -465,11 +553,25 @@ package reproosImage:
     if verityRootSpecError.len > 0:
       raise newException(ValueError,
         "recipes/reproos-image: " & verityRootSpecError)
+    #
+    # WHICH TREE THE HASH IS TAKEN OVER is decided by the layout, and it
+    # is the point of the split. On the attested layout it is the
+    # INSTALLED root -- the tree the action above configured -- because a
+    # hash over anything else is a hash of a root the machine will never
+    # run. On the writable-root layout nothing consumes this image, so it
+    # keeps being taken over the graph-provided tree and costs nothing
+    # extra.
+    let verityStagedRootfs =
+      if isAttestedLayout: "$PWD/build/installed-root"
+      else: "$PWD/../reproos-iso/build/de-rootfs"
+    let verityStagedRootfsInput =
+      if isAttestedLayout: ReproosInstalledRootOutput
+      else: isoPackage.ReproosIsoRootfsOutput
     let buildVerityRootCommand = @[
       "set -euo pipefail;",
       "mkdir -p build;",
       "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC",
-      "REPROOS_STAGED_ROOTFS=\"$PWD/../reproos-iso/build/de-rootfs\"",
+      "REPROOS_STAGED_ROOTFS=\"" & verityStagedRootfs & "\"",
       "REPROOS_VERITY_SALT=\"" & verityRootSpec.salt & "\"",
       "REPROOS_VERITY_UUID=\"" & verityRootSpec.uuid & "\"",
       "REPROOS_VERITY_FS_UUID=\"" &
@@ -481,10 +583,10 @@ package reproosImage:
     let buildVerityRootAction = shell(
       command = buildVerityRootCommand,
       actionId = ReproosVerityRootActionId,
-      deps = @[isoPackage.ReproosIsoRootfsActionId],
+      deps = @[isoPackage.ReproosIsoRootfsActionId] & stageInstalledRootDeps,
       extraInputs = @[
         "recipes/reproos-image/scripts/build-verity-root.sh",
-        isoPackage.ReproosIsoRootfsOutput,
+        verityStagedRootfsInput,
       ],
       extraOutputs = @[
         "build/verity/" & verity.VerityDataImageFileName,
@@ -633,6 +735,31 @@ package reproosImage:
     if bootDeviceError.len > 0:
       raise newException(ValueError,
         "recipes/reproos-image: " & bootDeviceError)
+
+    # Every partition whose bytes a root hash names -- BOTH slots, not
+    # just the one being installed. Slot B is empty at install time and
+    # is still a carrier: the moment an apply has staged into it, a
+    # write-capable mount of it is exactly as destructive as one of slot
+    # A, and a list that named only the installed slot would let the
+    # second one through. The image driver refuses such a mount rather
+    # than merely not performing it, and it can only do that if it is
+    # told which partitions they are.
+    var hashedCarrierSpecs: seq[string] = @[]
+    for slot in [generations.gsA, generations.gsB]:
+      let slotDevices = generations.attestedBootDevices(identitySeed, slot)
+      let slotError = generations.validateAttestedBootDevices(slotDevices)
+      if slotError.len > 0:
+        raise newException(ValueError,
+          "recipes/reproos-image: " & slotError)
+      hashedCarrierSpecs.add slotDevices.data
+      hashedCarrierSpecs.add slotDevices.hash
+    for spec in hashedCarrierSpecs:
+      if spec.contains(' ') or spec.contains('\'') or spec.contains('"'):
+        raise newException(ValueError,
+          "recipes/reproos-image: a carrier specifier " & spec.escape() &
+          " cannot be carried in the space-separated hand-off the driver" &
+          " reads it from")
+    let hashedCarrierList = hashedCarrierSpecs.join(" ")
     let ukiRequest = ukiModule.UkiAssembleRequest(
       stubPath: resolvedStub,
       kernelPath: "../../../reprobuild-packages/packages/source/kernel/" &
@@ -758,6 +885,7 @@ package reproosImage:
         verity.VerityRootHashFileName & "\"",
       "REPROOS_VERITY_DATA_DEVICE=\"" & bootDevices.data & "\"",
       "REPROOS_VERITY_HASH_DEVICE=\"" & bootDevices.hash & "\"",
+      "REPROOS_HASHED_CARRIERS=\"" & hashedCarrierList & "\"",
       "REPRO_AUTO_CONFIG=\"${REPRO_AUTO_CONFIG:-../../tests/fixtures/auto-config-minimal.toml}\"",
       "REPROOS_INSTALLER_BIN=\"$PWD/../../" &
         installerPackage.ReproosInstallerBinary & "\"",
@@ -791,6 +919,9 @@ package reproosImage:
         reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/write-verity-carriers.sh",
+        "recipes/reproos-image/scripts/mount-guard.sh",
+        "recipes/reproos-image/scripts/configure-installed-root.sh",
+        "recipes/reproos-image/scripts/image-config.sh",
         "tools/reproos_image_metadata.py",
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-image/scripts/reproos-sway.conf",

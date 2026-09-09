@@ -192,6 +192,39 @@ Use Reprobuild as the only contributor command surface:
   report, with two negatives — a `PARTUUID` that is on no partition must be
   refused rather than fall back to a partition number, and one flipped byte
   on the data carrier must redden the same verification.
+  `repro build test-attested-root-order` is the gate for **the order the
+  attested image is built in**, and it exists because getting that order
+  wrong fails silently. The root of an attested image is a finished
+  dm-verity image whose bytes a measured command line names, so every step
+  that configures it — hostname, fstab, accounts, services, desktop — has
+  to run *before* the hash is taken. The driver used to run them after,
+  against the mounted root carrier; the verity data image is a valid ext4
+  at offset 0 of that carrier, so the mount succeeded, every phase
+  succeeded, the build exited 0, and the image shipped with a root that no
+  longer matched the root hash on its own command line. Worse, a read-write
+  mount that writes **nothing at all** is already enough to break the pair,
+  because ext4 stamps the superblock's mount state on mount — so "write
+  less" is not a fix and only the order is. The configuration therefore
+  lives in `scripts/configure-installed-root.sh` with two callers:
+  `scripts/stage-installed-root.sh`, a separate action that runs it over a
+  plain directory before `build-verity-root.sh` takes the hash, and
+  `build-reproos-image.sh`, which runs it on the mounted root of the
+  writable-root layout only. `scripts/image-config.sh` is the one reader of
+  a validated `auto-config.toml`, so the two halves cannot drift into two
+  ideas of what an installed ReproOS is. Every mount the driver performs
+  goes through `scripts/mount-guard.sh`, which is told which partitions a
+  root hash covers (both generation slots) and **refuses** a write-capable
+  mount of one with exit 78 rather than relying on the driver being
+  careful. Run this gate after touching any of those five scripts, the
+  staging action in `recipes/reproos-image/package.nim`, or the carrier
+  declarations. Its always-on layer reads the shipped sources; the opt-in
+  layer (`REPROOS_ATTESTED_ROOT_ORDER_GATE=1`, ~3 min, needs `sudo` and the
+  `nbd` module) configures a real root with the shipped script, images it,
+  applies the real layout to a transient qcow2 over a loopback NBD node,
+  writes the pair, and verifies it against the root hash read back **out of
+  the command line** — then falsifies the whole thing by bypassing the
+  guard with a read-write mount that writes nothing and requiring the same
+  verification to fail.
   `repro build test-measurement-manifest` is the gate for **what the image
   will measure**. Before the kernel starts, the EFI stub extends TPM
   PCR 11 with the unified kernel image's own sections — for each section,

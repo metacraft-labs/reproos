@@ -104,16 +104,24 @@ const
         "boot goes through a unified kernel image whose command line " &
         "pins the root hash inside the measured binary; this layout " &
         "carries both root slots and both hash-tree volumes that " &
-        "command line names, and the image driver now writes the " &
+        "command line names, the image driver writes the " &
         "integrity-checked root and its hash tree onto them and " &
-        "re-verifies the pair where it landed. What is still missing " &
-        "is the ORDER the rest of the install runs in: the driver " &
-        "configures the root filesystem — hostname, fstab, accounts, " &
-        "services, desktop — after the root hash has already been " &
-        "taken over it, and on this layout there is no root filesystem " &
-        "left to configure, because its bytes are what the measurement " &
-        "names. Every one of those steps has to happen before the root " &
-        "image is built, not after it is installed",
+        "re-verifies the pair where it landed, the root is now " &
+        "configured — hostname, fstab, accounts, services, desktop — " &
+        "before that hash is taken rather than after the install, and " &
+        "a write-capable mount of a hashed carrier is refused rather " &
+        "than merely avoided. What is still missing is the GUEST INODE " &
+        "POLICY over that root. The writable-root layout applies it to " &
+        "the mounted filesystem once the install is finished; this " &
+        "layout cannot, because by then its root is a finished image no " &
+        "build may write to — and the action that stages the root runs " &
+        "unprivileged, so it cannot set the ownership, the modes or the " &
+        "setuid bit the policy prescribes. An image built today would " &
+        "ship /etc/shadow owned by the building user rather than by " &
+        "root, and /usr/bin/sudo without its setuid bit, so the " &
+        "installed system would have no privilege escalation at all. " &
+        "The policy has to be applied to the staged tree, or carried " &
+        "into the root image as that image is made",
       minDiskSizeGb: 20,
       defaultEspSizeMib: 512),
   ]

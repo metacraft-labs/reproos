@@ -938,19 +938,28 @@ block layerDeclarationsAgree:
           "both hash-tree volumes" in reason,
           "the refusal no longer says the layout has no volume for the " &
           "hash tree, because it now has two")
-    # This assertion used to read `check("does not write" in reason)`.
-    # The image driver writes the pair now, so the sentence it pinned is
-    # gone, and a refusal that still claimed nothing was written would be
-    # false rather than merely stale. What is left is an ORDERING
-    # problem, and that is what the refusal has to name.
+    # The refusal has now been narrowed twice, and each narrowing has to
+    # take the superseded sentence WITH it. A refusal that keeps a claim
+    # that has stopped being true is worse than a stale one: an operator
+    # reads it as the reason and goes and fixes something that is
+    # already fixed.
     check("does not write" notin reason,
           "the refusal no longer says nothing writes the verity pair, " &
           "because the driver writes it and re-verifies it in place")
-    check("before the root image is built" in reason,
-          "and it names what is left: the driver still configures the " &
-          "root filesystem after the root hash has been taken over it, " &
-          "so every one of those steps has to move ahead of the root " &
-          "image rather than after the install")
+    check("after the root hash has already been taken" notin reason and
+          "before that hash is taken" in reason,
+          "and it no longer says the root is configured after its hash " &
+          "is taken, because the configuration now runs over the staged " &
+          "tree that hash is taken from")
+    check("refused rather than merely avoided" in reason,
+          "... and it records that a write-capable mount of a hashed " &
+          "carrier is refused, which is the property that makes the " &
+          "order impossible to lose again by accident")
+    check("GUEST INODE POLICY" in reason and "setuid" in reason,
+          "and it names what is left: the guest inode policy is applied " &
+          "to a mounted root after the install, which this layout has no " &
+          "way to do, so the image would ship without the ownership and " &
+          "the setuid bit that policy prescribes")
 
   # The driver stages the installed image as a generation rather than
   # copying a binary into place, and passes the four things a stage needs.
@@ -970,15 +979,58 @@ block layerDeclarationsAgree:
         "and it stages the installed image as generation a, so the ESP " &
         "carries a generation store from the first install and the first " &
         "apply has somewhere to stage into")
-  # The attested arm's own fstab rewrite, identified by the string that
-  # occurs in it and nowhere else. The uefi-ext4 arm still rewrites its
-  # root to LABEL=reproos-root and must keep doing so -- that layout makes
-  # no integrity claim and its root really is a partition.
-  check("p2|/dev/mapper/reproos-root|g" in driver,
-        "the attested arm rewrites fstab's root to " &
-        "/dev/mapper/reproos-root rather than to a filesystem label: on " &
-        "this layout / is the dm-verity device, and the carrier " &
-        "partition it would otherwise name holds unchecked bytes")
+  # The attested arm no longer rewrites fstab AT ALL, and that is a
+  # strengthening rather than a loss. The fstab of an attested image is
+  # inside the root the root hash covers, so it has to be written before
+  # that hash is taken -- by scripts/stage-installed-root.sh -- and the
+  # driver has nothing left to rewrite. What must remain true is the
+  # property that rewrite existed to guarantee: NOTHING names a root
+  # carrier at `/`. On this layout the carriers declare no mountpoint at
+  # all, so the rendered mount plan has no `/` line to get wrong.
+  check("p2|/dev/mapper/reproos-root|g" notin driver,
+        "the image driver no longer patches an attested fstab after the " &
+        "fact: the installed fstab is inside the measured root, so it is " &
+        "written before the root hash is taken and not afterwards")
+  let stager = readFile(
+    RepoRoot / "recipes/reproos-image/scripts/stage-installed-root.sh")
+  # An INVOCATION, not a mention. `infra install-root` and `etc/fstab`
+  # both appear in this script's header comments, so a pair of `in`
+  # tests stayed true when the whole call was replaced by a plain
+  # `cp -a` -- which would ship an attested image with no rendered
+  # /etc/fstab at all, and nothing would have said so.
+  var rendersMountPlan = false
+  var stagerLines = stager.splitLines()
+  for i, line in stagerLines:
+    if "infra install-root" notin line: continue
+    if line.strip().startsWith("#"): continue
+    # The call spans continuation lines; take the next few with it.
+    var call = ""
+    for j in i .. min(i + 12, stagerLines.high):
+      if stagerLines[j].strip().startsWith("#"): continue
+      call.add stagerLines[j] & "\n"
+    if "--target" in call and "--disko" in call and "--no-grub" in call:
+      rendersMountPlan = true
+      break
+  check(rendersMountPlan,
+        "the mount plan of an attested image is rendered into the staged " &
+        "root by the one renderer -- an actual `repro infra install-root " &
+        "--target … --disko … --no-grub` invocation in the stager, not a " &
+        "comment naming it -- before anything takes a hash over that tree")
+  # --no-grub moved here from the driver when install-root stopped
+  # running on the attested arm. It is the reason the staged root carries
+  # no second, unmeasured description of how the machine boots, so it is
+  # pinned in its new home rather than left unpinned in either.
+  check("--no-grub" in stager,
+        "the stager tells install-root not to write a GRUB configuration " &
+        "into the staged root: a grub.cfg inside the measured root would " &
+        "be an unmeasured second answer to how the machine boots")
+  block attestedLayoutNamesNoRootMountpoint:
+    let disko = renderDiskoJson("uefi-attested",
+      DiskLayoutParams(id: "reproos-image", device: "/dev/nbd0",
+                       espSizeMib: 512, diskSizeGb: 20))
+    check("\"mountpoint\": \"/\"" notin disko,
+          "and the attested layout declares no partition mounted at `/`, " &
+          "so a rendered mount plan cannot name a carrier there")
   check("p2|LABEL=reproos-root|g" in driver,
         "... while the uefi-ext4 arm still names its root by label, " &
         "because that layout's root really is a partition")

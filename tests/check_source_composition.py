@@ -897,20 +897,73 @@ def main() -> None:
                 f"image recipe is missing output dependency exclusion: {value}"
             )
 
+    # The image build has two halves, and each of these values has to be
+    # in the half that owns it. The DRIVER installs a disk; the CONFIGURE
+    # script fills in the installed root, and reads the validated config
+    # through the one shared parser. Naming the file each value belongs to
+    # is what keeps the split from becoming two implementations.
     image_script = source(
         ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"
+    )
+    configure_script = source(
+        ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh"
+    )
+    image_config_script = source(
+        ROOT / "recipes/reproos-image/scripts/image-config.sh"
     )
     for value in [
         "REPROOS_STAGED_ROOTFS",
         "REPROOS_DISK_INITRD",
         '--kernel "$SOURCE_KERNEL"',
         '--initrd "$DISK_INITRD"',
-        'USER_FULL_NAME="$(toml_get "$CFG" "user" "full_name")"',
-        '\\$1 != g && \\$1 != \\"live\\" && \\$3 != gid',
-        'END { exit(found ? 0 : 1) }',
     ]:
         if value not in image_script:
             raise AssertionError(f"image driver is missing graph input: {value}")
+    for value in [
+        '\\$1 != g && \\$1 != \\"live\\" && \\$3 != gid',
+        'END { exit(found ? 0 : 1) }',
+    ]:
+        if value not in configure_script:
+            raise AssertionError(
+                f"installed-root configuration is missing graph input: {value}"
+            )
+    for value in [
+        'USER_FULL_NAME="$(toml_get "$CFG" "user" "full_name")"',
+    ]:
+        if value not in image_config_script:
+            raise AssertionError(
+                f"shared image config reader is missing graph input: {value}"
+            )
+    # There is ONE reader of the validated config. A second copy of the
+    # parsing in either half would be a second answer to what the image
+    # is, and the second answer would be the untested one.
+    for path, half in (
+        (ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh", image_script),
+        (
+            ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh",
+            configure_script,
+        ),
+        (
+            ROOT / "recipes/reproos-image/scripts/stage-installed-root.sh",
+            source(ROOT / "recipes/reproos-image/scripts/stage-installed-root.sh"),
+        ),
+    ):
+        # A DEFINITION, whatever the spacing. `toml_get() {` is one
+        # spelling of it; `toml_get ()  {` and a brace on the next line
+        # are the same function and used to slip through.
+        if re.search(r"(?m)^\s*(function\s+)?toml_get\s*\(\s*\)", half):
+            raise AssertionError(
+                f"{path} defines its own TOML reader; image-config.sh is the one"
+            )
+        # A SOURCE LINE, not a mention. Every one of these files names
+        # image-config.sh in a shellcheck directive and in its comments,
+        # so `not in half` stayed false with the `.` line deleted and the
+        # script reading nothing. Same idiom as sources_nim_gate_helper().
+        if not re.search(r"(?m)^\s*(\.|source)\s+\S*image-config\.sh", half):
+            raise AssertionError(
+                f"{path} does not SOURCE the shared image-config.sh reader "
+                "(a comment naming it is not a source line)"
+            )
     for legacy in ["REPRO_FORCE_RESTAGE", "stage-de-rootfs.sh \"$STAGE_DIR\""]:
         if legacy in image_script:
             raise AssertionError(f"image driver retains private stage cache: {legacy}")
@@ -977,6 +1030,7 @@ def main() -> None:
     health_service_sources = [
         source(STAGE_ROOTFS_SCRIPT),
         source(ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"),
+        source(ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh"),
     ]
     invalid_health_order = (
         "Description=ReproOS post-installation acceptance check\n"
@@ -1047,7 +1101,7 @@ def main() -> None:
         IMAGE_RECIPE,
         ISO_RECIPE,
         STAGE_ROOTFS_SCRIPT,
-        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
+        ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh",
     ]:
         require_contains(
             composition,
@@ -1063,7 +1117,10 @@ def main() -> None:
         ],
         "shared DHCP lease hook",
     )
-    for composition in [STAGE_ROOTFS_SCRIPT, ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh"]:
+    for composition in [
+        STAGE_ROOTFS_SCRIPT,
+        ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh",
+    ]:
         require_contains(
             composition,
             [
@@ -1195,10 +1252,10 @@ def main() -> None:
         "vm-harness-owned Incus parity probe",
     )
     require_contains(
-        ROOT / "recipes/reproos-image/scripts/build-reproos-image.sh",
+        ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh",
         [
             'CONFIGURATION_SHA256="$(sha256sum "$CFG"',
-            '"$MNT_DIR/etc/repro/generation"',
+            '"$ROOT_TREE/etc/repro/generation"',
         ],
         "installed VM generation identity",
     )

@@ -724,12 +724,36 @@ block layerDeclarationsAgree:
   check("UKI_ESP_PATH=" & UkiEspFallbackPath in driver,
         "the image driver installs the UKI at the path repro/uki.nim " &
         "declares (" & UkiEspFallbackPath & ")")
-  check("--no-grub" in driver,
-        "the driver tells install-root not to install GRUB on the " &
-        "attested layout")
+  # STRONGER than "--no-grub on the attested arm", which is what this
+  # used to check: install-root does not run on that arm at all. It is
+  # what mirrors a root, and on this layout the root is a finished image
+  # whose bytes the measurement names -- there is nothing to mirror and
+  # writing one would break the hash. So GRUB is not switched off here;
+  # the thing that writes GRUB never runs.
+  block installRootIsOnTheWritableArmOnly:
+    # Located structurally, in the ONE case statement that decides how a
+    # root gets onto the disk, so a call that escaped its arm is red.
+    let phase8 = driver.find("# Phase 8: put the root and the boot path")
+    let caseStart = driver.find("case \"$REPROOS_DISK_LAYOUT\" in", phase8)
+    let caseEnd = driver.find("\nesac", caseStart)
+    let attestedArm = driver.find("uefi-attested)", caseStart)
+    let writableArm = driver.find("\n  *)", caseStart)
+    check(phase8 >= 0 and caseStart > phase8 and caseEnd > caseStart and
+          attestedArm > caseStart and writableArm > attestedArm and
+          writableArm < caseEnd,
+          "the driver's Phase 8 still dispatches on the layout, with an " &
+          "attested arm before the writable-root one")
+    if phase8 >= 0 and caseEnd > caseStart and writableArm > attestedArm:
+      check("infra install-root" notin driver[attestedArm ..< writableArm],
+            "the attested arm never runs `repro infra install-root`: it " &
+            "mirrors a root, and this layout's root is already an image " &
+            "the measurement names, so a mirror would either be thrown " &
+            "away or break the hash")
+      check("infra install-root" in driver[writableArm ..< caseEnd],
+            "... and the writable-root arm still installs its root that way")
   check("rm -rf \"$MNT_DIR/boot/grub\"" in driver,
-        "and REMOVES the grub.cfg install-root writes anyway -- a " &
-        "grub.cfg left on the ESP is an unmeasured second answer to how " &
+        "and the driver still sweeps any grub.cfg off the attested ESP -- " &
+        "a grub.cfg left there is an unmeasured second answer to how " &
         "the machine boots")
   check("$REPROOS_UKI" in driver and "$MNT_DIR/boot/$UKI_ESP_PATH" in driver,
         "the driver copies the assembled UKI onto the ESP")

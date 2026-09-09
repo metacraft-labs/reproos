@@ -164,6 +164,34 @@ Use Reprobuild as the only contributor command surface:
   on the `/proc/cmdline` each guest reports. `qemu`, `dosfstools` and
   `mtools` are deliberately **not** declared identities, for the same
   reason `veritysetup` is not.
+  `repro build test-attested-carriers` is the gate for the step that puts
+  the integrity-checked root **onto a disk**. An attested boot resolves a
+  dm-verity root hash and two volume specifiers out of a command line that
+  sits inside the binary firmware measures; all three are produced and
+  pinned long before anything writes a partition, so without this step an
+  image boots, resolves both specifiers to volumes that really exist, and
+  finds them empty. `recipes/reproos-image/scripts/write-verity-carriers.sh`
+  is the step, and `build-reproos-image.sh` runs it as **Phase 6b** — on
+  the attested arm only, after `repro disk apply` and *before anything is
+  mounted*, because a carrier holds no filesystem and there is nothing to
+  mount. Carriers are found by matching the `PARTUUID=` specifiers off the
+  measured command line against the partition table that was just written
+  (`sgdisk -i`, no udev in the path), never by partition number and never
+  by filesystem label: a Merkle tree has no filesystem, and both root
+  carriers hold an ext4 image with the same label. The write is checked
+  three ways — the carrier must be big enough, the bytes are read back and
+  digested (no environment switch can turn that off), and `veritysetup
+  verify` re-walks the whole tree **on the partitions** against the root
+  hash the UKI pins. Run this gate after touching that script, the attested
+  arm of `build-reproos-image.sh`, or the carrier declarations in
+  `repro/disk_layouts.nim`. Its always-on layer reads the shipped sources
+  and needs nothing installed; the opt-in layer
+  (`REPROOS_ATTESTED_CARRIER_GATE=1`, ~2 min, needs `sudo` and the `nbd`
+  module) applies the real `uefi-attested` document to a transient qcow2
+  over a loopback NBD node and checks the disk rather than the script's own
+  report, with two negatives — a `PARTUUID` that is on no partition must be
+  refused rather than fall back to a partition number, and one flipped byte
+  on the data carrier must redden the same verification.
   `repro build test-measurement-manifest` is the gate for **what the image
   will measure**. Before the kernel starts, the EFI stub extends TPM
   PCR 11 with the unified kernel image's own sections — for each section,

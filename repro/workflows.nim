@@ -1058,6 +1058,54 @@ package reproosWorkflows:
       ])
     discard target("test-generations", testGenerations)
 
+    # The step that makes a measured command line true of a disk.
+    #
+    # An attested boot resolves a dm-verity root hash and two volume
+    # specifiers out of a command line that sits inside the binary
+    # firmware measures. All three were produced and pinned long before
+    # anything put a byte on a partition, and an image built that way
+    # boots, resolves both specifiers to volumes that really exist, and
+    # finds them empty. This gate covers the copy that closes that gap,
+    # and the checks it makes on the result.
+    #
+    # The always-on layer reads the shipped image driver, the shipped
+    # carrier writer and the shipped recipe: the writer is called on the
+    # attested arm and nowhere else, before anything is mounted; carriers
+    # are addressed by PARTUUID read back off the partition table rather
+    # than by a partition number or a filesystem label a Merkle tree
+    # cannot have; the bytes are read back and compared with no opt-out;
+    # and every tool the writer runs is a declared identity. The opt-in
+    # layer (REPROOS_ATTESTED_CARRIER_GATE=1) applies the real layout to
+    # a transient qcow2 over a loopback NBD node, writes a real pair
+    # through the shipped writer, and verifies it on the partitions --
+    # with a flipped byte as the negative half.
+    #
+    # `sudo`, qemu, `sgdisk`, `cryptsetup` and `e2fsprogs` are
+    # deliberately NOT declared as identities: the last two are
+    # from-source packages here, so naming them would make an always-on
+    # gate bootstrap them.
+    let testAttestedCarriers = shell(
+      command = "bash tests/test-attested-carriers.sh",
+      actionId = "reproos.test-attested-carriers",
+      extraInputs = @[
+        "tests/test-attested-carriers.sh",
+        "tests/nim-gate.sh",
+        "tests/test_attested_carriers.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/generations.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "repro/package_sets.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/write-verity-carriers.sh",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-attested-carriers", testAttestedCarriers)
+
     # What the image will measure, said before it boots.
     #
     # A stub extends PCR 11 with the unified kernel image's own sections
@@ -1111,6 +1159,7 @@ package reproosWorkflows:
       testVerityRoot,
       testUki,
       testGenerations,
+      testAttestedCarriers,
       testMeasurementManifest,
       testIso,
       testImageBootSmoke,

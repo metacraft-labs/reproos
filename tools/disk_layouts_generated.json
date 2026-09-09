@@ -18,7 +18,7 @@
       "name": "uefi-attested",
       "summary": "ESP + two integrity-checked read-only root slots + separate /var, /home and swap; the shape an attestable image needs",
       "buildable": false,
-      "unbuildableReason": "boot goes through a unified kernel image whose command line pins the root hash inside the measured binary, and this layout now carries both root slots and both hash-tree volumes that command line names, but the image driver still does not write the integrity-checked root image or its hash tree onto them; the result would be a measured command line naming volumes that exist and are empty",
+      "unbuildableReason": "boot goes through a unified kernel image whose command line pins the root hash inside the measured binary; this layout carries both root slots and both hash-tree volumes that command line names, and the image driver now writes the integrity-checked root and its hash tree onto them and re-verifies the pair where it landed. What is still missing is the ORDER the rest of the install runs in: the driver configures the root filesystem — hostname, fstab, accounts, services, desktop — after the root hash has already been taken over it, and on this layout there is no root filesystem left to configure, because its bytes are what the measurement names. Every one of those steps has to happen before the root image is built, not after it is installed",
       "minDiskSizeGb": 20,
       "defaultEspSizeMib": 512
     }

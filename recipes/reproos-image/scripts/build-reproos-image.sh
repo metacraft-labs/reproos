@@ -43,7 +43,14 @@
 #   70  = install-root failed
 #   71  = config emit failed
 #   72  = cleanup failed (warning, not fatal -- exit is from the
-#         original failure)
+#         original failure), and dbus wiring failed
+#   73  = sddm theme install failed
+#   74  = sddm path shims / instrumentation failed
+#   75  = seatd install failed
+#   76  = post-boot health gate install failed
+#   77  = the integrity-checked root did not land on its carriers
+#         (attested layouts only; see write-verity-carriers.sh, whose
+#         own codes are reported on stderr before this one)
 
 set -euo pipefail
 
@@ -569,6 +576,42 @@ fi
 sleep 2
 
 # ---------------------------------------------------------------
+# Phase 6b: put the integrity-checked root onto its carriers.
+#
+# Only the attested layout has any, and it has them because its root
+# is not a filesystem this driver creates and fills. It is a finished
+# image whose every byte the root hash covers, and that hash is already
+# inside the unified kernel image firmware will measure. So the root
+# arrives here as two files to be copied onto two partitions, and the
+# copy has to happen BEFORE anything mounts anything: a carrier holds
+# no filesystem, there is nothing to mount, and the state volumes the
+# later phases do touch are unaffected by it.
+#
+# The carriers are found by matching the PARTUUID specifiers off the
+# measured command line against the partition table `repro disk apply`
+# just wrote, so this step is also the first moment at which the two
+# can be observed to agree on a real disk rather than derived to agree
+# on paper.
+# ---------------------------------------------------------------
+case "$REPROOS_DISK_LAYOUT" in
+  uefi-attested)
+    : "${REPROOS_VERITY_ROOTHASH_FILE:?REPROOS_VERITY_ROOTHASH_FILE must name the root hash the verity build produced}"
+    : "${REPROOS_VERITY_DATA_DEVICE:?REPROOS_VERITY_DATA_DEVICE must name the carrier this generation's verity data image goes on}"
+    : "${REPROOS_VERITY_HASH_DEVICE:?REPROOS_VERITY_HASH_DEVICE must name the carrier this generation's Merkle tree goes on}"
+    VERITY_ART_DIR="$(dirname "$REPROOS_VERITY_ROOTHASH_FILE")"
+    echo "[build-reproos-image] Phase 6b: writing the verity pair onto its carriers"
+    SUDO="$SUDO" \
+    REPROOS_VERITY_DATA_IMAGE="$VERITY_ART_DIR/reproos-root.verity.img" \
+    REPROOS_VERITY_HASH_TREE="$VERITY_ART_DIR/reproos-root.verity.hashtree" \
+    REPROOS_VERITY_ROOTHASH_FILE="$REPROOS_VERITY_ROOTHASH_FILE" \
+    REPROOS_VERITY_DATA_DEVICE="$REPROOS_VERITY_DATA_DEVICE" \
+    REPROOS_VERITY_HASH_DEVICE="$REPROOS_VERITY_HASH_DEVICE" \
+      bash "$SCRIPT_DIR_SELF/write-verity-carriers.sh" "$NBD_DEV" \
+      || { echo "[build-reproos-image] writing the verity carriers failed" >&2; exit 77; }
+    ;;
+esac
+
+# ---------------------------------------------------------------
 # Phase 7: mount the partitions.
 #
 # With our GPT layout the ESP is partition 1, root is partition 2.
@@ -578,7 +621,9 @@ sleep 2
 # plan lets through to this driver. uefi-attested declares three more
 # volumes and needs a mount plan derived from the layout rather than
 # hardcoded partition numbers; it is refused at plan time until the
-# work that fills it in (verity content, then the UKI) lands.
+# work that fills it in lands. What Phase 6b above discharges is the
+# CONTENT of the two root carriers; what is still missing is stated in
+# the preset's own refusal.
 # ---------------------------------------------------------------
 ESP_DEV="${NBD_DEV}p1"
 ROOT_DEV="${NBD_DEV}p2"

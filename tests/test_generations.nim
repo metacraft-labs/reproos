@@ -938,9 +938,19 @@ block layerDeclarationsAgree:
           "both hash-tree volumes" in reason,
           "the refusal no longer says the layout has no volume for the " &
           "hash tree, because it now has two")
-    check("does not write" in reason,
-          "and it names what is left: nothing writes the verity data " &
-          "image or its Merkle tree onto those volumes")
+    # This assertion used to read `check("does not write" in reason)`.
+    # The image driver writes the pair now, so the sentence it pinned is
+    # gone, and a refusal that still claimed nothing was written would be
+    # false rather than merely stale. What is left is an ORDERING
+    # problem, and that is what the refusal has to name.
+    check("does not write" notin reason,
+          "the refusal no longer says nothing writes the verity pair, " &
+          "because the driver writes it and re-verifies it in place")
+    check("before the root image is built" in reason,
+          "and it names what is left: the driver still configures the " &
+          "root filesystem after the root hash has been taken over it, " &
+          "so every one of those steps has to move ahead of the root " &
+          "image rather than after the install")
 
   # The driver stages the installed image as a generation rather than
   # copying a binary into place, and passes the four things a stage needs.

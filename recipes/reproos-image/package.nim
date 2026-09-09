@@ -93,6 +93,18 @@ const reproosImageRuntimeTools = @[
   "grub-mkconfig",
   "rsync",
   "patchelf",
+  # The integrity-checked root's carriers. `dd` copies the two images
+  # onto the partitions the measured command line names, `blockdev`
+  # answers whether a carrier is big enough to hold one, and
+  # `veritysetup` re-walks the written pair on the partitions rather
+  # than on the files it came from. Without the last one the driver
+  # would ship an image whose root it never checked once it was in
+  # place; see recipes/reproos-image/scripts/write-verity-carriers.sh.
+  "dd",
+  "blockdev",
+  "veritysetup",
+  "wc",
+  "tr",
   # NBD lifecycle and mounted filesystem operations.
   "modprobe",
   "rmmod",
@@ -778,6 +790,7 @@ package reproosImage:
       extraInputs = @[
         reproCliInput,
         "recipes/reproos-image/scripts/build-reproos-image.sh",
+        "recipes/reproos-image/scripts/write-verity-carriers.sh",
         "tools/reproos_image_metadata.py",
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-image/scripts/reproos-sway.conf",
@@ -793,7 +806,18 @@ package reproosImage:
         isoPackage.ReproosIsoRootfsOutput,
         ReproosDiskInitrdOutput,
         "../reprobuild-packages/packages/source/kernel/.repro/output/install/usr/lib/reproos-kernel/vmlinuz",
-      ],
+      ] & (if bootsFromUki:
+             # The two files Phase 6b copies onto the root carriers, plus
+             # the root hash it checks them against. Declared only on the
+             # attested arm: on `uefi-ext4` nothing reads them, and an
+             # unconditional input would make every ordinary image build
+             # pay for an ext4 image of the whole closure and a Merkle
+             # tree over it that it then throws away.
+             @[ReproosVerityDataImageOutput,
+               ReproosVerityHashTreeOutput,
+               ReproosVerityRootHashOutput]
+           else:
+             @[]),
       extraOutputs = @[
         "build/reproos-installed.qcow2",
       ],

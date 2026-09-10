@@ -476,6 +476,8 @@ def main() -> None:
             'ReproosInstallerReadyActionId* = "install-mirror-reproosInstaller"',
             '".repro/output/install/usr/bin/reproos-installer"',
             "BuildActionDef(id: ReproosInstallerReadyActionId)",
+            '"cmake >=3.24"',
+            "freshConfigure = true",
         ],
         "finalized installer package contract",
     )

@@ -22,7 +22,7 @@ package reproosInstaller:
       sourceRepository = "https://github.com/metacraft-labs/ReproOS"
 
   nativeBuildDeps:
-    "cmake >=3.16"
+    "cmake >=3.24"
     "ninja >=1.10"
     "gcc >=11"
 
@@ -50,6 +50,7 @@ package reproosInstaller:
         buildDir = "build/reproos-installer",
         generator = "Ninja",
         cacheVars = opts,
+        freshConfigure = true,
         allowSourceWrites = true)
       discard pkg.executable("reproos-installer")
       discard target("installer",

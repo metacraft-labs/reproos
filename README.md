@@ -29,6 +29,11 @@ The project defaults to `from-source` provisioning, so the explicit
 `--tool-provisioning=from-source` flag is only needed when overriding another
 environment setting.
 
+The installer requires CMake 3.24 or newer and uses fresh configuration when its
+configure action runs. Retrying `repro build installer` after repairing a
+dependency therefore rechecks failed CMake probes without a manual build-tree
+cleanup. This does not force an up-to-date configure action to execute.
+
 The `rootfs` output must be materialized on a case-sensitive filesystem because
 Linux package trees can contain names that differ only by case. In WSL, prefer a
 checkout in the Linux filesystem. For a checkout on NTFS, empty

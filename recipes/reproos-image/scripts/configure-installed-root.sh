@@ -77,6 +77,8 @@
 #   74 = sddm path shims / instrumentation failed
 #   75 = seatd install failed
 #   76 = post-boot health gate install failed
+#   77 = the first-boot state seed could not be emitted, or the tree does
+#        not carry one the running machine could be seeded from
 
 set -euo pipefail
 
@@ -1429,6 +1431,57 @@ HEALTH_UNIT_EOF
   ln -sfn /etc/systemd/system/reproos-health-check.service \
     '$ROOT_TREE/etc/systemd/system/graphical.target.wants/reproos-health-check.service'
 " || { echo "[configure-installed-root] Phase 10.10 health gate install failed" >&2; exit 76; }
+
+# ---------------------------------------------------------------
+# Phase 10.11: the first-boot state seed.
+#
+# LAST, and that is the point: every phase above writes some of what
+# the installed system needs, and several of them write it under /var
+# or /home. On the integrity-checked layout those two paths are
+# SEPARATE VOLUMES that the initramfs mounts over the root -- so the
+# account's home and everything under /var/lib is shadowed by an empty
+# filesystem the instant the machine starts, and the account the
+# installer configured has nowhere to log in to.
+#
+# The answer is a factory copy inside the root and a tmpfiles.d
+# fragment that copies it out at first boot, which is systemd's own
+# convention for exactly this (the systemd in this image seeds /etc
+# from /usr/share/factory/etc the same way). Both live inside the root,
+# so what gets seeded is covered by the root hash.
+#
+# Run on BOTH layouts rather than only on the one that needs it. The
+# writable-root layout keeps its /var and /home in place, so every line
+# finds its destination already populated and does nothing -- but a
+# seed emitted only for the attested layout would be a second idea of
+# what the installed system's state is, and the first time a phase
+# above added a path only one of the two would have carried it.
+# ---------------------------------------------------------------
+echo "[configure-installed-root] Phase 10.11: emit the first-boot state seed"
+STATE_SEED_TOOL="$SCRIPT_DIR_SELF/../../../tools/reproos_state_seed.py"
+if [ ! -f "$STATE_SEED_TOOL" ]; then
+  echo "[configure-installed-root] the state seed tool is missing:" \
+       "$STATE_SEED_TOOL" >&2
+  exit 77
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[configure-installed-root] python3 is not on PATH; it runs the" \
+       "state seed emitter" >&2
+  exit 77
+fi
+if ! "$SUDO" python3 "$STATE_SEED_TOOL" emit "$ROOT_TREE"; then
+  echo "[configure-installed-root] the first-boot state seed could not be" \
+       "emitted" >&2
+  exit 77
+fi
+# Read back what was just written, out of the tree rather than out of
+# this script's intentions. An emitter that produced a fragment the
+# checker rejects would otherwise ship a root whose state is seeded
+# from something the root hash does not cover.
+if ! "$SUDO" python3 "$STATE_SEED_TOOL" check "$ROOT_TREE"; then
+  echo "[configure-installed-root] the first-boot state seed this tree" \
+       "carries is not one the running machine could be seeded from" >&2
+  exit 77
+fi
 
 echo "[configure-installed-root] OK $ROOT_TREE"
 exit 0

@@ -49,7 +49,9 @@ set -euo pipefail
 #   66 = config validation failed
 #   67 = the staged root filesystem is missing or unusable
 #   70 = mirroring the root failed
-#   71..76 = configure-installed-root.sh's own codes, passed through
+#   71..77 = configure-installed-root.sh's own codes, passed through
+#   78 = the root does not separate the state the attested layout puts on
+#        its own volumes
 
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <output-tree>" >&2
@@ -88,7 +90,7 @@ esac
 WORK="${REPROOS_WORK_DIR:-${OUT_TREE}.work}"
 mkdir -p "$WORK"
 
-for tool in rsync awk sed sha256sum; do
+for tool in rsync awk sed sha256sum python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "[stage-installed-root] required tool missing: $tool" >&2
     exit 65
@@ -222,6 +224,45 @@ REPROOS_SOURCE_RECIPES_ROOT="$SOURCE_RECIPES_ROOT" \
 REPROOS_TARGET_SOURCE_RECIPES_ROOT="$TARGET_SOURCE_RECIPES_ROOT" \
   bash "$SCRIPT_DIR_SELF/configure-installed-root.sh" "$OUT_TREE" \
   || exit $?
+
+# ---------------------------------------------------------------------
+# Separate the state, and refuse a tree that is not separated.
+#
+# The configuration above emitted the factory copy of /var and /home and
+# the tmpfiles.d fragment that seeds them. On THIS layout the originals
+# then have to go: /var and /home are separate volumes the initramfs
+# mounts over the root, so anything left under them here is inside the
+# measurement, invisible to the running machine, and a second answer to
+# what the machine's state is. Emptying them leaves the two mount points
+# the initramfs needs and nothing else.
+#
+# This is the attested half and it lives here rather than in the shared
+# configuration script for the same reason every other step in this file
+# does: the writable-root layout keeps its /var and /home, because there
+# they ARE the root and nothing has made a claim about their bytes.
+#
+# The check afterwards reads the finished tree back. Its failure stops
+# the staging, so the tree never exists, so `build-verity-root.sh` never
+# runs and no root hash is ever taken over a root whose state would be
+# shadowed. That is the reproducibility boundary for this property, and
+# it is one step earlier than the hash rather than at it.
+STATE_SEED_TOOL="$REPO_ROOT/tools/reproos_state_seed.py"
+if [ ! -f "$STATE_SEED_TOOL" ]; then
+  echo "[stage-installed-root] the state seed tool is missing:" \
+       "$STATE_SEED_TOOL" >&2
+  exit 78
+fi
+if ! python3 "$STATE_SEED_TOOL" detach "$OUT_TREE"; then
+  echo "[stage-installed-root] the state volumes' content could not be" \
+       "separated from the root that is about to be hashed" >&2
+  exit 78
+fi
+if ! python3 "$STATE_SEED_TOOL" check "$OUT_TREE" --attested; then
+  echo "[stage-installed-root] this root does not separate its writable" \
+       "state, so an image made from it would boot, verify against its own" \
+       "root hash, and offer no usable session" >&2
+  exit 78
+fi
 
 echo "[stage-installed-root] OK $OUT_TREE"
 exit 0

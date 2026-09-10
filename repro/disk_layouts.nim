@@ -113,16 +113,25 @@ const
         "than merely avoided, and the guest inode policy is now carried " &
         "INTO the root image as that image is made — root-owned inodes, " &
         "a setuid /usr/bin/sudo, an unwritable /etc/sudoers — with an " &
-        "image that does not carry it refused rather than hashed. What " &
-        "is still missing is the WRITABLE STATE this layout separates " &
-        "out. /var and /home are their own volumes, the apply creates " &
-        "them empty, and the initramfs mounts them over the measured " &
-        "root at first boot — so the configured user's home and " &
-        "/var/lib content are shadowed by empty filesystems the moment " &
-        "the machine starts, and the account the installer configured " &
-        "has nowhere to log in to. Nothing seeds them yet. Until " &
-        "something does, an image built from this layout would boot, " &
-        "verify against its own root hash, and have no usable session",
+        "image that does not carry it refused rather than hashed, and " &
+        "the writable state this layout separates out is now SEEDED at " &
+        "first boot from a factory copy inside the measured root, so " &
+        "the configured account has a home and /var is usable without " &
+        "anything unmeasured being installed and without a reboot " &
+        "reverting what the machine or its operator wrote. What is " &
+        "still missing is the machine's IDENTITY. Enrolment writes " &
+        "/etc/machine-id, /etc/hostname, the account records, the " &
+        "autologin drop-in and the sudo drop-in into /etc, and sshd " &
+        "generates its host keys into /etc/ssh — and on this layout " &
+        "/etc is inside the integrity-checked root, which is mounted " &
+        "read-only for the whole life of the boot and whose bytes a " &
+        "measured command line names. So enrolment cannot complete, " &
+        "the services that require it never start, and the machine " &
+        "cannot take an SSH identity. Until identity has somewhere " &
+        "writable to live, an image built from this layout would boot, " &
+        "verify against its own root hash and reach a local session, " &
+        "but could never be reached over the network or attest to who " &
+        "it is",
       minDiskSizeGb: 20,
       defaultEspSizeMib: 512),
   ]
@@ -275,14 +284,17 @@ proc uefiAttestedLayout(p: DiskLayoutParams): DiskLayout =
   ## partition mounted at ``/`` would be a second, unchecked answer to
   ## what the root is.
   ##
-  ## What it does NOT yet do: write the verity data image and its Merkle
-  ## tree onto those carriers, or encrypt the state volumes. Both images
-  ## ARE built — ``recipes/reproos-image/scripts/build-verity-root.sh``
-  ## produces them from the staged tree, ``repro/verity.nim`` declares
-  ## their shape, and the root hash is pinned on the measured command line
-  ## inside the unified kernel image ``repro/uki.nim`` assembles — but
-  ## nothing copies them onto a disk. That is why this preset is refused
-  ## at plan time, and it is the whole of what the refusal now says.
+  ## The ``/var`` and ``/home`` volumes are created EMPTY, and that is
+  ## deliberate rather than unfinished: the initramfs mounts them over the
+  ## measured root, and what belongs on them is copied out at first boot
+  ## from a factory tree inside that root
+  ## (``tools/reproos_state_seed.py``), so the seed is covered by the root
+  ## hash and a reboot never reverts what the machine wrote.
+  ##
+  ## What it does NOT yet do: encrypt the state volumes, or give the
+  ## machine anywhere writable to keep its identity — see this preset's
+  ## ``unbuildableReason``, which is the whole of why it is still refused
+  ## at plan time.
   var partitions: OrderedTable[string, PartitionSpec]
   partitions["esp"] = espPartition(p.espSizeMib)
   for slot in [generations.gsA, generations.gsB]:

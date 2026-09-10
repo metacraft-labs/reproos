@@ -1201,6 +1201,67 @@ package reproosWorkflows:
       ])
     discard target("test-attested-root-metadata", testAttestedRootMetadata)
 
+    # The first-boot state seed.
+    #
+    # On the attested layout /var and /home are separate volumes, the
+    # apply creates them EMPTY, and the initramfs mounts them over the
+    # measured root -- so the account's home and everything the
+    # configuration put under /var were shadowed the instant the machine
+    # started, and nothing seeded them. The image booted, verified
+    # against its own root hash, and offered no usable session.
+    #
+    # The answer is systemd's own: a factory copy inside the measured
+    # root and tmpfiles.d `C` lines, which copy only when the destination
+    # is absent or empty -- so the seed source is covered by the root
+    # hash and a reboot cannot revert what the machine wrote, with no
+    # stamp file to lose. The always-on layer reads the shipped scripts
+    # for invocations and drives the shipped tool through every refusal;
+    # the opt-in layer applies the real layout to a real disk and
+    # ACTIVATES it twice through dm-verity, running the real
+    # systemd-tmpfiles over the real state partitions each time with the
+    # state modified in between.
+    #
+    # `sudo`, qemu, `sgdisk`, `cryptsetup` and `e2fsprogs` are
+    # deliberately NOT declared as identities, for the same reason as the
+    # three gates above.
+    let testAttestedStateSeed = shell(
+      command = "bash tests/test-attested-state-seed.sh",
+      actionId = "reproos.test-attested-state-seed",
+      extraInputs = @[
+        "tests/test-attested-state-seed.sh",
+        "tests/nim-gate.sh",
+        "tests/test_attested_state_seed.nim",
+        "tests/root_policy_fixture.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "tools/reproos_state_seed.py",
+        "tools/reproos_image_metadata.py",
+        "repro/generations.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "repro/package_sets.nim",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/stage-installed-root.sh",
+        "recipes/reproos-image/scripts/configure-installed-root.sh",
+        "recipes/reproos-image/scripts/image-config.sh",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+        "recipes/reproos-image/scripts/write-verity-carriers.sh",
+        "recipes/reproos-image/scripts/reproos-health-check",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/reproos-network",
+        "recipes/reproos-image/scripts/reproos-network-wait",
+        "recipes/reproos-image/scripts/reproos-network.service",
+        "recipes/reproos-image/scripts/reproos-udhcpc-hook",
+        "recipes/reproos-image/scripts/reproos-sway.conf",
+        "recipes/reproos-image/scripts/reproos-desktop.qml",
+        "recipes/reproos-image/scripts/repro-sway-diag",
+        "recipes/reproos-iso/initramfs/init-disk",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang", "python3",
+      ])
+    discard target("test-attested-state-seed", testAttestedStateSeed)
+
     # What the image will measure, said before it boots.
     #
     # A stub extends PCR 11 with the unified kernel image's own sections
@@ -1257,6 +1318,7 @@ package reproosWorkflows:
       testAttestedCarriers,
       testAttestedRootOrder,
       testAttestedRootMetadata,
+      testAttestedStateSeed,
       testMeasurementManifest,
       testIso,
       testImageBootSmoke,

@@ -501,6 +501,13 @@ package reproosImage:
           "recipes/reproos-image/scripts/stage-installed-root.sh",
           "recipes/reproos-image/scripts/configure-installed-root.sh",
           "recipes/reproos-image/scripts/image-config.sh",
+          # The first-boot state seed. It decides which paths are state,
+          # writes their factory copy INTO this tree, and refuses a tree
+          # that would be hashed with its state still shadowed -- so it
+          # is an input to the bytes exactly as the guest inode policy
+          # is, and it shares one reading of the passwd file with it.
+          "tools/reproos_state_seed.py",
+          "tools/reproos_image_metadata.py",
           installerPackage.ReproosInstallerBinary,
           isoPackage.ReproosIsoRootfsOutput,
           reproCliInput,

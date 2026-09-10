@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""First-boot state seed for a root whose bytes are named by a hash.
+
+WHY THIS EXISTS
+===============
+
+On the integrity-checked layout the root filesystem is read-only and its
+bytes are named by a dm-verity root hash, so nothing writable may live in
+it.  ``/var`` and ``/home`` are therefore separate volumes: the disk
+layout creates them, and the initramfs mounts them OVER the root before
+it hands off to init.
+
+That mount is a shadow.  Anything the configuration wrote under ``/var``
+or ``/home`` in the root is still in the image -- still covered by the
+root hash -- and completely invisible to the running machine, which sees
+two freshly made empty filesystems instead.  An installed account whose
+home was created that way has nowhere to log in to.
+
+So the content has to be SEEDED at first boot rather than baked into the
+root.  This tool is the one place that decides which paths are state,
+where their factory copy lives, and what the running system's copy is
+owned by.
+
+THE SHAPE, AND WHY IT IS SYSTEMD'S
+==================================
+
+The factory copy lives at ``/usr/share/factory/<path>`` INSIDE the root,
+and the copy-out is declared as ``C`` lines in a ``tmpfiles.d`` fragment
+that ships in the same root.  Both are systemd's own established
+convention -- systemd's ``etc.conf`` seeds ``/etc/nsswitch.conf`` and
+friends from ``/usr/share/factory/etc`` exactly this way -- and the image
+already runs ``systemd-tmpfiles-setup.service``, which is
+``After=local-fs.target`` and ``Before=sysinit.target``: after the state
+volumes are mounted and long before any login.
+
+Three properties follow, and they are the reason for this shape rather
+than a bespoke first-boot script:
+
+  * The seed source is inside the measurement.  A copy taken from
+    anywhere the root hash does not cover would reintroduce exactly the
+    unmeasured surface the separated volumes exist to remove.
+
+  * Seeding is idempotent WITHOUT a stamp file.  ``C`` copies only when
+    the destination is absent or an empty directory; a destination that
+    already holds anything is left entirely alone.  A seeder that
+    re-runs unconditionally is worse than none, because it destroys the
+    operator's data on every reboot -- and a stamp file is not an answer,
+    because the stamp lives on the very volume being seeded, so losing
+    it turns the seeder back into a clobberer.  ``C`` cannot be defeated
+    that way: the test is the destination itself.
+
+  * A later generation seeds only what is new.  Its root carries a new
+    factory tree; paths the running machine already has keep their state,
+    and paths it does not have appear.
+
+OPERATIONS
+==========
+
+``emit <root>``
+    Copy the state roots into ``<root>/usr/share/factory`` and write the
+    fragment.  Run on EVERY layout, from
+    ``configure-installed-root.sh``, so the two layouts cannot drift into
+    two ideas of what the installed system's state is.
+
+``detach <root>``
+    Empty the state roots in the tree, leaving bare mount points.  Run
+    only where the root is about to be hashed and mounted read-only.
+    Refuses unless the factory copy is already there, so it can never
+    delete content that has no seed.
+
+``check <root> [--attested]``
+    Re-derive the fragment from the factory tree and refuse anything that
+    disagrees: a line that is not a copy-if-absent, a source outside the
+    measured root, a target that is not on a state volume, an account
+    from ``/etc/passwd`` whose home is not seeded with its own uid and
+    gid.  ``--attested`` additionally requires the state roots in the
+    tree to be EMPTY.
+
+Exit status is 0 when the tree satisfies the operation and 1 otherwise,
+with the reason on stderr.
+"""
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+
+from reproos_image_metadata import account_homes, guest_path
+
+# The mount points the attested layout puts on their own volumes. These
+# are the same two paths the initramfs mounts state over
+# (`mount_state "$STATE_VAR" /var` / `mount_state "$STATE_HOME" /home`)
+# and the same two the disk layout gives filesystems to. A third state
+# volume would be added in all three places or in none.
+STATE_ROOTS = ("/var", "/home")
+
+# systemd's own location for "the vendor's copy of a file that lives on a
+# state volume". Chosen rather than invented: `systemd-tmpfiles` already
+# defaults a `C` line's source to `/usr/share/factory/$PATH`, and the
+# systemd this image ships seeds `/etc` from it.
+FACTORY_ROOT = "/usr/share/factory"
+
+# Inside `/usr/lib` rather than `/etc`, because this is the vendor's
+# declaration of what the image ships and not an operator's local
+# override -- and because it puts the fragment next to systemd's own
+# `etc.conf`, which uses the same convention for the same reason.
+FRAGMENT = "/usr/lib/tmpfiles.d/10-reproos-state.conf"
+
+FRAGMENT_HEADER = (
+    "# Generated by tools/reproos_state_seed.py -- do not edit.\n"
+    "#\n"
+    "# The root filesystem of an integrity-checked ReproOS is read-only and\n"
+    "# /var and /home are separate volumes mounted over it, so anything the\n"
+    "# configuration put in them is invisible to the running machine. Each\n"
+    "# line below copies one factory tree out of the root, ONCE, on the\n"
+    "# first boot that finds the destination absent or empty. A destination\n"
+    "# that already holds anything is left alone, so a reboot never reverts\n"
+    "# what the machine or its operator wrote.\n"
+    "#\n"
+    "# Type Path Mode UID GID Age Source\n"
+)
+
+# tmpfiles.d fields are whitespace-separated and support C-style escapes.
+# Rather than emit an escape this tool would also have to be able to
+# read back, a path that would need one is REFUSED and named. Every path
+# in a ReproOS root today is well inside this set, and a guest filename
+# that is not should stop a build rather than silently produce a seed
+# line that means something else.
+SAFE_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    "._-+@,=:%^"
+)
+
+
+class SeedError(Exception):
+    """A tree this tool refuses to describe, or a fragment it refuses."""
+
+
+def _relative(guest: str) -> str:
+    return guest.lstrip("/")
+
+
+def _factory_guest_path(guest: str) -> str:
+    return FACTORY_ROOT + guest
+
+
+def _check_name(guest: str) -> None:
+    for part in _relative(guest).split("/"):
+        if not part or any(ch not in SAFE_CHARS for ch in part):
+            raise SeedError(
+                f"guest path {guest!r} cannot be written as a tmpfiles.d "
+                "line without an escape; a state path has to be nameable "
+                "in the fragment that seeds it"
+            )
+
+
+def seed_lines(root: Path):
+    """The seed, as a list of ``(guest_path, mode, uid, gid)``.
+
+    Derived from the FACTORY copy inside the tree -- which is what the
+    running machine will be seeded from -- so ``emit`` and ``check`` read
+    one input through one walker and cannot hold two opinions about what
+    the seed is.
+
+    Every line is a copy-if-absent. There is deliberately no second line
+    type: a ``d`` would collide with the ``/var/lib``, ``/var/log`` and
+    ``/home`` entries systemd's own fragments already declare, and
+    ``systemd-tmpfiles`` creates a ``C`` target's parents itself.
+    """
+    homes = account_homes(root)
+    lines = []
+
+    def owner_of(guest: str):
+        rel = _relative(guest)
+        for home, (uid, gid) in homes.items():
+            if rel == home:
+                return uid, gid, True
+        return 0, 0, False
+
+    def mode_of(path: Path) -> int:
+        return stat.S_IMODE(path.lstat().st_mode) & ~0o7000
+
+    def walk(guest: str, path: Path) -> None:
+        uid, gid, is_home = owner_of(guest)
+        # `lstat`, not `is_dir()`: a symlink pointing at a directory is a
+        # symlink, and it is seeded as one rather than descended into.
+        directory = stat.S_ISDIR(path.lstat().st_mode)
+        children = sorted(path.iterdir()) if directory else []
+        if (not directory) or is_home or not children or any(
+            not stat.S_ISDIR(child.lstat().st_mode) for child in children
+        ):
+            _check_name(guest)
+            lines.append((guest, mode_of(path), uid, gid))
+            return
+        for child in children:
+            walk(guest + "/" + child.name, child)
+
+    for state_root in STATE_ROOTS:
+        top = root / _relative(_factory_guest_path(state_root))
+        if not top.is_dir() or top.is_symlink():
+            continue
+        # Never a line for the state root itself: it is a mount point the
+        # machine already has, and systemd's own `var.conf` and
+        # `home.conf` already declare it. A duplicate would be dropped
+        # with a warning on every boot.
+        for child in sorted(top.iterdir()):
+            walk(state_root + "/" + child.name, child)
+    return lines
+
+
+def render_fragment(root: Path) -> str:
+    out = [FRAGMENT_HEADER]
+    for guest, mode, uid, gid in seed_lines(root):
+        out.append(
+            f"C {guest} {mode:04o} {uid} {gid} - {_factory_guest_path(guest)}\n"
+        )
+    return "".join(out)
+
+
+def parse_fragment(text: str):
+    """``(type, path, mode, uid, gid, age, source)`` for each real line."""
+    items = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        bare = line.strip()
+        if not bare or bare.startswith("#"):
+            continue
+        fields = bare.split()
+        if len(fields) != 7:
+            raise SeedError(
+                f"{FRAGMENT} line {number} has {len(fields)} fields, not the "
+                f"seven a seed line carries: {bare!r}"
+            )
+        items.append(tuple(fields))
+    return items
+
+
+def emit(root: Path) -> None:
+    factory = root / _relative(FACTORY_ROOT)
+    for state_root in STATE_ROOTS:
+        source = root / _relative(state_root)
+        if source.is_symlink():
+            raise SeedError(
+                f"{state_root} is a symlink in this tree; a state mount "
+                "point has to be a real directory"
+            )
+        if not source.is_dir():
+            continue
+        destination = factory / _relative(state_root)
+        if destination.exists() or destination.is_symlink():
+            # An earlier emit. Replace it rather than merge into it: a
+            # merged tree would carry paths the current configuration no
+            # longer describes, and they would be seeded onto the running
+            # machine anyway.
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True)
+    fragment = root / _relative(FRAGMENT)
+    fragment.parent.mkdir(parents=True, exist_ok=True)
+    fragment.write_text(render_fragment(root), encoding="utf-8")
+    os.chmod(fragment, 0o644)
+
+
+def detach(root: Path) -> None:
+    factory = root / _relative(FACTORY_ROOT)
+    fragment = root / _relative(FRAGMENT)
+    if not fragment.is_file():
+        raise SeedError(
+            f"{FRAGMENT} is not in this tree, so nothing declares how the "
+            "state volumes are seeded; emptying them would delete content "
+            "that has no factory copy"
+        )
+    for state_root in STATE_ROOTS:
+        source = root / _relative(state_root)
+        if not source.is_dir() or source.is_symlink():
+            continue
+        mirrored = factory / _relative(state_root)
+        if not mirrored.is_dir():
+            raise SeedError(
+                f"{state_root} has no factory copy at "
+                f"{_factory_guest_path(state_root)}; refusing to empty a "
+                "state mount point whose content nothing would seed back"
+            )
+        for child in sorted(source.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+
+def check(root: Path, attested: bool) -> None:
+    fragment = root / _relative(FRAGMENT)
+    if not fragment.is_file():
+        raise SeedError(
+            f"{FRAGMENT} is missing, so the root declares no first-boot "
+            "state seed at all: /var and /home would be mounted empty over "
+            "it and the configured account would have no home"
+        )
+    text = fragment.read_text(encoding="utf-8")
+    items = parse_fragment(text)
+    if not items:
+        raise SeedError(
+            f"{FRAGMENT} declares no seed lines; an empty fragment seeds "
+            "nothing and is indistinguishable from having none"
+        )
+
+    for kind, path, mode, uid, gid, age, source in items:
+        if kind != "C":
+            raise SeedError(
+                f"{FRAGMENT} declares {path} with tmpfiles type {kind!r}. "
+                "Every seed line has to be C -- copy only when the "
+                "destination is absent or empty. Any other type writes on "
+                "every boot, which reverts whatever the machine or its "
+                "operator put there"
+            )
+        if not source.startswith(FACTORY_ROOT + "/"):
+            raise SeedError(
+                f"{FRAGMENT} seeds {path} from {source}, which is not under "
+                f"{FACTORY_ROOT}. The seed source has to be inside the "
+                "measured root: a copy taken from a state volume, from the "
+                "ESP or from anywhere else the root hash does not cover is "
+                "unmeasured content installed into the running system"
+            )
+        if not any(path == r or path.startswith(r + "/") for r in STATE_ROOTS):
+            raise SeedError(
+                f"{FRAGMENT} seeds {path}, which is not on a state volume "
+                f"({', '.join(STATE_ROOTS)}). Seeding anywhere else writes "
+                "into the read-only root at boot"
+            )
+        if source != _factory_guest_path(path):
+            raise SeedError(
+                f"{FRAGMENT} seeds {path} from {source} rather than from "
+                f"{_factory_guest_path(path)}; the factory tree mirrors the "
+                "state volumes path for path so that one walk describes both"
+            )
+        material = root / _relative(source)
+        if not material.exists() and not material.is_symlink():
+            raise SeedError(
+                f"{FRAGMENT} seeds {path} from {source}, which is not in "
+                "this tree. The line would silently do nothing"
+            )
+
+    rendered = render_fragment(root)
+    if rendered != text:
+        raise SeedError(
+            f"{FRAGMENT} is not what the factory tree in this root renders "
+            "to. Either the fragment was edited by hand or the factory tree "
+            "moved under it, and in both cases the running machine would be "
+            "seeded with something other than what this root carries.\n"
+            f"--- in the tree ---\n{text}--- from the factory tree ---\n"
+            f"{rendered}"
+        )
+
+    seeded = {item[1] for item in items}
+    for home, (uid, gid) in account_homes(root).items():
+        guest = "/" + home
+        if guest not in seeded:
+            raise SeedError(
+                f"/etc/passwd declares an account whose home is {guest}, and "
+                "no line seeds it. /home is a separate volume that the "
+                "initramfs mounts empty over this root, so that account "
+                "would have no home directory and no session"
+            )
+        line = next(item for item in items if item[1] == guest)
+        if (int(line[3]), int(line[4])) != (uid, gid):
+            raise SeedError(
+                f"{guest} is seeded as {line[3]}:{line[4]} but /etc/passwd "
+                f"gives the account {uid}:{gid}; the home would land owned "
+                "by someone who cannot write to it"
+            )
+
+    if attested:
+        for state_root in STATE_ROOTS:
+            path = root / _relative(state_root)
+            if path.is_symlink() or not path.is_dir():
+                raise SeedError(
+                    f"{state_root} is not a real directory in this root; it "
+                    "is a mount point the initramfs mounts a volume over"
+                )
+            leftover = sorted(child.name for child in path.iterdir())
+            if leftover:
+                raise SeedError(
+                    f"{state_root} still holds {', '.join(leftover)} in a "
+                    "root that is about to be hashed and mounted read-only. "
+                    "Those bytes are inside the measurement and invisible to "
+                    "the running machine, which mounts a separate volume "
+                    "here. They belong in the factory tree, which is what "
+                    "seeds them"
+                )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("operation", choices=("emit", "detach", "check"))
+    parser.add_argument("root")
+    parser.add_argument(
+        "--attested",
+        action="store_true",
+        help="also require the state mount points in the root to be empty",
+    )
+    args = parser.parse_args(argv)
+    root = Path(args.root).absolute()
+    if root.is_symlink() or not root.is_dir() or root == Path("/"):
+        print(
+            "reproos_state_seed: expected a private image root directory, "
+            "not / or a symlink",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        # Resolve through the tree's own symlinks the same way the guest
+        # inode policy does, so `/var -> /run/var` in some future root is
+        # a refusal here rather than a surprise at boot.
+        guest_path(root, "/etc/passwd")
+        if args.operation == "emit":
+            emit(root)
+        elif args.operation == "detach":
+            detach(root)
+        else:
+            check(root, args.attested)
+    except (SeedError, ValueError, OSError) as error:
+        print(f"reproos_state_seed: {args.operation}: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

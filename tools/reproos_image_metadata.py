@@ -41,6 +41,38 @@ def guest_path(root, name):
     return root.joinpath(*parts)
 
 
+def account_homes(root):
+    """Guest paths of the login accounts' homes -> ``(uid, gid)``.
+
+    Which accounts an image root declares is one question with one
+    answer, and two tools need it: this policy leaves a home to its
+    passwd owner instead of reassigning it to ``0:0``, and
+    ``reproos_state_seed.py`` has to seed that home onto the separate
+    ``/home`` volume with the same owner. Written once so the two cannot
+    disagree about who the machine's user is.
+
+    Keys are ROOT-RELATIVE (``home/repro``), matching
+    ``Policy.entries()``.
+    """
+    root = Path(root).absolute()
+    homes = {}
+    for line in guest_path(root, "/etc/passwd").read_text().splitlines():
+        fields = line.split(":")
+        if len(fields) != 7:
+            raise ValueError("invalid guest passwd record")
+        name, _, uid, gid, _, home, _ = fields
+        if 1000 <= int(uid) < 65534 and home == f"/home/{name}":
+            if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", name) or int(gid) < 0:
+                raise ValueError("invalid guest home owner")
+            if not stat.S_ISDIR((root / "home").lstat().st_mode):
+                raise ValueError("guest /home must be a real directory")
+            path = root / home.lstrip("/")
+            if path.is_symlink():
+                raise ValueError(f"user home must not be a symlink: {home}")
+            homes[home.lstrip("/")] = (int(uid), int(gid))
+    return homes
+
+
 class Policy:
     def __init__(self, root):
         self.root = Path(root).absolute()
@@ -60,21 +92,7 @@ class Policy:
         self.trusted_dirs.add(guest_path(self.root, "/usr/bin"))
         for path in (self.sudo, *self.config_modes):
             self.trusted_dirs.update(path.parents)
-        self.homes = {}
-        for line in guest_path(self.root, "/etc/passwd").read_text().splitlines():
-            fields = line.split(":")
-            if len(fields) != 7:
-                raise ValueError("invalid guest passwd record")
-            name, _, uid, gid, _, home, _ = fields
-            if 1000 <= int(uid) < 65534 and home == f"/home/{name}":
-                if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", name) or int(gid) < 0:
-                    raise ValueError("invalid guest home owner")
-                if not stat.S_ISDIR((self.root / "home").lstat().st_mode):
-                    raise ValueError("guest /home must be a real directory")
-                path = self.root / home.lstrip("/")
-                if path.is_symlink():
-                    raise ValueError(f"user home must not be a symlink: {home}")
-                self.homes[home.lstrip("/")] = (int(uid), int(gid))
+        self.homes = account_homes(self.root)
         if any(path.is_relative_to(self.root / home)
                for path in (self.sudo, *self.config_modes) for home in self.homes):
             raise ValueError("sudo and its configuration must not reside in a user home")

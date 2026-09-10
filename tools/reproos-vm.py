@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import time
 import uuid
@@ -57,8 +58,7 @@ def default_vm_harness() -> str:
 @contextmanager
 def workflow_lock(state: Path, timeout: float = 10):
     """Protect enrollment and base-disk replacement as well as VM operations."""
-    if state.is_symlink():
-        raise VmWorkflowError("VM state directory must not be a symlink")
+    reject_linked_install_path(state)
     state.mkdir(parents=True, exist_ok=True)
     path = state / ".workflow.lock"
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
@@ -211,9 +211,32 @@ def prepare_enrollment(args: argparse.Namespace, state: Path) -> dict[str, Path]
     return paths
 
 
+def reject_linked_install_path(path: Path) -> None:
+    candidate = path.absolute()
+    for candidate in (candidate, *candidate.parents):
+        if candidate.is_symlink() or (
+                hasattr(candidate, "is_junction") and candidate.is_junction()):
+            raise VmWorkflowError(f"refusing linked installation path: {candidate}")
+
+
+def require_disk_publication_support(parent: Path) -> None:
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".reproos-publish-probe-", dir=parent) as raw:
+            probe = Path(raw) / "probe"
+            probe.touch(exist_ok=False)
+            os.link(probe, probe.with_suffix(".link"), follow_symlinks=False)
+    except OSError as error:
+        raise VmWorkflowError(
+            f"disk directory must support hard-link publication: {parent}: {error}") from error
+
+
 def install(args: argparse.Namespace, passthrough: list[str]) -> None:
+    reject_linked_install_path(args.state_dir)
     state = args.state_dir.resolve()
-    target = (args.target_disk or state / default_disk_name()).resolve()
+    selected_target = args.target_disk or state / default_disk_name()
+    reject_linked_install_path(selected_target)
+    target = selected_target.resolve()
     iso = args.iso.resolve()
     profile = EMBEDDED_PROFILE.resolve()
     if target.suffix.lower() not in {".qcow2", ".vhdx"}:
@@ -221,6 +244,7 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     for label, path in (("unattended ISO", iso), ("embedded profile", profile)):
         if not path.is_file():
             raise VmWorkflowError(f"{label} is missing: {path}")
+    replacement_identity = None
     if target.exists():
         if not args.replace:
             raise VmWorkflowError(
@@ -229,6 +253,19 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
             )
         if not target.is_file():
             raise VmWorkflowError(f"refusing to replace non-file target: {target}")
+        if not target.is_relative_to(state):
+            raise VmWorkflowError("refusing to replace a disk outside the VM state directory")
+        replacement_stat = target.lstat()
+        replacement_identity = (replacement_stat.st_dev, replacement_stat.st_ino)
+    # Check every mutable entry before purging a runtime or deleting any state.
+    for relative in (
+        "install-manifest.json", "install-manifest.json.tmp", "install",
+        "enrollment", "enrollment/media", "enrollment/id_ed25519",
+        "enrollment/id_ed25519.pub", "enrollment/media/machine-id",
+        "enrollment/media/authorized_keys", "reproos-enrollment.iso", "ssh_known_hosts",
+    ):
+        reject_linked_install_path(state / relative)
+    require_disk_publication_support(target.parent)
     state.mkdir(parents=True, exist_ok=True)
     manifest_path = state / "install-manifest.json"
     if manifest_path.exists():
@@ -241,8 +278,14 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
                 raise VmWorkflowError("refusing to replace a VM without its instance identity")
             run_vmh(args.vm_harness, [*instance_command(args, "destroy"),
                                      "--instance-id", instance_id, "--purge"])
-    if target.exists():
+    reject_linked_install_path(target)
+    if replacement_identity is not None:
+        current = target.lstat()
+        if (current.st_dev, current.st_ino) != replacement_identity:
+            raise VmWorkflowError("target disk changed since replacement was requested")
         target.unlink()
+    elif target.exists():
+        raise VmWorkflowError("target disk appeared after preflight; refusing to replace it")
     if manifest_path.exists():
         manifest_path.unlink()
     enrollment = prepare_enrollment(args, state)
@@ -251,12 +294,23 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     if args.replace and diagnostics.exists():
         shutil.rmtree(diagnostics)
     diagnostics.mkdir(parents=True, exist_ok=True)
+    # The harness creates a disk by pathname. Give it a private namespace, then
+    # publish with an atomic no-overwrite link so independent states cannot race.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".reproos-install-", dir=target.parent))
+    if os.name == "posix":
+        # System libvirt may use a separate QEMU UID. Permit traversal, while
+        # only the owner can list, create, remove, or replace directory entries.
+        staging.chmod(0o711)
+    staged_target = staging / target.name
+    print(f"install staging disk (retained on failure): {staged_target}",
+          file=sys.stderr, flush=True)
     run_vmh(args.vm_harness, [
         "install",
         "--backend", args.backend,
         "--source-image", str(iso),
         "--kind", "iso",
-        "--target-disk", str(target),
+        "--target-disk", str(staged_target),
         "--disk-gb", str(args.disk_gb),
         "--cpus", str(args.cpus),
         "--memory-mb", str(args.memory_mb),
@@ -268,8 +322,17 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
         "--output-dir", str(diagnostics),
         *passthrough,
     ])
-    if not target.is_file() or target.stat().st_size == 0:
-        raise VmWorkflowError(f"vm-harness did not produce a target disk: {target}")
+    if staged_target.is_symlink() or not staged_target.is_file() or staged_target.stat().st_size == 0:
+        raise VmWorkflowError(f"vm-harness did not produce a target disk: {staged_target}")
+    reject_linked_install_path(target)
+    try:
+        os.link(staged_target, target, follow_symlinks=False)
+    except OSError as error:
+        raise VmWorkflowError(
+            f"cannot publish install disk without replacement: {error}; "
+            f"staged disk retained at {staged_target}") from error
+    print(f"published install disk: {staged_target} -> {target}",
+          file=sys.stderr, flush=True)
 
     enrollment_machine_id = (
         enrollment["media"] / "machine-id"
@@ -300,6 +363,8 @@ def install(args: argparse.Namespace, passthrough: list[str]) -> None:
     temporary = manifest_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     temporary.replace(manifest_path)
+    staged_target.unlink()
+    staging.rmdir()
     print(f"installed disk: {target}")
     print(f"enrollment media: {enrollment['iso']}")
     print(f"launch manifest: {manifest_path}")
@@ -428,7 +493,10 @@ def start_installed(args: argparse.Namespace) -> None:
 
 
 def installed_health_probe(expected_hostname: str,
-                           health_root: str = "/var/lib/reproos") -> list[str]:
+                           health_root: str = "/var/lib/reproos",
+                           config_root: str = "/etc/repro",
+                           evidence_tool: str = "/usr/local/sbin/reproos-installed-boot-evidence",
+                           ) -> list[str]:
     root = shlex.quote(health_root)
     return ["/bin/sh", "-c", (
         "set -eu; root=" + root + "; health=\"$root/health-status\"; "
@@ -437,9 +505,11 @@ def installed_health_probe(expected_hostname: str,
         "do sleep 1; i=$((i + 1)); done; "
         "test \"$(hostname)\" = " + shlex.quote(expected_hostname) + "; "
         "grep -qx REPROOS_HEALTH:PASS \"$health\"; "
+        "if grep -q '^REPROOS_HEALTH:FAIL' \"$health\"; then exit 1; fi; "
         "test -f \"$root/enrollment.complete\"; "
         "test -s \"$root/identity.json\"; "
-        "test -s \"$root/installation-receipt.json\"; "
+        "python3 " + shlex.quote(evidence_tool) + " --state-dir \"$root\" "
+        "--config-dir " + shlex.quote(config_root) + "; "
         "printf 'REPROOS_SSH_ACCEPTANCE:PASS hostname=%s\\n' "
         "\"$(hostname)\""
     )]

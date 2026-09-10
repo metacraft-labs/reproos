@@ -288,6 +288,7 @@ package reproosWorkflows:
       extraInputs = @[
         "tests/test_reproos_vm.py",
         "tools/reproos-vm.py",
+        "recipes/reproos-image/scripts/reproos-installed-boot-evidence",
         "apps/reproos-installer/src/installer_state.cpp",
         "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
       ],

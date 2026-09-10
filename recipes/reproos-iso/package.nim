@@ -238,6 +238,7 @@ package reproosIso:
         "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
         "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/reproos-installed-boot-evidence",
         "recipes/reproos-image/scripts/reproos-health-check",
         "recipes/reproos-image/scripts/reproos-sway.conf",
         "recipes/reproos-image/scripts/reproos-desktop.qml",

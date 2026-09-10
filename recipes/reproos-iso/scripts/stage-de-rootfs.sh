@@ -2182,24 +2182,10 @@ printf '%s\n' 'unattended-installer' \
 
 # The service is present on both live and installed roots, but the receipt is
 # written only after install-root and durable configuration complete on the
-# target disk. This makes the marker impossible to satisfy from live media.
-cat > "$STAGE_DIR/usr/local/sbin/reproos-installed-boot-evidence" <<'EOF'
-#!/bin/sh
-set -eu
-
-receipt=/var/lib/reproos/installation-receipt.json
-generation=/etc/repro/generation
-source_file=/var/lib/reproos/install-source
-
-test -s "$receipt"
-test -s "$generation"
-test -s "$source_file"
-source=$(cat "$source_file")
-test "$source" = unattended-installer
-printf '=== REPROOS-INSTALLED-BOOT source=%s generation=%s ===\n' \
-  "$source" "$(cat "$generation")"
-EOF
-chmod 0755 "$STAGE_DIR/usr/local/sbin/reproos-installed-boot-evidence"
+# target disk. Validate its schema and configuration binding before any marker.
+install -m 0755 \
+  "$REPO_ROOT/recipes/reproos-image/scripts/reproos-installed-boot-evidence" \
+  "$STAGE_DIR/usr/local/sbin/reproos-installed-boot-evidence"
 
 cat > "$STAGE_DIR/etc/systemd/system/reproos-installed-boot-evidence.service" <<'EOF'
 [Unit]

@@ -181,10 +181,24 @@ onto a caller-owned disk under `build/reproos-vm`, requires the install success
 marker and a clean guest shutdown, and writes a content-identity manifest. It
 does not include instance keys in the installer media. The target is preserved
 for subsequent commands; an existing disk is refused unless `--replace` is
-explicitly passed. `vm-verify-installed-boot` detaches the installer, attaches a
+explicitly passed. Replacement is limited to disks inside the selected state
+directory; linked disk and mutable state paths, including state-directory
+ancestors, are refused before teardown. Supply canonical paths without aliases.
+An external disk can be created at a new path or reconnected from its existing
+manifest, but this command will not delete it.
+Installation uses a private staging directory beside the requested disk, then
+publishes the result with an atomic no-overwrite hard link. The target filesystem
+must support hard links. A failed installation or publication retains its staging
+disk at the path printed in the log; it never overwrites a late-arriving target.
+`vm-verify-installed-boot` detaches the installer, attaches a
 separate first-boot enrollment ISO, accepts only the installed-disk receipt
 conditioned health marker, retains the installed-disk receipt marker in its
 serial evidence, and verifies the configured hostname over key-only SSH.
+Both the boot marker and the SSH probe use the shipped receipt validator. It
+checks schema, source, target device, and the SHA-256 of the installed
+`auto-config.toml` against the receipt and generation file. An old health PASS
+cannot mask missing or invalid receipt content or a health FAIL. This establishes
+configuration consistency, not cryptographic attestation of the running disk.
 `vm-installed` installs if necessary, then starts or reuses a retained VM.
 `vm-ssh` opens an interactive terminal; `vm-exec -- COMMAND...` runs an ad hoc
 command through the same loopback-only SSH forward and preserves its exit code.

@@ -1,0 +1,64 @@
+#!/usr/bin/python3
+"""Validate the install receipt against the durable machine configuration."""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate receipt field: {key}")
+        result[key] = value
+    return result
+
+
+def validate(state: Path, config: Path) -> str:
+    receipt = json.loads((state / "installation-receipt.json").read_text(
+        encoding="utf-8"), object_pairs_hook=unique_object)
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema_version", "configuration_generation", "install_source", "target_device",
+    } or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
+        raise ValueError("unsupported installation receipt schema")
+    source = (state / "install-source").read_text(encoding="ascii").strip()
+    if source != "unattended-installer" or receipt["install_source"] != source:
+        raise ValueError("installation source does not match the receipt")
+    generation = (config / "generation").read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", generation):
+        raise ValueError("invalid configuration generation")
+    profile = (config / "auto-config.toml").read_bytes()
+    if (receipt["configuration_generation"] != generation or
+            hashlib.sha256(profile).hexdigest() != generation):
+        raise ValueError("configuration generation does not match the receipt")
+    install = tomllib.loads(profile.decode("utf-8")).get("install")
+    target = install.get("target_device") if isinstance(install, dict) else None
+    if (not isinstance(target, str) or not target.startswith("/dev/") or
+            len(target) <= len("/dev/") or ".." in target.split("/") or
+            receipt["target_device"] != target):
+        raise ValueError("installation target does not match the configuration")
+    return generation
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/reproos"))
+    parser.add_argument("--config-dir", type=Path, default=Path("/etc/repro"))
+    args = parser.parse_args()
+    try:
+        generation = validate(args.state_dir, args.config_dir)
+    except (OSError, ValueError) as error:
+        print(f"REPROOS_INSTALLED_BOOT:FAIL: {error}", file=sys.stderr)
+        return 1
+    print("=== REPROOS-INSTALLED-BOOT source=unattended-installer "
+          f"generation={generation} ===")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

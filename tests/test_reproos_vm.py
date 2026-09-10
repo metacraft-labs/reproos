@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -15,6 +17,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/reproos-vm.py"
+EVIDENCE_TOOL = ROOT / "recipes/reproos-image/scripts/reproos-installed-boot-evidence"
 SPEC = importlib.util.spec_from_file_location("reproos_vm", TOOL)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -22,6 +25,41 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ReproosVmWorkflowTests(unittest.TestCase):
+    def fake_enrollment(self, _args, state: Path):
+        paths = MODULE.enrollment_paths(state)
+        paths["media"].mkdir(parents=True, exist_ok=True)
+        paths["private_key"].write_text("private-key")
+        paths["public_key"].write_text("ssh-ed25519 AAAATEST reproos-vm-acceptance\n")
+        (paths["media"] / "authorized_keys").write_text(paths["public_key"].read_text())
+        (paths["media"] / "machine-id").write_text("a" * 32 + "\n")
+        paths["iso"].write_bytes(b"enrollment-iso")
+        return paths
+
+    def write_installation_evidence(self, root: Path) -> tuple[Path, dict]:
+        config = root / "config"
+        config.mkdir()
+        profile = b'[install]\ntarget_device = "/dev/vda"\n'
+        generation = hashlib.sha256(profile).hexdigest()
+        (config / "auto-config.toml").write_bytes(profile)
+        (config / "generation").write_text(generation + "\n")
+        (root / "install-source").write_text("unattended-installer\n")
+        receipt = {
+            "schema_version": 1, "configuration_generation": generation,
+            "install_source": "unattended-installer", "target_device": "/dev/vda",
+        }
+        (root / "installation-receipt.json").write_text(json.dumps(receipt))
+        return config, receipt
+
+    def run_probe(self, root: Path, hostname="reproos-test"):
+        command = MODULE.installed_health_probe(
+            hostname, str(root), str(root / "config"), str(EVIDENCE_TOOL))
+        # Keep real shell predicates and the shipped validator, but no delay.
+        command[2] = ("hostname() { printf '%s\\n' reproos-test; }; "
+                      "sleep() { :; }; " + command[2])
+        env = {**os.environ, "PATH": str(Path(sys.executable).parent) +
+               os.pathsep + os.environ.get("PATH", "")}
+        return subprocess.run(command, text=True, capture_output=True, env=env)
+
     def arguments(self, root: Path, command: str):
         iso = root / "reproos-unattended.iso"
         iso.write_bytes(b"unattended-iso")
@@ -53,7 +91,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_unattended_vm_rejects_live_media_false_positive(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
             calls: list[list[str]] = []
 
             def fake_vmh(_binary: str, arguments: list[str]) -> None:
@@ -63,20 +101,6 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(b"installed-disk")
 
-            def fake_enrollment(_args, state: Path):
-                paths = MODULE.enrollment_paths(state)
-                paths["media"].mkdir(parents=True, exist_ok=True)
-                paths["private_key"].write_text("private-key")
-                paths["public_key"].write_text(
-                    "ssh-ed25519 AAAATEST reproos-vm-acceptance\n"
-                )
-                (paths["media"] / "authorized_keys").write_text(
-                    paths["public_key"].read_text()
-                )
-                (paths["media"] / "machine-id").write_text("a" * 32 + "\n")
-                paths["iso"].write_bytes(b"enrollment-iso")
-                return paths
-
             with mock.patch.object(MODULE, "run_vmh", side_effect=fake_vmh), \
                     mock.patch.object(MODULE, "read_vmh_status", side_effect=
                         lambda *_: {"state": "running" if any(
@@ -84,7 +108,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                     mock.patch.object(
                         MODULE,
                         "prepare_enrollment",
-                        side_effect=fake_enrollment,
+                        side_effect=self.fake_enrollment,
                     ):
                 install_args = self.arguments(root, "install")
                 install_args.replace = True
@@ -194,7 +218,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                 "ConditionPathExists=/var/lib/reproos/installation-receipt.json",
                 stage,
             )
-            self.assertIn('test -s "$receipt"', stage)
+            self.assertIn("recipes/reproos-image/scripts/reproos-installed-boot-evidence", stage)
             self.assertNotIn(
                 '> "$STAGE_DIR/var/lib/reproos/installation-receipt.json"',
                 stage,
@@ -227,8 +251,8 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_enrollment_media_contains_only_public_instance_material(self):
         with tempfile.TemporaryDirectory(prefix="reproos-enrollment-") as raw:
-            state = Path(raw) / "state"
-            args = self.arguments(Path(raw), "install")
+            state = Path(raw).resolve() / "state"
+            args = self.arguments(Path(raw).resolve(), "install")
             args.replace = True
             known_hosts = MODULE.enrollment_paths(state)["known_hosts"]
             known_hosts.parent.mkdir(parents=True, exist_ok=True)
@@ -265,40 +289,343 @@ class ReproosVmWorkflowTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "guest probe requires a POSIX shell")
     def test_installed_health_probe_fails_closed(self):
         with tempfile.TemporaryDirectory(prefix="reproos health '") as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
+            config, receipt = self.write_installation_evidence(root)
             files = {
                 "health-status": "REPROOS_HEALTH:PASS\n",
                 "enrollment.complete": "",
                 "identity.json": "{}\n",
-                "installation-receipt.json": "{}\n",
+                "installation-receipt.json": json.dumps(receipt),
+                "install-source": "unattended-installer\n",
+                "config/auto-config.toml": (config / "auto-config.toml").read_text(),
+                "config/generation": (config / "generation").read_text(),
             }
             for name, contents in files.items():
                 (root / name).write_text(contents)
 
-            def run_probe(hostname="reproos-test"):
-                command = MODULE.installed_health_probe(hostname, str(root))
-                # Keep the real test/grep builtins and avoid waiting on failures.
-                command[2] = ("hostname() { printf '%s\\n' reproos-test; }; "
-                              "sleep() { :; }; " + command[2])
-                return subprocess.run(command, text=True, capture_output=True)
-
-            result = run_probe()
+            result = self.run_probe(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("REPROOS_SSH_ACCEPTANCE:PASS", result.stdout)
             for failure in ["hostname", *files]:
                 with self.subTest(failure=failure):
                     if failure == "hostname":
-                        result = run_probe("different-host")
+                        result = self.run_probe(root, "different-host")
                     else:
                         (root / failure).unlink()
-                        result = run_probe()
+                        result = self.run_probe(root)
                         (root / failure).write_text(files[failure])
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("REPROOS_SSH_ACCEPTANCE:PASS", result.stdout)
 
+    @unittest.skipUnless(os.name == "posix", "guest probe requires a POSIX shell")
+    def test_nonempty_invalid_receipt_cannot_reuse_health_success(self):
+        with tempfile.TemporaryDirectory(prefix="reproos receipt '") as raw:
+            root = Path(raw).resolve()
+            _, receipt = self.write_installation_evidence(root)
+            (root / "health-status").write_text("REPROOS_HEALTH:PASS\n")
+            (root / "enrollment.complete").touch()
+            (root / "identity.json").write_text("{}\n")
+            positive = self.run_probe(root)
+            self.assertEqual(positive.returncode, 0, positive.stderr)
+            invalid = ["{}", "not-json", "[]", *[
+                json.dumps({**receipt, key: value}) for key, value in [
+                    ("schema_version", True), ("schema_version", 2),
+                    ("configuration_generation", "f" * 64),
+                    ("install_source", "live-media"),
+                    ("target_device", "/dev/vdb"),
+                ]
+            ]]
+            for contents in invalid:
+                with self.subTest(receipt=contents):
+                    (root / "installation-receipt.json").write_text(contents)
+                    result = self.run_probe(root)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertNotIn("REPROOS_SSH_ACCEPTANCE:PASS", result.stdout)
+                    self.assertNotIn("=== REPROOS-INSTALLED-BOOT", result.stdout)
+                    self.assertIn("REPROOS_INSTALLED_BOOT:FAIL", result.stderr)
+
+    def test_evidence_validator_rejects_changed_config_and_duplicate_fields(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-evidence-") as raw:
+            root = Path(raw).resolve()
+            config, receipt = self.write_installation_evidence(root)
+            command = [sys.executable, str(EVIDENCE_TOOL), "--state-dir", str(root),
+                       "--config-dir", str(config)]
+            positive = subprocess.run(command, text=True, capture_output=True)
+            self.assertEqual(positive.returncode, 0, positive.stderr)
+            self.assertIn("=== REPROOS-INSTALLED-BOOT", positive.stdout)
+            paths = [config / "auto-config.toml", config / "generation",
+                     root / "install-source", root / "installation-receipt.json"]
+            wrong = [b'[install]\ntarget_device = "/dev/vdb"\n', b"f" * 64,
+                     b"live-media", ('{"schema_version":2,' +
+                                     json.dumps(receipt)[1:]).encode()]
+            for path, contents in zip(paths, wrong):
+                with self.subTest(path=path.name):
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(contents)
+                        negative = subprocess.run(command, text=True, capture_output=True)
+                        self.assertNotEqual(negative.returncode, 0)
+                        self.assertNotIn("=== REPROOS-INSTALLED-BOOT", negative.stdout)
+                        self.assertIn("REPROOS_INSTALLED_BOOT:FAIL", negative.stderr)
+                    finally:
+                        path.write_bytes(original)
+                    restored = subprocess.run(command, text=True, capture_output=True)
+                    self.assertEqual(restored.returncode, 0, restored.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "guest probe requires a POSIX shell")
+    def test_health_failure_cannot_be_masked_by_an_earlier_pass(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-health-") as raw:
+            root = Path(raw).resolve()
+            self.write_installation_evidence(root)
+            (root / "enrollment.complete").touch()
+            (root / "identity.json").write_text("{}")
+            (root / "health-status").write_text(
+                "REPROOS_HEALTH:PASS\nREPROOS_HEALTH:FAIL:test\n")
+            negative = self.run_probe(root)
+            self.assertNotEqual(negative.returncode, 0)
+            self.assertNotIn("REPROOS_SSH_ACCEPTANCE:PASS", negative.stdout)
+
+    def test_replace_refuses_external_disk_before_runtime_or_enrollment_changes(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.replace = True
+            args.target_disk = root / "user-disk.qcow2"
+            args.target_disk.write_bytes(b"unrelated user disk")
+            with mock.patch.object(MODULE, "run_vmh") as run, \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "outside.*state"):
+                    MODULE.install(args, [])
+                run.assert_not_called()
+                enroll.assert_not_called()
+            self.assertEqual(args.target_disk.read_bytes(), b"unrelated user disk")
+
+    @unittest.skipUnless(os.name == "posix", "symlink fixture requires POSIX")
+    def test_replace_refuses_linked_default_disk_without_touching_destination(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.replace = True
+            args.state_dir.mkdir()
+            external = root / "user-disk.qcow2"
+            external.write_bytes(b"unrelated user disk")
+            target = args.state_dir / MODULE.default_disk_name()
+            target.symlink_to(external)
+            args.target_disk = None
+            with mock.patch.object(MODULE, "run_vmh") as run, \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "link"):
+                    MODULE.install(args, [])
+                run.assert_not_called()
+                enroll.assert_not_called()
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(external.read_bytes(), b"unrelated user disk")
+
+    @unittest.skipUnless(os.name == "posix", "symlink fixture requires POSIX")
+    def test_linked_mutable_state_is_rejected_before_any_teardown(self):
+        for relative in ("install", "install-manifest.json", "install-manifest.json.tmp",
+                         "enrollment", "enrollment/media", "reproos-enrollment.iso",
+                         "ssh_known_hosts"):
+            for dangling in (False, True):
+                with self.subTest(path=relative, dangling=dangling), \
+                        tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+                    root = Path(raw).resolve()
+                    args = self.arguments(root, "install")
+                    args.replace = True
+                    args.state_dir.mkdir()
+                    args.target_disk.write_bytes(b"retained disk")
+                    selected = args.state_dir / relative
+                    selected.parent.mkdir(parents=True, exist_ok=True)
+                    external = root / "external"
+                    if not dangling:
+                        external.mkdir()
+                        (external / "sentinel").write_bytes(b"external contents")
+                    selected.symlink_to(external, target_is_directory=True)
+                    with mock.patch.object(MODULE, "instance_status") as status, \
+                            mock.patch.object(MODULE, "run_vmh") as run, \
+                            mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                        with self.assertRaisesRegex(MODULE.VmWorkflowError, "link"):
+                            MODULE.install(args, [])
+                        status.assert_not_called()
+                        run.assert_not_called()
+                        enroll.assert_not_called()
+                    self.assertEqual(args.target_disk.read_bytes(), b"retained disk")
+                    self.assertTrue(selected.is_symlink())
+                    if not dangling:
+                        self.assertEqual((external / "sentinel").read_bytes(),
+                                         b"external contents")
+
+    @unittest.skipUnless(os.name == "posix", "symlink fixture requires POSIX")
+    def test_linked_parent_cannot_redirect_a_disk_inside_state(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.state_dir.mkdir()
+            real = args.state_dir / "real"
+            real.mkdir()
+            (real / "disk.qcow2").write_bytes(b"retained disk")
+            (args.state_dir / "alias").symlink_to(real, target_is_directory=True)
+            args.target_disk = args.state_dir / "alias/disk.qcow2"
+            args.replace = True
+            with mock.patch.object(MODULE, "run_vmh") as run:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "link"):
+                    MODULE.install(args, [])
+                run.assert_not_called()
+            self.assertEqual((real / "disk.qcow2").read_bytes(), b"retained disk")
+
+    @unittest.skipUnless(os.name == "posix", "symlink fixture requires POSIX")
+    def test_state_ancestor_link_is_rejected_before_lock_creation(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            external = root / "external"
+            external.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(MODULE.VmWorkflowError, "link"):
+                with MODULE.workflow_lock(alias / "state"):
+                    self.fail("linked state ancestor was accepted")
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_creation_does_not_unlink_disk_appearing_after_preflight(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.target_disk = root / "new-external.qcow2"
+            args.state_dir.mkdir()
+            manifest = args.state_dir / "install-manifest.json"
+            manifest.write_text("retained manifest")
+
+            def concurrent_creation(_args):
+                args.target_disk.write_bytes(b"another installation")
+                return {"state": "absent", "receipt_exists": False}
+
+            with mock.patch.object(MODULE, "instance_status", side_effect=concurrent_creation), \
+                    mock.patch.object(MODULE, "run_vmh") as run, \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "appeared"):
+                    MODULE.install(args, [])
+                run.assert_not_called()
+                enroll.assert_not_called()
+            self.assertEqual(args.target_disk.read_bytes(), b"another installation")
+            self.assertEqual(manifest.read_text(), "retained manifest")
+
+    def test_external_creation_publishes_without_overwriting_a_late_collision(self):
+        for collision in (False, True):
+            with self.subTest(collision=collision), \
+                    tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+                root = Path(raw).resolve()
+                args = self.arguments(root, "install")
+                args.target_disk = root / "external.qcow2"
+                created = []
+
+                def fake_install(_binary, command):
+                    self.assertEqual(command[0], "install")
+                    staged = Path(command[command.index("--target-disk") + 1])
+                    self.assertNotEqual(staged, args.target_disk)
+                    self.assertEqual(staged.parent.parent, args.target_disk.parent)
+                    self.assertFalse(staged.exists())
+                    if os.name == "posix":
+                        self.assertEqual(staged.parent.stat().st_mode & 0o777, 0o711)
+                    staged.write_bytes(b"completed installation")
+                    created.append(staged)
+                    if collision:
+                        args.target_disk.write_bytes(b"concurrent user disk")
+
+                with mock.patch.object(MODULE, "run_vmh", side_effect=fake_install), \
+                        mock.patch.object(MODULE, "prepare_enrollment",
+                                          side_effect=self.fake_enrollment):
+                    if collision:
+                        with self.assertRaisesRegex(MODULE.VmWorkflowError, "staged disk retained"):
+                            MODULE.install(args, [])
+                    else:
+                        MODULE.install(args, [])
+                if collision:
+                    self.assertEqual(args.target_disk.read_bytes(), b"concurrent user disk")
+                    self.assertEqual(created[0].read_bytes(), b"completed installation")
+                    self.assertFalse((args.state_dir / "install-manifest.json").exists())
+                else:
+                    self.assertEqual(args.target_disk.read_bytes(), b"completed installation")
+                    self.assertFalse(created[0].parent.exists())
+                    manifest = MODULE.install_manifest(args)
+                    self.assertEqual(manifest["installed_disk"], str(args.target_disk))
+                    self.assertEqual(manifest["installed_disk_sha256"],
+                                     hashlib.sha256(b"completed installation").hexdigest())
+
+    def test_replacement_rechecks_file_identity_after_runtime_purge(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.replace = True
+            args.state_dir.mkdir()
+            args.target_disk.write_bytes(b"original installation")
+            (args.state_dir / "install-manifest.json").write_text("retained manifest")
+            status = {"state": "running", "receipt_exists": True, "instance_id": "owned-instance"}
+
+            def concurrent_replacement(_binary, _command):
+                replacement = args.state_dir / "different.qcow2"
+                replacement.write_bytes(b"concurrent user disk")
+                replacement.replace(args.target_disk)
+
+            with mock.patch.object(MODULE, "instance_status", return_value=status), \
+                    mock.patch.object(MODULE, "instance_command", return_value=["instance", "destroy"]), \
+                    mock.patch.object(MODULE, "run_vmh", side_effect=concurrent_replacement), \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "changed"):
+                    MODULE.install(args, [])
+                enroll.assert_not_called()
+            self.assertEqual(args.target_disk.read_bytes(), b"concurrent user disk")
+
+    def test_unsupported_publication_fails_before_purging_existing_state(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            args = self.arguments(Path(raw).resolve(), "install")
+            args.replace = True
+            args.state_dir.mkdir()
+            args.target_disk.write_bytes(b"original installation")
+            manifest = args.state_dir / "install-manifest.json"
+            manifest.write_text("retained manifest")
+            with mock.patch.object(MODULE.os, "link", side_effect=OSError("not supported")), \
+                    mock.patch.object(MODULE, "instance_status") as status, \
+                    mock.patch.object(MODULE, "run_vmh") as run, \
+                    mock.patch.object(MODULE, "prepare_enrollment") as enroll:
+                with self.assertRaisesRegex(MODULE.VmWorkflowError, "hard-link publication"):
+                    MODULE.install(args, [])
+                status.assert_not_called()
+                run.assert_not_called()
+                enroll.assert_not_called()
+            self.assertEqual(args.target_disk.read_bytes(), b"original installation")
+            self.assertEqual(manifest.read_text(), "retained manifest")
+            self.assertEqual(set(args.state_dir.iterdir()), {args.target_disk, manifest})
+
+    def test_manifest_failure_retains_staged_and_published_disk(self):
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
+            root = Path(raw).resolve()
+            args = self.arguments(root, "install")
+            args.target_disk = root / "external.qcow2"
+            created = []
+            write_text = Path.write_text
+
+            def fake_install(_binary, command):
+                staged = Path(command[command.index("--target-disk") + 1])
+                staged.write_bytes(b"completed installation")
+                created.append(staged)
+
+            def fail_manifest(path, *arguments, **keywords):
+                if path.name == "install-manifest.json.tmp":
+                    raise OSError("manifest publication failed")
+                return write_text(path, *arguments, **keywords)
+
+            with mock.patch.object(MODULE, "run_vmh", side_effect=fake_install), \
+                    mock.patch.object(MODULE, "prepare_enrollment", side_effect=self.fake_enrollment), \
+                    mock.patch.object(Path, "write_text", new=fail_manifest):
+                with self.assertRaisesRegex(OSError, "manifest publication failed"):
+                    MODULE.install(args, [])
+            self.assertEqual(args.target_disk.read_bytes(), b"completed installation")
+            self.assertEqual(created[0].read_bytes(), b"completed installation")
+            self.assertFalse((args.state_dir / "install-manifest.json").exists())
+
     def test_installed_configuration_uses_manifest_disk_location(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
             args = self.arguments(root, "verify-installed-boot")
             state = args.state_dir
             state.mkdir()
@@ -329,7 +656,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_invalid_install_manifest_reports_workflow_error(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
             args = self.arguments(root, "verify-installed-boot")
             args.state_dir.mkdir()
             for contents in ("{", "[]", '{"schema_version": 99}'):
@@ -340,7 +667,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_running_instance_is_reused_for_interactive_ssh_and_literal_exec(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            args = self.arguments(Path(raw), "ssh")
+            args = self.arguments(Path(raw).resolve(), "ssh")
             prefix = ["instance", "ssh", "same-instance", "--state-dir", raw]
             with mock.patch.object(MODULE, "ensure_installed") as ensure, \
                     mock.patch.object(MODULE, "instance_command",
@@ -359,7 +686,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_stopped_instance_starts_without_recreating_disk_or_enrollment(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            args = self.arguments(Path(raw), "installed")
+            args = self.arguments(Path(raw).resolve(), "installed")
             for state in ["stopped", "destroyed"]:
                 with self.subTest(state=state), \
                         mock.patch.object(MODULE, "installed_configuration",
@@ -381,7 +708,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
             for operation in ["status", "logs", "stop", "destroy"]:
                 with self.subTest(operation=operation):
-                    args = self.arguments(Path(raw), operation)
+                    args = self.arguments(Path(raw).resolve(), operation)
                     prefix = ["instance", operation, "same-instance"]
                     with mock.patch.object(MODULE, "ensure_installed") as ensure, \
                             mock.patch.object(MODULE, "instance_status",
@@ -397,7 +724,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_unknown_or_failed_observation_never_triggers_boot(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            args = self.arguments(Path(raw), "installed")
+            args = self.arguments(Path(raw).resolve(), "installed")
             with mock.patch.object(MODULE, "installed_configuration",
                     return_value=({}, None, {})), \
                     mock.patch.object(MODULE, "instance_status",
@@ -426,7 +753,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_install_replacement_does_not_delete_disk_when_runtime_purge_fails(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            args = self.arguments(Path(raw), "install")
+            args = self.arguments(Path(raw).resolve(), "install")
             args.replace = True
             args.state_dir.mkdir()
             args.target_disk.write_bytes(b"persistent guest data")
@@ -451,7 +778,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_workflow_lock_rejects_concurrent_mutation_and_releases_on_error(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            state = Path(raw)
+            state = Path(raw).resolve()
             with self.assertRaisesRegex(RuntimeError, "failed operation"):
                 with MODULE.workflow_lock(state):
                     with self.assertRaisesRegex(MODULE.VmWorkflowError, "busy"):
@@ -463,7 +790,7 @@ class ReproosVmWorkflowTests(unittest.TestCase):
 
     def test_removed_runtime_with_retained_receipt_reuses_the_active_disk(self):
         with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw:
-            args = self.arguments(Path(raw), "installed")
+            args = self.arguments(Path(raw).resolve(), "installed")
             with mock.patch.object(MODULE, "installed_configuration",
                     return_value=({}, None, {})), \
                     mock.patch.object(MODULE, "instance_status", side_effect=[
@@ -478,15 +805,17 @@ class ReproosVmWorkflowTests(unittest.TestCase):
                 run.assert_called_once()
 
     def test_forwarded_guest_options_are_not_consumed_by_host_parser(self):
-        with mock.patch.object(MODULE, "ssh_installed") as ssh:
+        with tempfile.TemporaryDirectory(prefix="reproos-vm-") as raw, \
+                mock.patch.dict(os.environ, {"REPROOS_VM_STATE_DIR": str(Path(raw).resolve())}), \
+                mock.patch.object(MODULE, "ssh_installed") as ssh:
             result = MODULE.main(["exec", "--", "printf", "--state-dir", "guest"])
         self.assertEqual(result, 0)
         self.assertEqual(ssh.call_args.args[1], ["printf", "--state-dir", "guest"])
 
     def test_stale_known_hosts_requires_explicit_replacement(self):
         with tempfile.TemporaryDirectory(prefix="reproos-enrollment-") as raw:
-            state = Path(raw) / "state"
-            args = self.arguments(Path(raw), "install")
+            state = Path(raw).resolve() / "state"
+            args = self.arguments(Path(raw).resolve(), "install")
             known_hosts = MODULE.enrollment_paths(state)["known_hosts"]
             known_hosts.parent.mkdir(parents=True, exist_ok=True)
             known_hosts.write_text("stale host identity\n")

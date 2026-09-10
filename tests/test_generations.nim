@@ -955,11 +955,18 @@ block layerDeclarationsAgree:
           "... and it records that a write-capable mount of a hashed " &
           "carrier is refused, which is the property that makes the " &
           "order impossible to lose again by accident")
-    check("GUEST INODE POLICY" in reason and "setuid" in reason,
-          "and it names what is left: the guest inode policy is applied " &
-          "to a mounted root after the install, which this layout has no " &
-          "way to do, so the image would ship without the ownership and " &
-          "the setuid bit that policy prescribes")
+    check("GUEST INODE POLICY" notin reason and
+          "carried INTO the root image" in reason and "setuid" in reason,
+          "the refusal no longer says the guest inode policy is missing, " &
+          "because the image now carries it -- root-owned inodes and a " &
+          "setuid /usr/bin/sudo, applied as the image is made and " &
+          "re-read out of it before any hash is taken")
+    check("no usable session" in reason and
+          "mounts them over the measured root" in reason,
+          "and it names what is left: /var and /home are separate " &
+          "volumes the apply creates EMPTY and the initramfs mounts over " &
+          "the measured root, so the configured account's home is " &
+          "shadowed at first boot and nothing seeds it")
 
   # The driver stages the installed image as a generation rather than
   # copying a binary into place, and passes the four things a stage needs.

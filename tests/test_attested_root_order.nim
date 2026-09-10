@@ -73,9 +73,12 @@
 ## is assembled, no firmware measures anything, no PCR is read, no
 ## ``veritysetup open`` happens and no dm-verity device is activated.
 ## The root is a purpose-built tree of a few megabytes and not the
-## ReproOS package set, and the configuration runs unprivileged, so the
-## guest inode policy (``tools/reproos_image_metadata.py``) is NOT
-## applied to it -- see the gate's own report at the end.
+## ReproOS package set. The guest inode policy
+## (``tools/reproos_image_metadata.py``) IS carried into the image the
+## shipped builder makes here -- that is what makes the fixture a root
+## filesystem rather than a directory -- but nothing about it is checked
+## in this gate. ``tests/test_attested_root_metadata.nim`` owns that
+## claim, and reads the result back through the kernel.
 
 import std/[os, osproc, strutils]
 
@@ -84,6 +87,7 @@ import "../repro/generations" as generations
 import "../repro/package_sets" as packageSets
 import "../repro/uki" as ukiModule
 import "../repro/verity" as verity
+import "./root_policy_fixture"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -713,6 +717,9 @@ proc buildFixtureRoot(dir: string) =
     for j in 0 ..< 256 * 1024:
       blob.add chr((i * 31 + j * 7) and 0xff)
     writeFile(dir / "var/log" / ("blob-" & $i & ".bin"), blob)
+  # The shipped builder carries the guest inode policy into the image and
+  # refuses to hash one it could not describe.
+  writeRootPolicyFixture(dir)
 
 proc buildConfigBundle(dir, autoConfig: string) =
   ## The canonical bundle the installer emits. The installer itself is a

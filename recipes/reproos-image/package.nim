@@ -590,6 +590,9 @@ package reproosImage:
       deps = @[isoPackage.ReproosIsoRootfsActionId] & stageInstalledRootDeps,
       extraInputs = @[
         "recipes/reproos-image/scripts/build-verity-root.sh",
+        # The guest inode policy is INSIDE the image the root hash names,
+        # so the policy is an input to that hash exactly as the tree is.
+        "tools/reproos_image_metadata.py",
         verityStagedRootfsInput,
       ],
       extraOutputs = @[
@@ -599,9 +602,12 @@ package reproosImage:
         "build/verity/" & verity.VerityManifestFileName,
       ])
     # `cryptsetup` is what supplies `veritysetup`, and `e2fsprogs` what
-    # supplies `mkfs.ext4`. Both are already in the image's package
-    # closure, so naming them here costs nothing beyond what the image
-    # build already pays.
+    # supplies BOTH `mkfs.ext4` and the `debugfs` that carries the guest
+    # inode policy into the image it makes -- one package, so the writer
+    # and the reader of those inodes can never be different versions of
+    # the format. `python3` runs the policy itself. All three are already
+    # in the image's package closure, so naming them here costs nothing
+    # beyond what the image build already pays.
     appendRegisteredActionToolIdentityRefs(buildVerityRootAction.id, @[
       "bash",
       "coreutils",
@@ -609,6 +615,7 @@ package reproosImage:
       "e2fsprogs",
       "find",
       "gawk",
+      "python3",
       "util-linux",
     ])
     setRegisteredActionCwd(buildVerityRootAction.id, acwdCustom,

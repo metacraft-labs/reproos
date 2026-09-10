@@ -94,6 +94,7 @@ import std/[options, os, osproc, strutils, times]
 
 import "../repro/verity"
 import "../repro/disk_layouts"
+import "./root_policy_fixture"
 
 import nimcrypto/[hash, sha2]
 
@@ -558,6 +559,9 @@ proc writeStagedTree(dir: string) =
     for _ in 0 ..< 128:
       payload.add b
   writeFile(dir / "usr" / "share" / "payload", payload)
+  # The shipped builder carries the guest inode policy into the image and
+  # refuses to hash one it could not describe.
+  writeRootPolicyFixture(dir)
 
 proc runVerityRootBuilder(treeDir, outDir: string; extraEnv = ""): int =
   ## Drive the shipped builder with exactly the environment
@@ -890,6 +894,11 @@ poweroff -f
 """)
   setFilePermissions(dir / "sbin" / "init", {fpUserRead, fpUserWrite,
     fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead, fpOthersExec})
+  # The shipped builder carries the guest inode policy into the image and
+  # refuses to hash one it could not describe. Written LAST and with fixed
+  # content, so the two builds this layer performs still lay the payload
+  # down at the same block.
+  writeRootPolicyFixture(dir)
 
 proc runGuest(qemu, kernel, initramfs, dataImage, hashTree, varImage,
               rootHash, serialLog, caseName: string;

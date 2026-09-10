@@ -59,6 +59,7 @@ import "../repro/disk_layouts" as diskLayouts
 import "../repro/generations" as generations
 import "../repro/package_sets" as packageSets
 import "../repro/verity" as verity
+import "./root_policy_fixture"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -447,6 +448,10 @@ proc buildSampleTree(dir: string) =
     for j in 0 ..< 256 * 1024:
       blob.add chr((i * 31 + j * 7) and 0xff)
     writeFile(dir / "var/empty" / ("blob-" & $i & ".bin"), blob)
+  # The shipped builder carries the guest inode policy into the image and
+  # refuses to hash one it could not describe, so the fixture has to be a
+  # root filesystem and not merely a directory.
+  writeRootPolicyFixture(dir)
 
 proc partitionGuidOnDisk(sudo, device: string; num: int): string =
   let r = run(sudo & " sgdisk -i " & $num & " " & device & " 2>/dev/null")

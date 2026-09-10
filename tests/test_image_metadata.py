@@ -219,10 +219,29 @@ class ImageMetadataTests(unittest.TestCase):
             chown.assert_not_called()
 
     def test_packaging_and_health_use_policy(self):
-        for script in ("recipes/reproos-iso/scripts/build-iso.sh",
-                       "recipes/reproos-container/scripts/build-incus-image.sh",
-                       "recipes/reproos-image/scripts/build-reproos-image.sh"):
-            self.assertIn("reproos_image_metadata.py", (ROOT / script).read_text())
+        # An INVOCATION with its operation, not a mention. A header comment
+        # naming this file is not a carrier of the policy, and every image
+        # ReproOS ships has to be one: the ISO's SquashFS, the container
+        # tar, the writable installed root, and the integrity-checked ext4
+        # root -- which needs both halves, because applying the policy
+        # without re-reading it is how an unpoliced image reaches a hash.
+        for script, operation in (
+                ("recipes/reproos-iso/scripts/build-iso.sh", "squashfs"),
+                ("recipes/reproos-container/scripts/build-incus-image.sh", "tar"),
+                ("recipes/reproos-image/scripts/build-reproos-image.sh", "apply"),
+                ("recipes/reproos-image/scripts/build-verity-root.sh", "ext4-apply"),
+                ("recipes/reproos-image/scripts/build-verity-root.sh", "ext4-verify")):
+            text = (ROOT / script).read_text()
+            # Fold backslash continuations: an invocation is a LOGICAL line.
+            logical = re.sub(r"\\\n\s*", " ", text)
+            named = [line for line in logical.splitlines()
+                     if not line.lstrip().startswith("#")
+                     and re.search(r"reproos_image_metadata\.py|\$INODE_POLICY",
+                                   line)]
+            self.assertTrue(
+                any(re.search(r"(^|[\"'\s])" + re.escape(operation) + r"\s",
+                              line) for line in named),
+                f"{script} never runs the guest inode policy with `{operation}`")
         stage = (ROOT / "recipes/reproos-iso/scripts/stage-de-rootfs.sh").read_text()
         self.assertIn('rm -f "$STAGE_DIR/etc/sudoers"', stage)
         self.assertIn('cp "$SCRIPT_DIR_SELF/../config/sudoers"', stage)

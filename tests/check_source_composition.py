@@ -1465,6 +1465,27 @@ def main() -> None:
         ["reproos_image_metadata.py", "-all-root -root-mode 0755", "-pseudo-override", "-no-hardlinks"],
         "SquashFS staging",
     )
+    # The raw-ext4 carrier of the SAME policy. `mkfs.ext4 -d` copies the
+    # unprivileged staging tree's ownership, so without these two steps the
+    # integrity-checked root ships /etc/shadow owned by the building user
+    # and /usr/bin/sudo with no setuid bit -- and the root hash covers that.
+    # The verify is not decoration: it is what stops an image reaching the
+    # hash without the policy in it.
+    verity_root_content = source(ROOT / "recipes/reproos-image/scripts/build-verity-root.sh")
+    for step in ["ext4-apply", "ext4-verify"]:
+        if not re.search(
+            r'^\s*(if\s+!\s+)?python3\s+"\$INODE_POLICY"\s+' + step,
+            verity_root_content,
+            re.MULTILINE,
+        ):
+            raise AssertionError(
+                f"the integrity-checked root builder never RUNS the guest inode policy: {step}"
+            )
+    if verity_root_content.index("ext4-verify") > verity_root_content.index("veritysetup format"):
+        raise AssertionError(
+            "the integrity-checked root builder takes its root hash before it "
+            "checks that the guest inode policy is in the image"
+        )
     require_contains(
         ROOT / "apps/reproos-installer/qml/main.qml",
         ['import "components"', "color: Theme.canvas", 'id: "deSelect"', 'id: "finished"'],

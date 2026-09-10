@@ -149,6 +149,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/configure-installed-root.sh",
         "recipes/reproos-image/scripts/stage-installed-root.sh",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
         "recipes/reproos-image/scripts/image-config.sh",
         "apps/reproos-installer/qml/main.qml",
         "apps/reproos-installer/qml/screens/DeSelect.qml",
@@ -939,6 +940,7 @@ package reproosWorkflows:
         "tests/test-verity-root.sh",
         "tests/nim-gate.sh",
         "tests/test_verity_root.nim",
+        "tests/root_policy_fixture.nim",
         "repro/verity.nim",
         "repro/disk_layouts.nim",
         "recipes/reproos-image/scripts/build-verity-root.sh",
@@ -1096,6 +1098,7 @@ package reproosWorkflows:
         "tests/test-attested-carriers.sh",
         "tests/nim-gate.sh",
         "tests/test_attested_carriers.nim",
+        "tests/root_policy_fixture.nim",
         "tests/fixtures/auto-config-minimal.toml",
         "repro/generations.nim",
         "repro/verity.nim",
@@ -1134,6 +1137,7 @@ package reproosWorkflows:
         "tests/test-attested-root-order.sh",
         "tests/nim-gate.sh",
         "tests/test_attested_root_order.nim",
+        "tests/root_policy_fixture.nim",
         "tests/fixtures/auto-config-minimal.toml",
         "repro/generations.nim",
         "repro/uki.nim",
@@ -1162,6 +1166,40 @@ package reproosWorkflows:
         "bash", "nim", "mkdir", "clang",
       ])
     discard target("test-attested-root-order", testAttestedRootOrder)
+
+    # The guest inode policy INSIDE the integrity-checked root image.
+    #
+    # `mkfs.ext4 -d` copies the staging tree's ownership and modes, and the
+    # staging runs unprivileged, so the root image used to carry
+    # /etc/shadow owned by the building user and /usr/bin/sudo with no
+    # setuid bit -- an image that boots, verifies against its own root
+    # hash, and offers no privilege escalation at all. The ISO has never
+    # had the problem, because `mksquashfs -pf` takes ownership and modes
+    # as a document; `mke2fs` has no pseudo-file, so the SAME document is
+    # applied to the finished image with `debugfs` instead. The always-on
+    # layer reads the shipped builder, the shipped ISO script and the
+    # shipped recipe and drives the shipped SquashFS renderer; the opt-in
+    # layer images a purpose-built root with the shipped builder and reads
+    # every owner and mode back out THROUGH THE KERNEL.
+    #
+    # `sudo`, `mkfs.ext4`, `debugfs` and `mount` are deliberately NOT
+    # declared as identities, for the same reason as the two gates above.
+    let testAttestedRootMetadata = shell(
+      command = "bash tests/test-attested-root-metadata.sh",
+      actionId = "reproos.test-attested-root-metadata",
+      extraInputs = @[
+        "tests/test-attested-root-metadata.sh",
+        "tests/nim-gate.sh",
+        "tests/test_attested_root_metadata.nim",
+        "tools/reproos_image_metadata.py",
+        "recipes/reproos-image/package.nim",
+        "recipes/reproos-image/scripts/build-verity-root.sh",
+        "recipes/reproos-iso/scripts/build-iso.sh",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang", "python3",
+      ])
+    discard target("test-attested-root-metadata", testAttestedRootMetadata)
 
     # What the image will measure, said before it boots.
     #
@@ -1218,6 +1256,7 @@ package reproosWorkflows:
       testGenerations,
       testAttestedCarriers,
       testAttestedRootOrder,
+      testAttestedRootMetadata,
       testMeasurementManifest,
       testIso,
       testImageBootSmoke,

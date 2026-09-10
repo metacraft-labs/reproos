@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
 
@@ -108,6 +109,24 @@ class Policy:
             mode = self.config_modes[path]
         return uid, gid, mode
 
+    def expected(self):
+        """The policy as a map: guest path -> (uid, gid, permission bits).
+
+        The permission bits are ``None`` for a symlink, because a symlink's
+        mode is not policy -- ``apply`` never chmods one, and every carrier
+        below follows it. ``.`` is the root inode.
+
+        This is the ONE description every carrier is checked against, so a
+        carrier cannot hold a second opinion about what the policy says.
+        """
+        table = {}
+        for path in self.entries():
+            name = path.relative_to(self.root).as_posix()
+            uid, gid, mode = self.metadata(path)
+            link = stat.S_ISLNK(path.lstat().st_mode)
+            table[name] = (uid, gid, None if link else mode)
+        return table
+
     def squashfs(self, output):
         self.check_output(output)
         with open(output, "w", encoding="utf-8", newline="\n") as stream:
@@ -194,14 +213,266 @@ class Policy:
                 os.chmod(path, mode, follow_symlinks=False)
 
 
+class Ext4Image:
+    """Carry the policy into a finished ext4 image, without root.
+
+    ``mkfs.ext4 -d`` copies the staging tree's ownership and modes, which
+    on an unprivileged build are the building user's -- so a raw-ext4 root
+    ships ``/etc/shadow`` owned by whoever holds that uid and
+    ``/usr/bin/sudo`` with no setuid bit. The ISO does not have this
+    problem: ``mksquashfs -pf`` sets ownership and modes as the image is
+    made. ``mke2fs`` has no pseudo-file, so the equivalent is done here,
+    afterwards, by rewriting the inodes of the image itself with
+    ``debugfs``.
+
+    Three properties make that a legitimate answer rather than a
+    workaround:
+
+      * it needs no privilege -- the image is an ordinary file the build
+        already owns, and nothing chowns anything on the host;
+      * it is deterministic -- ``debugfs`` writes exact inode fields and
+        stamps no time, so the same tree and the same policy give the same
+        bytes, which matters because these bytes are inside the
+        measurement; and
+      * the policy is ``Policy.expected()``, the same table the SquashFS
+        pseudo-file and the container tar are written from.
+
+    Everything is addressed by INODE NUMBER (``<12>``) rather than by
+    path, so no guest filename ever has to survive ``debugfs``'s argument
+    splitting.
+    """
+
+    LostFound = "lost+found"
+
+    def __init__(self, image):
+        self.image = str(image)
+        if not Path(self.image).is_file():
+            raise ValueError(f"not a filesystem image: {self.image}")
+        self.debugfs = shutil.which("debugfs")
+        if not self.debugfs:
+            raise ValueError("debugfs is required to carry the guest inode "
+                             "policy into an ext4 image and is not on PATH")
+
+    def _debugfs(self, commands, write=False):
+        """Run a command script and return stdout, refusing any diagnostic.
+
+        ``debugfs`` reports a failed command on stderr and still exits 0, so
+        the exit status alone would let a silently skipped ``sif`` through.
+        Every stderr line is therefore accounted for: the banner, and one
+        echo per command. Anything else is an error.
+        """
+        with tempfile.TemporaryDirectory(prefix=".image-metadata-") as scratch:
+            script = Path(scratch) / "commands"
+            script.write_text("".join(c + "\n" for c in commands),
+                              encoding="utf-8")
+            argv = [self.debugfs]
+            if write:
+                argv.append("-w")
+            argv += ["-f", str(script), self.image]
+            done = subprocess.run(argv, capture_output=True, text=True)
+        if done.returncode != 0:
+            raise ValueError(f"debugfs failed on {self.image}: "
+                             f"{done.stderr.strip()}")
+        noise = re.compile(r"^debugfs (\d|$)|^debugfs: +(sif|ls -l) ")
+        for line in done.stderr.splitlines():
+            if line.strip() and not noise.match(line):
+                raise ValueError(f"debugfs refused a command on {self.image}: "
+                                 f"{line.strip()}")
+        return done.stdout
+
+    def walk(self):
+        """guest path -> (inode, uid, gid, full i_mode), read out of the image.
+
+        The walk is driven by the IMAGE rather than by the staging tree, so
+        an entry the image holds and the tree does not is found rather than
+        skipped.
+        """
+        found = {}
+        pending = [(2, ".")]
+        while pending:
+            output = self._debugfs("ls -l <%d>" % ino for ino, _ in pending)
+            index, base, following = -1, None, []
+            for line in output.splitlines():
+                fields = line.split(None, 8)
+                if len(fields) < 9:
+                    continue
+                name = fields[8]
+                # Every listing opens with its own `.` entry, which is what
+                # separates one directory's block of output from the next.
+                if name == ".":
+                    index += 1
+                    if index >= len(pending):
+                        raise ValueError("debugfs listed more directories "
+                                         "than were asked for")
+                    base = pending[index][1]
+                    if base == ".":
+                        found["."] = (int(fields[0]), int(fields[3]),
+                                      int(fields[4]), int(fields[1], 8))
+                    continue
+                if name == "..":
+                    continue
+                if base is None:
+                    raise ValueError("debugfs listed an entry outside any "
+                                     "directory")
+                inode, mode = int(fields[0]), int(fields[1], 8)
+                path = name if base == "." else base + "/" + name
+                if path in found:
+                    raise ValueError(f"guest path listed twice: {path}")
+                found[path] = (inode, int(fields[3]), int(fields[4]), mode)
+                if stat.S_ISDIR(mode):
+                    following.append((inode, path))
+            if index + 1 != len(pending):
+                raise ValueError("debugfs listed fewer directories than were "
+                                 "asked for")
+            pending = following
+        return found
+
+    def differences(self, policy):
+        """Every place the image disagrees with the policy, in walk order.
+
+        Returns ``(inode, path, wanted, found, kind)`` tuples, where
+        ``wanted`` and ``found`` are ``(uid, gid, permission bits)`` and
+        ``kind`` is the inode's file-type bits.
+        """
+        want = policy.expected()
+        found = self.walk()
+        extra = sorted(set(found) - set(want) - {self.LostFound})
+        if extra:
+            raise ValueError("the image holds paths the staged tree does "
+                             "not, so the policy does not describe it: " +
+                             ", ".join(extra[:8]))
+        missing = sorted(set(want) - set(found))
+        if missing:
+            raise ValueError("the image is missing staged paths, so the "
+                             "policy does not describe it: " +
+                             ", ".join(missing[:8]))
+        if self.LostFound in found:
+            _, uid, gid, mode = found[self.LostFound]
+            if (uid, gid) != (0, 0):
+                raise ValueError(f"mke2fs left {self.LostFound} owned by "
+                                 f"{uid}:{gid} rather than 0:0")
+            want = dict(want)
+            want[self.LostFound] = (0, 0, stat.S_IMODE(mode))
+        self._refuse_ambiguous_inodes(found, want)
+        report = []
+        for path, (inode, uid, gid, mode) in found.items():
+            wuid, wgid, wmode = want[path]
+            have = (uid, gid, None if stat.S_ISLNK(mode) else
+                    stat.S_IMODE(mode))
+            if have != (wuid, wgid, wmode):
+                report.append((inode, path, (wuid, wgid, wmode), have,
+                               mode & ~0o7777))
+        return report
+
+    @staticmethod
+    def _refuse_ambiguous_inodes(found, want):
+        """Refuse a shared inode the policy describes two ways.
+
+        ``mkfs.ext4 -d`` preserves hardlinks, and an inode carries ONE
+        owner and ONE mode. The ISO sidesteps this with
+        ``mksquashfs -no-hardlinks``, which duplicates the content; an
+        image whose size is already fixed cannot, so an aliased inode the
+        policy disagrees about is refused rather than resolved by picking
+        one of the two answers. A privileged mode reached through a second
+        name is refused for the same reason even when both names agree:
+        setuid must not arrive anywhere the policy did not put it.
+        """
+        aliases = {}
+        for path, (inode, _, _, _) in found.items():
+            aliases.setdefault(inode, []).append(path)
+        for inode, paths in sorted(aliases.items()):
+            if len(paths) < 2:
+                continue
+            paths = sorted(paths)
+            answers = {want[p] for p in paths}
+            if len(answers) > 1:
+                raise ValueError(
+                    f"inode {inode} is reached by {len(paths)} guest paths "
+                    f"the policy describes differently ({', '.join(paths[:4])}"
+                    f"): an inode holds one owner and one mode, so the image "
+                    f"would be silently wrong at all but one of them")
+            mode = next(iter(answers))[2]
+            if mode is not None and mode & (stat.S_ISUID | stat.S_ISGID):
+                raise ValueError(
+                    f"inode {inode} carries mode {mode:04o} and is reached by "
+                    f"{len(paths)} guest paths ({', '.join(paths[:4])}): a "
+                    f"setuid or setgid inode must not be reachable under a "
+                    f"second name")
+
+    def apply(self, policy):
+        """Rewrite the image's inodes until they are the policy."""
+        commands = []
+        for inode, _, wanted, found, kind in self.differences(policy):
+            uid, gid, mode = wanted
+            if uid != found[0]:
+                commands.append("sif <%d> uid %d" % (inode, uid))
+            if gid != found[1]:
+                commands.append("sif <%d> gid %d" % (inode, gid))
+            if mode is not None and mode != found[2]:
+                # `sif mode` replaces the WHOLE i_mode, so the file type
+                # has to be carried over or the inode becomes untyped.
+                commands.append("sif <%d> mode 0%o" % (inode, kind | mode))
+        if commands:
+            self._debugfs(commands, write=True)
+        # A carrier that does not check its own work is how an image gets
+        # hashed without the policy in it.
+        left = self.differences(policy)
+        if left:
+            inode, path, wanted, found, _ = left[0]
+            raise ValueError(
+                f"the guest inode policy did not land in {self.image}: "
+                f"{path} (inode {inode}) is {self.render(found)} and the "
+                f"policy says {self.render(wanted)}")
+        return len(commands)
+
+    def verify(self, policy):
+        """Refuse an image that is not already the policy."""
+        report = self.differences(policy)
+        if report:
+            inode, path, wanted, found, _ = report[0]
+            raise ValueError(
+                f"{self.image} does not carry the guest inode policy: "
+                f"{path} (inode {inode}) is {self.render(found)} and the "
+                f"policy says {self.render(wanted)} ({len(report)} "
+                f"path(s) disagree)")
+
+    @staticmethod
+    def render(triple):
+        uid, gid, mode = triple
+        return f"{'link' if mode is None else format(mode, '04o')} {uid}:{gid}"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("squashfs", "tar", "apply"))
+    parser.add_argument("operation", choices=("squashfs", "tar", "apply",
+                                              "ext4-apply", "ext4-verify"))
     parser.add_argument("root")
     parser.add_argument("--output")
+    parser.add_argument("--image")
     parser.add_argument("--metadata")
     parser.add_argument("--skip", action="append", default=[])
     args = parser.parse_args()
+    if args.operation in ("ext4-apply", "ext4-verify"):
+        if not args.image:
+            parser.error("--image is required for ext4 metadata")
+        # A diagnostic, not a traceback. Whoever reads this is holding an
+        # image that must not be hashed, and needs to be told which inode
+        # and what the policy wanted -- including when the refusal is that
+        # the tree is not a root filesystem the policy can describe.
+        try:
+            policy = Policy(args.root)
+            image = Ext4Image(args.image)
+            if args.operation == "ext4-verify":
+                image.verify(policy)
+                print("[image-metadata] %s carries the guest inode policy"
+                      % args.image)
+            else:
+                print("[image-metadata] %d inode field(s) rewritten in %s"
+                      % (image.apply(policy), args.image))
+        except (ValueError, OSError) as error:
+            raise SystemExit("reproos_image_metadata.py %s: %s"
+                             % (args.operation, error))
+        return
     policy = Policy(args.root)
     if args.operation == "apply":
         policy.apply(args.skip)

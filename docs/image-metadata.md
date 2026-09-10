@@ -16,6 +16,20 @@ unprivileged build inputs; never recursively chown or chmod them as root.
 - Container: the deterministic tar writer assigns the same numeric owners and
   modes without changing the staged files. It supports the configured home
   name, not just `/home/repro`, and archives hardlinked files independently.
+- Integrity-checked read-only root: `build-verity-root.sh` applies the same
+  policy to the finished ext4 image with `debugfs`, addressing every inode by
+  NUMBER so no guest filename has to survive argument splitting, and then
+  re-reads the whole image and refuses to take a root hash over one that does
+  not carry the policy. `mke2fs` has no pseudo-file, and the tree cannot be
+  chowned — `apply` needs uid 0, and a root-owned tree under `build/` is one
+  the engine can neither replace nor clean. Rewriting inode fields needs no
+  privilege and stamps no time, so the same tree and the same policy give the
+  same bytes; that matters because these bytes are inside the launch
+  measurement. `mkfs.ext4 -d` preserves hardlinks and an inode carries one
+  owner and one mode, so a shared inode the policy describes two ways — or any
+  setuid inode reachable under a second name — is REFUSED rather than resolved
+  by picking one of the two answers. The ISO duplicates the content instead
+  (`-no-hardlinks`); an image whose size is already fixed cannot.
 
 Everything defaults to `0:0`. Normal users' declared `/home/NAME` trees retain
 their passwd UID/GID and non-privilege mode bits, including live's `0700` home. Incoming
@@ -45,10 +59,13 @@ required. Run `repro build test-image-reproducibility` and `repro lint` as well.
 The destination test observes chown calls without requiring root; archive tests
 read actual numeric ownership from the generated filesystems.
 
-The separate `build-verity-root.sh` raw-ext4 producer is not normalized by this
-slice. Its metadata must be fixed before claiming equivalent privilege support
-for the dm-verity/attested output. Existing VM disks and receipts are not migrated
-or modified by this change; acceptance needs newly authored media.
+Run `repro build test-attested-root-metadata` for the raw-ext4 carrier. Its
+always-on layer needs only `python3`; `REPROOS_ATTESTED_ROOT_METADATA_GATE=1`
+images a purpose-built root with the shipped builder and reads every owner and
+mode back out of it through a read-only loop mount, so nothing in the
+verification path is shared with the `debugfs` that wrote them. Existing VM
+disks and receipts are not migrated or modified; acceptance needs newly
+authored media.
 
 Upstream format references: [SquashFS 4.7.5 usage](https://github.com/plougher/squashfs-tools/blob/master/Documentation/4.7.5/USAGE-MKSQUASHFS.md)
 and [pseudo filename parser](https://github.com/plougher/squashfs-tools/blob/4.7.5/squashfs-tools/pseudo.c).

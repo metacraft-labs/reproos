@@ -12,6 +12,14 @@ set -euo pipefail
 # transitively pins the whole root filesystem. Everything below exists to
 # make that value a function of the staged tree and nothing else.
 #
+# The image also carries the GUEST INODE POLICY -- root-owned inodes, a
+# setuid `sudo`, group- and other-write stripped from the trusted
+# directories. It has to be applied before the hash, because after it
+# there is nothing left that may write to these bytes; and it is applied
+# to the IMAGE rather than to the tree, because the build is
+# unprivileged. See `tools/reproos_image_metadata.py`, which is the one
+# owner of that policy for every carrier ReproOS ships.
+#
 # Usage:
 #   build-verity-root.sh <output-directory>
 #
@@ -38,6 +46,9 @@ set -euo pipefail
 #   67 = the staged root filesystem is missing or unusable
 #   68 = making the root filesystem image failed
 #   69 = verity formatting failed
+#   70 = the guest inode policy could not be carried into the image
+#   71 = the image does not carry the guest inode policy, so no root hash
+#        may be taken over it
 #
 # Outputs, written into <output-directory>:
 #   reproos-root.verity.img       the read-only ext4 data image
@@ -69,12 +80,19 @@ OUT_DIR="$1"
 : "${REPROOS_VERITY_FS_HASH_SEED:?REPROOS_VERITY_FS_HASH_SEED must be set}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH must be set; mke2fs writes it into the superblock}"
 
-for tool in mkfs.ext4 veritysetup find awk sha256sum; do
+for tool in mkfs.ext4 debugfs veritysetup find awk sha256sum python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "build-verity-root.sh: required tool missing: $tool" >&2
     exit 66
   fi
 done
+
+SCRIPT_DIR_SELF="$(cd "$(dirname "$0")" && pwd)"
+INODE_POLICY="$SCRIPT_DIR_SELF/../../../tools/reproos_image_metadata.py"
+if [ ! -f "$INODE_POLICY" ]; then
+  echo "build-verity-root.sh: the guest inode policy is missing: $INODE_POLICY" >&2
+  exit 66
+fi
 
 if [ ! -d "$REPROOS_STAGED_ROOTFS" ]; then
   echo "build-verity-root.sh: staged root filesystem missing: $REPROOS_STAGED_ROOTFS" >&2
@@ -145,6 +163,41 @@ if ! mkfs.ext4 -q -F \
     "$DATA_IMG" "${SIZE_MIB}M"; then
   echo "build-verity-root.sh: mkfs.ext4 failed" >&2
   exit 68
+fi
+
+# ---------------------------------------------------------------------
+# The guest inode policy, carried INTO the image.
+#
+# `mkfs.ext4 -d` copies the staged tree's ownership and modes, and the
+# tree was staged by an unprivileged build -- so without this step the
+# root ships /etc/shadow owned by whoever happens to hold the building
+# user's uid, and /usr/bin/sudo with no setuid bit, which is an installed
+# system with no privilege escalation at all.
+#
+# It cannot be fixed by chowning the tree: `apply` needs uid 0, and a
+# root-owned tree under build/ is one the engine can neither replace nor
+# clean. The ISO has never had this problem because `mksquashfs -pf`
+# takes ownership and modes as a document. `mke2fs` has no pseudo-file,
+# so the same document is applied to the finished image instead --
+# unprivileged, deterministic, and out of the SAME policy the ISO's
+# pseudo-file and the container tar are written from.
+#
+# THE ORDER HERE IS THE POINT. The policy is applied and then
+# INDEPENDENTLY re-read out of the image, and only then is a root hash
+# taken. An image that does not carry the policy is refused rather than
+# hashed: once the hash exists it is baked into a measured command line,
+# and nothing may write to the image again to fix it.
+# ---------------------------------------------------------------------
+echo "[verity-root] applying the guest inode policy to $DATA_IMG"
+if ! python3 "$INODE_POLICY" ext4-apply "$REPROOS_STAGED_ROOTFS" \
+    --image "$DATA_IMG"; then
+  echo "build-verity-root.sh: the guest inode policy could not be carried into the root image" >&2
+  exit 70
+fi
+if ! python3 "$INODE_POLICY" ext4-verify "$REPROOS_STAGED_ROOTFS" \
+    --image "$DATA_IMG"; then
+  echo "build-verity-root.sh: the root image does not carry the guest inode policy; refusing to take a root hash over it" >&2
+  exit 71
 fi
 
 # ---------------------------------------------------------------------

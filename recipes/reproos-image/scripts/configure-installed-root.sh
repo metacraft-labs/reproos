@@ -57,6 +57,21 @@
 #   REPROOS_PATCHELF_BIN        patchelf, for the libseat interpreter
 #                               checks; the phase degrades to a report
 #                               without it
+#   REPROOS_ATTESTATION_AGENT_BIN  the attestation agent to install. When
+#                               unset the agent is not installed and no
+#                               unit is written -- a machine that is not
+#                               meant to attest must not carry a service
+#                               that says it does. The agent renders its
+#                               own unit (`attestation-agent
+#                               systemd-unit`), so the flags in the unit
+#                               and the flags the daemon parses have one
+#                               spelling and cannot drift apart.
+#   REPROOS_ATTESTATION_TIER    which root of trust the agent is told to
+#                               use (default mock). It is told rather
+#                               than left to detect: a daemon that fell
+#                               back to a weaker tier when a device node
+#                               was missing would make a failed
+#                               attestation look like a successful one.
 #   SUDO                        how to escalate. Defaults to
 #                               /usr/bin/env -- i.e. NO escalation --
 #                               because a plain directory the build user
@@ -79,6 +94,7 @@
 #   76 = post-boot health gate install failed
 #   77 = the first-boot state seed could not be emitted, or the tree does
 #        not carry one the running machine could be seeded from
+#   78 = the attestation agent could not be installed
 
 set -euo pipefail
 
@@ -103,6 +119,8 @@ WORK="$REPROOS_WORK_DIR"
 SOURCE_RECIPES_ROOT="$REPROOS_SOURCE_RECIPES_ROOT"
 TARGET_SOURCE_RECIPES_ROOT="${REPROOS_TARGET_SOURCE_RECIPES_ROOT:-/opt/repro/reprobuild-packages/packages/source}"
 PATCHELF_BIN="${REPROOS_PATCHELF_BIN:-$(command -v patchelf 2>/dev/null || true)}"
+ATTESTATION_AGENT_BIN="${REPROOS_ATTESTATION_AGENT_BIN:-}"
+ATTESTATION_TIER="${REPROOS_ATTESTATION_TIER:-mock}"
 mkdir -p "$WORK"
 
 # `env` rather than the empty string: every phase below spells the
@@ -1431,6 +1449,66 @@ HEALTH_UNIT_EOF
   ln -sfn /etc/systemd/system/reproos-health-check.service \
     '$ROOT_TREE/etc/systemd/system/graphical.target.wants/reproos-health-check.service'
 " || { echo "[configure-installed-root] Phase 10.10 health gate install failed" >&2; exit 76; }
+
+# ---------------------------------------------------------------
+# Phase 10.10b: the attestation agent.
+#
+# Installed only when the caller names a binary. A machine that is not
+# meant to attest must not carry a unit that says it does: from
+# outside, an agent that is present and refusing is hard to tell from
+# one that is answering, and telling those apart is the entire point of
+# the thing.
+#
+# The unit is NOT written here. The agent renders its own, because an
+# ExecStart line and an argument parser are one contract kept in two
+# files -- and when they drift the image still builds, still installs
+# and still boots, and the agent fails at start-up on a host nobody is
+# watching. Asking the binary removes the second copy rather than
+# gating it.
+#
+# No --measurement-manifest is passed, and that is not an omission.
+# The manifest is a measurement OF this root, so it cannot be a file
+# INSIDE it: baking it in would change the bytes the hash covers, which
+# changes the value the document records. Serving it from an attested
+# image needs it to live outside the measured root -- beside the UKI on
+# the ESP -- which is a decision the verifier side has to make, not
+# this script. Until then the endpoint answers 404 and says so, which
+# is honest; a manifest that described a different root would not be.
+#
+# This runs before Phase 10.11 because the seed has to see the finished
+# tree. The agent contributes nothing under /var or /home -- its
+# secrets directory is a tmpfs RuntimeDirectory and it keeps no state
+# -- so it has nothing to seed, but the ordering is what makes that a
+# fact rather than a hope.
+# ---------------------------------------------------------------
+if [ -n "$ATTESTATION_AGENT_BIN" ]; then
+  if [ ! -x "$ATTESTATION_AGENT_BIN" ]; then
+    echo "[configure-installed-root] Phase 10.10b: REPROOS_ATTESTATION_AGENT_BIN is not an executable file: $ATTESTATION_AGENT_BIN" >&2
+    exit 78
+  fi
+  "$SUDO" mkdir -p \
+    "$ROOT_TREE/usr/bin" \
+    "$ROOT_TREE/usr/lib/systemd/system" \
+    "$ROOT_TREE/etc/systemd/system/multi-user.target.wants" \
+    || { echo "[configure-installed-root] Phase 10.10b directory creation failed" >&2; exit 78; }
+  "$SUDO" install -m 0755 "$ATTESTATION_AGENT_BIN" \
+    "$ROOT_TREE/usr/bin/attestation-agent" \
+    || { echo "[configure-installed-root] Phase 10.10b agent install failed" >&2; exit 78; }
+  "$ATTESTATION_AGENT_BIN" systemd-unit \
+    --binary=/usr/bin/attestation-agent \
+    --tier="$ATTESTATION_TIER" \
+    > "$WORK/attestation-agent.service" \
+    || { echo "[configure-installed-root] Phase 10.10b: the agent would not render its own unit" >&2; exit 78; }
+  # usr/lib/systemd/system, not lib/systemd/system: the systemd in this
+  # image dropped the legacy path from its unit search, so a unit
+  # installed there is a unit that is never found.
+  "$SUDO" install -m 0644 "$WORK/attestation-agent.service" \
+    "$ROOT_TREE/usr/lib/systemd/system/attestation-agent.service" \
+    || { echo "[configure-installed-root] Phase 10.10b unit install failed" >&2; exit 78; }
+  "$SUDO" ln -sfn /usr/lib/systemd/system/attestation-agent.service \
+    "$ROOT_TREE/etc/systemd/system/multi-user.target.wants/attestation-agent.service" \
+    || { echo "[configure-installed-root] Phase 10.10b unit enable failed" >&2; exit 78; }
+fi
 
 # ---------------------------------------------------------------
 # Phase 10.11: the first-boot state seed.

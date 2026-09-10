@@ -412,6 +412,322 @@ def require_nim_gate_declarations() -> None:
         raise AssertionError("no Nim gate wrappers were checked")
 
 
+def strip_shell_comments(text: str) -> str:
+    """Drop whole-line and trailing `#` comments.
+
+    A substring match against a raw line is satisfied by a comment
+    mentioning the thing, which is how a check that reads like an
+    assertion about behaviour turns into an assertion about prose. The
+    quote tracking is deliberately simple -- these scripts do not put
+    `#` inside a quoted string on a line that also matters -- but it is
+    there so a `--flag=a#b` is not truncated.
+    """
+    out = []
+    for line in text.splitlines():
+        quote = ""
+        cut = None
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote:
+                    quote = ""
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+                cut = i
+                break
+        out.append(line if cut is None else line[:cut])
+    return "\n".join(out)
+
+
+def shell_if_block(content: str, opener: str, subject: str) -> str:
+    """The body of one `if ... then` .. `fi`, and nothing after it.
+
+    Scoped by counting nested `if`/`fi` rather than scanning forward for
+    the first terminator. A forward scan runs past the construct under
+    test into whatever is below it, which is how a check keeps passing
+    after the thing it was written for has been deleted.
+    """
+    lines = strip_shell_comments(content).splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == opener:
+            start = i
+            break
+    if start is None:
+        raise AssertionError(f"{subject}: no `{opener}` in the script")
+    depth = 1
+    for i in range(start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped.startswith("if ") or stripped == "if":
+            depth += 1
+        elif stripped == "fi" or stripped.startswith("fi "):
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start + 1 : i])
+    raise AssertionError(f"{subject}: `{opener}` is never closed")
+
+
+def shell_assignments(content: str, name: str) -> list[str]:
+    """EVERY assignment of a shell variable, in order.
+
+    Reading only the first is defeated by leaving the real one where it
+    is and adding a decoy below it, which is the value the script
+    actually runs with. `export`, `local`, `readonly`, `declare` and
+    `typeset` are stripped first, because `export NAME=v` assigns
+    exactly as `NAME=v` does.
+    """
+    values = []
+    pattern = re.compile(
+        r"^\s*(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?|typeset\s+)*"
+        + re.escape(name)
+        + r"=(?P<value>.*)$"
+    )
+    for line in strip_shell_comments(content).splitlines():
+        match = pattern.match(line)
+        if match is not None:
+            values.append(match.group("value").strip())
+    return values
+
+
+def nim_seq_block(content: str, anchor: str, subject: str) -> str:
+    """One `@[ ... ]` literal, starting at `anchor`, bracket-matched.
+
+    Same reason as `shell_if_block`: the recipe has several
+    `extraInputs = @[...]` blocks and a check that read past the end of
+    one would be satisfied by another action's inputs.
+    """
+    start = content.find(anchor)
+    if start < 0:
+        raise AssertionError(f"{subject}: `{anchor}` is not in the recipe")
+    open_at = content.find("@[", start)
+    if open_at < 0:
+        raise AssertionError(f"{subject}: `{anchor}` opens no sequence literal")
+    depth = 0
+    for i in range(open_at + 2, len(content)):
+        if content[i] == "[":
+            depth += 1
+        elif content[i] == "]":
+            if depth == 0:
+                return content[open_at + 2 : i]
+            depth -= 1
+    raise AssertionError(f"{subject}: the sequence literal is never closed")
+
+
+def require_attestation_agent_installed() -> None:
+    """The attestation agent reaches the integrity-checked root.
+
+    Every check below reads a VALUE or a scoped construct, never a name
+    appearing somewhere in a file, because the whole class of failure
+    this guards against is a phase that was deleted or renamed while the
+    words describing it stayed behind.
+
+    None of this proves the agent RUNS. That needs a boot, which this
+    gate does not perform. What it establishes is that the recipe
+    installs the binary, takes the unit from the binary rather than
+    keeping a second copy of it, enables it on a path the running
+    systemd searches, and declares the binary as an input so that
+    rebuilding the agent invalidates the root it went into.
+    """
+    configure = ROOT / "recipes/reproos-image/scripts/configure-installed-root.sh"
+    stager = ROOT / "recipes/reproos-image/scripts/stage-installed-root.sh"
+    subject = "attestation agent installation"
+
+    configure_text = source(configure)
+
+    # The two variables the phase runs on. Every assignment is read, and
+    # more than one is the ambiguity it looks like.
+    for name, wants in (
+        ("ATTESTATION_AGENT_BIN", "REPROOS_ATTESTATION_AGENT_BIN"),
+        ("ATTESTATION_TIER", "REPROOS_ATTESTATION_TIER"),
+    ):
+        assignments = shell_assignments(configure_text, name)
+        if len(assignments) != 1:
+            raise AssertionError(
+                f"{subject}: {name} is assigned {len(assignments)} times "
+                f"({assignments}); exactly one assignment decides what the "
+                f"phase runs with"
+            )
+        if wants not in assignments[0]:
+            raise AssertionError(
+                f"{subject}: {name} is {assignments[0]}, which does not come "
+                f"from {wants}; the caller would have no way to set it"
+            )
+
+    body = shell_if_block(
+        configure_text, 'if [ -n "$ATTESTATION_AGENT_BIN" ]; then', subject
+    )
+
+    # The binary lands where the unit will look for it. The destination is
+    # CAPTURED rather than pinned twice, because the unit's `--binary` is
+    # checked against this same value below: the two are one path spelled
+    # in two places, and a check that pinned each of them separately would
+    # pass on a pair that no longer agree.
+    binary_install = re.search(
+        r'install\s+-m\s+0755\s+"\$ATTESTATION_AGENT_BIN"\s*\\?\s*\n?\s*'
+        r'"\$ROOT_TREE/(?P<dest>\S+?)"',
+        body,
+    )
+    if binary_install is None or binary_install.group("dest") != (
+        "usr/bin/attestation-agent"
+    ):
+        raise AssertionError(
+            f"{subject}: the phase never installs the agent at "
+            f"/usr/bin/attestation-agent"
+        )
+    installed_binary = "/" + binary_install.group("dest")
+
+    # The unit comes FROM the binary. A heredoc here would be a second
+    # copy of the daemon's command line, which is the drift this avoids.
+    render = re.search(
+        r'"\$ATTESTATION_AGENT_BIN"\s+systemd-unit'
+        r"(?P<args>(?:[^\n]*\\\n)*[^\n]*)",
+        body,
+    )
+    if render is None:
+        raise AssertionError(
+            f"{subject}: the phase does not ask the agent for its own unit; a "
+            f"unit written here is a second spelling of the daemon's flags"
+        )
+    render_args = render.group("args")
+
+    # `--binary` decides the ExecStart the machine will run, and it has to
+    # be the path the install above actually wrote to. An install and a
+    # unit pointing at different paths still builds, still installs and
+    # still boots -- and the agent never starts.
+    binary_flag = re.search(r"--binary=(?P<path>\S+)", render_args)
+    if binary_flag is None:
+        raise AssertionError(
+            f"{subject}: the unit is rendered without --binary, so its "
+            f"ExecStart is whatever the agent's default happens to be"
+        )
+    if binary_flag.group("path") != installed_binary:
+        raise AssertionError(
+            f"{subject}: the unit is rendered with --binary="
+            f"{binary_flag.group('path')} but the binary is installed at "
+            f"{installed_binary}; the unit would name a path nothing put a "
+            f"binary at"
+        )
+
+    # And the tier reaches the render. Reading only the assignment of
+    # ATTESTATION_TIER says the caller CAN set it; it says nothing about
+    # whether anything consumes it, and a tier that never reaches the
+    # daemon is a daemon running on whichever tier it defaults to.
+    if not re.search(r'--tier="\$ATTESTATION_TIER"', render_args):
+        raise AssertionError(
+            f"{subject}: the unit is rendered without --tier=\"$ATTESTATION_TIER\", "
+            f"so REPROOS_ATTESTATION_TIER is set by the caller and read by "
+            f"nothing"
+        )
+
+    if "<<" in body:
+        raise AssertionError(
+            f"{subject}: the phase carries a heredoc, so it is writing a unit "
+            f"rather than taking the one the binary renders"
+        )
+
+    # `usr/lib/systemd/system`, not `lib/systemd/system`. The value is
+    # checked rather than the presence of the word `systemd`, because the
+    # legacy path is a live spelling that silently never loads.
+    unit_install = re.search(
+        r'install\s+-m\s+0644\s+\S+\s*\\?\s*\n?\s*'
+        r'"\$ROOT_TREE/(?P<dest>\S+?)"',
+        body,
+    )
+    if unit_install is None:
+        raise AssertionError(f"{subject}: the phase never installs a unit file")
+    if unit_install.group("dest") != "usr/lib/systemd/system/attestation-agent.service":
+        raise AssertionError(
+            f"{subject}: the unit is installed at "
+            f"{unit_install.group('dest')}; current systemd searches "
+            f"usr/lib/systemd/system and a unit anywhere else is never found"
+        )
+
+    # And it is enabled, by a link whose TARGET is that same file.
+    enable = re.search(
+        r'ln\s+-sfn\s+(?P<target>\S+)\s*\\?\s*\n?\s*'
+        r'"\$ROOT_TREE/(?P<link>\S+?)"',
+        body,
+    )
+    if enable is None:
+        raise AssertionError(f"{subject}: the unit is installed but never enabled")
+    if enable.group("target") != "/usr/lib/systemd/system/attestation-agent.service":
+        raise AssertionError(
+            f"{subject}: the enable symlink points at {enable.group('target')}, "
+            f"not at the unit that was installed"
+        )
+    if enable.group("link") != (
+        "etc/systemd/system/multi-user.target.wants/attestation-agent.service"
+    ):
+        raise AssertionError(
+            f"{subject}: the enable symlink is at {enable.group('link')}, which "
+            f"is not a directory systemd starts units from"
+        )
+
+    # The caller has to be able to reach the phase at all.
+    stager_text = strip_shell_comments(source(stager))
+    call = re.search(
+        r"(?P<env>(?:^\s*\w+=\S*\s*\\\n)+)\s*bash\s+"
+        r'"\$SCRIPT_DIR_SELF/configure-installed-root\.sh"',
+        stager_text,
+        re.MULTILINE,
+    )
+    if call is None:
+        raise AssertionError(
+            f"{subject}: the stager's call to configure-installed-root.sh has no "
+            f"environment prefix to read"
+        )
+    if "REPROOS_ATTESTATION_AGENT_BIN=" not in call.group("env"):
+        raise AssertionError(
+            f"{subject}: the stager does not pass REPROOS_ATTESTATION_AGENT_BIN "
+            f"to configure-installed-root.sh, so the phase can never run"
+        )
+
+    # The recipe resolves the binary, hands it over, and -- the part that
+    # matters for reproducibility -- declares it as a typed input, so a
+    # rebuilt agent invalidates the root it was installed into.
+    recipe_text = source(IMAGE_RECIPE)
+    if not re.search(
+        r'attestationAgentInput\s*=\s*absolutePath\(\s*\n?\s*'
+        r'reprobuildRoot\s*/\s*"build"\s*/\s*"bin"\s*/\s*"attestation-agent"',
+        recipe_text,
+    ):
+        raise AssertionError(
+            f"{subject}: the recipe does not resolve the agent from the "
+            f"reprobuild checkout's build/bin"
+        )
+    stager_command = nim_seq_block(
+        recipe_text, "let stageInstalledRootCommand", subject
+    )
+    # The VALUE, not merely the name. `REPROOS_ATTESTATION_AGENT_BIN=` set
+    # to some other resolved path -- the engine binary, say -- installs a
+    # different program as the attestation agent, and a check that read
+    # only the assignment's left-hand side would call that a pass.
+    handed_over = re.search(
+        r'"REPROOS_ATTESTATION_AGENT_BIN=" &\s*\n?\s*'
+        r"quoteShellPosix\((?P<value>\w+)\)",
+        stager_command,
+    )
+    if handed_over is None:
+        raise AssertionError(
+            f"{subject}: the staging command does not set "
+            f"REPROOS_ATTESTATION_AGENT_BIN"
+        )
+    if handed_over.group("value") != "attestationAgentInput":
+        raise AssertionError(
+            f"{subject}: the staging command hands "
+            f"{handed_over.group('value')} to REPROOS_ATTESTATION_AGENT_BIN, "
+            f"not the resolved agent binary; the image would install a "
+            f"different program under the agent's name"
+        )
+    stager_inputs = nim_seq_block(recipe_text, "extraInputs = @[\n          \"recipes/reproos-image/scripts/stage-installed-root.sh\"", subject)
+    if "attestationAgentInput" not in stager_inputs:
+        raise AssertionError(
+            f"{subject}: the staging action does not declare the agent binary as "
+            f"an input, so rebuilding the agent would not rebuild the root that "
+            f"contains it"
+        )
+
+
 def main() -> None:
     modules = [
         ROOT_RECIPE,
@@ -1506,6 +1822,8 @@ def main() -> None:
         ["installerState.activeActivities = []"],
         "installer activity screen",
     )
+
+    require_attestation_agent_installed()
 
     require_nim_gate_declarations()
 

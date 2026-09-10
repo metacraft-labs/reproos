@@ -339,6 +339,14 @@ package reproosImage:
       else: "../reprobuild"
     let reproCliInput = absolutePath(
       reprobuildRoot / "build" / "bin" / "repro", projectRoot)
+    # The attestation agent, resolved the same way and for the same
+    # reason: it is a binary this repository does not build and the
+    # installed root has to carry. Declared as a typed input below so
+    # that rebuilding the agent invalidates the root it is installed
+    # into -- an image whose agent is a version older than its recipe
+    # is an image nobody could reproduce.
+    let attestationAgentInput = absolutePath(
+      reprobuildRoot / "build" / "bin" / "attestation-agent", projectRoot)
 
     # The installed system needs a disk-root initramfs rather than the ISO's
     # live-media initramfs. Build and cache it independently of privileged
@@ -488,6 +496,8 @@ package reproosImage:
           installerPackage.ReproosInstallerBinary & "\"",
         "REPROOS_DISKO_SPEC='" & diskoSpecLine & "'",
         "REPRO_BIN=" & quoteShellPosix(reproCliInput),
+        "REPROOS_ATTESTATION_AGENT_BIN=" &
+          quoteShellPosix(attestationAgentInput),
         "LD_LIBRARY_PATH= PATH=/run/current-system/sw/bin:$PATH",
         "bash scripts/stage-installed-root.sh build/installed-root",
         ">build/stage-installed-root.log 2>&1",
@@ -511,6 +521,7 @@ package reproosImage:
           installerPackage.ReproosInstallerBinary,
           isoPackage.ReproosIsoRootfsOutput,
           reproCliInput,
+          attestationAgentInput,
         ],
         # Declared outputs are resolved against the action's cwd
         # (`recipes/reproos-image`, set below), so this is the relative
@@ -935,6 +946,12 @@ package reproosImage:
                   buildDiskInitrdAction.id]),
       extraInputs = @[
         reproCliInput,
+        # NOT `attestationAgentInput`: this is the writable-root driver,
+        # and it does not pass `REPROOS_ATTESTATION_AGENT_BIN`, so the
+        # agent phase in `configure-installed-root.sh` is skipped on this
+        # arm. Declaring an input an action never reads would invalidate
+        # every writable-root image on every rebuild of a binary it does
+        # not contain.
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/write-verity-carriers.sh",
         "recipes/reproos-image/scripts/mount-guard.sh",

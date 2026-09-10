@@ -661,7 +661,7 @@ Rectangle {
     anchors.topMargin: 60
     color: '#aaaaaa'
     font.pixelSize: 18
-    text: 'M9.R.56.7 minimal greeter'
+    text: 'ReproOS'
   }
 }
 THEME_QML_EOF
@@ -1209,7 +1209,7 @@ SDDM_STRACE_EOF
   # 30 s delay so sddm has time to emit any startup errors.
   cat > '$ROOT_TREE/etc/systemd/system/m9r56-diag.service' <<'M9R56_DIAG_EOF'
 [Unit]
-Description=M9.R.56.8 diagnostic journal capture
+Description=ReproOS graphical-session diagnostic journal capture
 After=graphical.target
 Wants=graphical.target
 
@@ -1360,7 +1360,7 @@ echo "[configure-installed-root] Phase 10.9: install + enable seatd system servi
       echo \"[configure-installed-root] patchelf --set-rpath: prepended \$glibc_libdir to \$target\"
     done
   else
-    echo '[configure-installed-root] warning: patchelf not found on PATH - libseat RPATH glibc-lib-dir prepend SKIPPED. seatd will crash at ip=0x2 on boot per M9.R.58.3.' >&2
+    echo '[configure-installed-root] warning: patchelf not found on PATH - libseat RPATH glibc-lib-dir prepend SKIPPED. seatd will crash at ip=0x2 on boot without it.' >&2
   fi
 
   # Create the ``seat`` group used by seatd's socket ownership.

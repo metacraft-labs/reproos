@@ -81,6 +81,18 @@ package reproosWorkflows:
     "gzip"
     "sed"
     "python3"
+    "patchelf"
+    "sort"
+    "mktemp"
+    "rm"
+    "readlink"
+    "wc"
+    "cut"
+    "tail"
+    "chmod"
+    "touch"
+    "mv"
+    "head"
     "mksquashfs"
     "unsquashfs"
     "nix"
@@ -144,6 +156,7 @@ package reproosWorkflows:
         "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
+        "recipes/reproos-iso/scripts/source-runtime-providers.py",
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
         "recipes/reproos-iso/scripts/build-iso.sh",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
@@ -1018,6 +1031,22 @@ package reproosWorkflows:
         @["bash", "mksquashfs", "unsquashfs"])
     discard target("test-image-metadata", testImageMetadata)
 
+    let testSourceRuntime = shell(
+      command = "python3 tests/test_source_runtime.py",
+      actionId = "reproos.test-source-runtime",
+      extraInputs = @[
+        "tests/test_source_runtime.py",
+        "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
+        "recipes/reproos-iso/scripts/source-runtime-providers.py",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    when defined(linux):
+      appendRegisteredActionToolIdentityRefs(testSourceRuntime.id, @[
+        "bash", "clang", "patchelf", "find", "sort", "mktemp", "rm",
+        "readlink", "wc", "cut", "sed", "tail", "chmod", "touch", "mv", "head",
+      ])
+    discard target("test-source-runtime", testSourceRuntime)
+
     # One generation per boot, and a reboot to change it.
     #
     # The launch measurement is taken once, at boot, over the unified
@@ -1312,6 +1341,7 @@ package reproosWorkflows:
       testIsoReproducibility,
       testImageReproducibility,
       testImageMetadata,
+      testSourceRuntime,
       testDiskIdentityPinning,
       testVerityRoot,
       testUki,

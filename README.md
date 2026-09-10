@@ -71,6 +71,7 @@ repro build test-source-composition
 repro build test-iso-reproducibility
 repro build test-image-reproducibility
 repro build test-image-metadata
+repro build test-source-runtime
 repro build test-iso
 repro build test-image-health
 repro build test-installed-desktop
@@ -93,6 +94,15 @@ repro build incus-remote-acceptance
 `test-image-metadata` checks real archive ownership, sudo privileges, and health
 exit-status handling on Linux without a VM or root access. Other hosts report an
 explicit platform skip. See [Image Metadata](docs/image-metadata.md).
+
+`test-source-runtime` checks runtime-link resolution using small compiled ELF
+fixtures and real `patchelf` on Linux, without a VM or root access. Absolute
+symlinks are resolved against the staged image, not the build host. Library
+providers must resolve to regular files in the source mirror; rewritten script
+interpreters must be executable files in the image. Invalid required providers
+fail before ELF or shebang mutation. Other hosts report a platform skip. The
+fixture loader and libc are stand-ins: this is filesystem-preflight coverage,
+not evidence of ABI compatibility or a successful guest boot.
 
 The unattended test compares the wizard's generated configuration with the
 reviewed fixture, applies it to the installed image build, waits for the boot

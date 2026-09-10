@@ -27,10 +27,13 @@ if [ -z "$patchelf_bin" ]; then
   exit 70
 fi
 
-source_glibc_loader_staged="$stage_dir$source_glibc_loader"
+script_dir="$(cd -- "${BASH_SOURCE[0]%/*}" && pwd)"
+provider_indexer="$script_dir/source-runtime-providers.py"
 source_glibc_dir="${source_glibc_loader%/*}"
-if [ ! -x "$source_glibc_loader_staged" ] || \
-   [ ! -e "$stage_dir$source_glibc_dir/libc.so.6" ]; then
+if ! python3 "$provider_indexer" "$stage_dir" "$source_root" \
+       --check "$source_glibc_loader" --source-only --executable || \
+   ! python3 "$provider_indexer" "$stage_dir" "$source_root" \
+       --check "$source_glibc_dir/libc.so.6" --source-only; then
   echo "[normalize-source-runtime] incomplete source glibc: $source_glibc_dir" >&2
   exit 65
 fi
@@ -41,29 +44,30 @@ fi
 
 runtime_source_root="${source_root#$stage_dir}"
 declare -A source_provider=()
+declare -A source_provider_error=()
 declare -A provider_conflicts=()
 
-while IFS= read -r -d '' library; do
-  name="${library##*/}"
-  runtime_path="${library#$stage_dir}"
-  if [ -z "${source_provider[$name]:-}" ]; then
-    source_provider["$name"]="$runtime_path"
-  elif [ "${source_provider[$name]}" != "$runtime_path" ]; then
-    provider_conflicts["$name"]=1
-  fi
-done < <(
-  find "$source_root" \( -type f -o -type l \) -name '*.so*' -print0 2>/dev/null | \
-    sort -z
-)
-
-echo "[normalize-source-runtime] indexed ${#source_provider[@]} source library names"
-echo "[normalize-source-runtime] duplicate names=${#provider_conflicts[@]}"
-
+provider_index_file="$(mktemp -t reproos-source-runtime-providers-XXXXXX)"
 candidates_file="$(mktemp -t reproos-source-runtime-candidates-XXXXXX)"
 missing_file="$(mktemp -t reproos-source-runtime-missing-XXXXXX)"
 leaks_file="$(mktemp -t reproos-source-runtime-leaks-XXXXXX)"
 shebang_plan_file="$(mktemp -t reproos-source-runtime-shebang-plan-XXXXXX)"
-trap 'rm -f "$candidates_file" "$missing_file" "$leaks_file" "$shebang_plan_file"' EXIT
+trap 'rm -f "$provider_index_file" "$candidates_file" "$missing_file" "$leaks_file" "$shebang_plan_file"' EXIT
+
+python3 "$provider_indexer" "$stage_dir" "$source_root" > "$provider_index_file"
+while IFS= read -r -d '' name && \
+      IFS= read -r -d '' runtime_path && \
+      IFS= read -r -d '' provider_error; do
+  if [ -z "${source_provider[$name]:-}" ]; then
+    source_provider["$name"]="$runtime_path"
+    source_provider_error["$name"]="$provider_error"
+  elif [ "${source_provider[$name]}" != "$runtime_path" ]; then
+    provider_conflicts["$name"]=1
+  fi
+done < "$provider_index_file"
+
+echo "[normalize-source-runtime] indexed ${#source_provider[@]} source library names"
+echo "[normalize-source-runtime] duplicate names=${#provider_conflicts[@]}"
 
 find "$stage_dir" \
   \( -path "$stage_dir/nix" -o -path "$stage_dir/repro/store" \) -prune -o \
@@ -82,23 +86,8 @@ is_elf() {
 }
 
 stage_path_is_executable() {
-  local runtime_path="$1"
-  local staged_path="$stage_dir$runtime_path"
-  local link_target=""
-  local hop
-
-  for hop in $(seq 1 40); do
-    if [ -x "$staged_path" ]; then
-      return 0
-    fi
-    [ -L "$staged_path" ] || return 1
-    link_target="$(readlink "$staged_path")"
-    case "$link_target" in
-      /*) staged_path="$stage_dir$link_target" ;;
-      *) staged_path="${staged_path%/*}/$link_target" ;;
-    esac
-  done
-  return 1
+  python3 "$provider_indexer" "$stage_dir" "$source_root" \
+    --check "$1" --executable >/dev/null 2>&1
 }
 
 plan_runtime_shebangs() {
@@ -206,6 +195,9 @@ while IFS= read -r elf; do
     [ -n "$needed" ] || continue
     if [ -z "${source_provider[$needed]:-}" ]; then
       printf '%s\t%s\n' "$needed" "${elf#$stage_dir}" >> "$missing_file"
+    elif [ -n "${source_provider_error[$needed]:-}" ]; then
+      printf 'invalid-provider:%s:%s\t%s\n' "$needed" \
+        "${source_provider_error[$needed]}" "${elf#$stage_dir}" >> "$missing_file"
     fi
   done < <("$patchelf_bin" --print-needed "$elf" 2>/dev/null || true)
 done < "$candidates_file"
@@ -289,6 +281,7 @@ while IFS= read -r elf; do
             name="${library##*/}"
             provider="${source_provider[$name]:-}"
             [ -n "$provider" ] || continue
+            [ -z "${source_provider_error[$name]:-}" ] || continue
             add_rpath "${provider%/*}"
             mapped=1
           done

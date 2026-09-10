@@ -68,6 +68,13 @@ Use Reprobuild as the only contributor command surface:
   a VM or root access. Other hosts report an explicit platform skip. Run it
   after changing image ownership policy or its packaging/health callers; see
   `docs/image-metadata.md` for the declared tool contract.
+  `repro build test-source-runtime` checks source-library links, the loader,
+  and rewritten shebang interpreters in the staged image's filesystem namespace.
+  Its small compiled ELF fixtures use real `patchelf`, require neither root nor
+  a VM, and reject host-only, dangling, cyclic, and non-source library targets
+  before modifying the image. Run it after changing source-runtime normalization.
+  Other hosts report an explicit Linux platform skip; a missing declared tool
+  on Linux fails. This gate does not replace source-image or guest acceptance.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

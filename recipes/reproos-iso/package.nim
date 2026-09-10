@@ -236,6 +236,7 @@ package reproosIso:
         "recipes/reproos-iso/config/sudoers",
         "recipes/reproos-iso/config/pam-sudo",
         "recipes/reproos-iso/scripts/normalize-source-runtime.sh",
+        "recipes/reproos-iso/scripts/source-runtime-providers.py",
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
         "recipes/reproos-image/scripts/reproos-first-boot-enroll",
         "recipes/reproos-image/scripts/reproos-installed-boot-evidence",

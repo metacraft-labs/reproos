@@ -95,6 +95,7 @@ import "../repro/package_sets" as packageSets
 import "../repro/uki" as ukiModule
 import "../repro/verity" as verity
 import "./root_policy_fixture"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -1100,9 +1101,14 @@ proc readAsRoot(sudo, path: string): string =
   r.output
 
 proc runLayer2(workRoot: string) =
-  if getEnv(GateEnv) != "1":
+  let layer = optInLayer(GateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(GateEnv,
+      "bash tests/test-attested-state-seed.sh, with " & GateEnv & "=1"))
+    return
+  if layer == lrNotRequested:
     skip("t_attested_first_boot_seeds_state: the behavioural half did not " &
-         "run (" & GateEnv & " is not 1).\n" &
+         "run. " & notRequestedNote(GateEnv) & "\n" &
          "  NO disk was written, NO dm-verity device was activated and " &
          "the seeder\n  was never run over a real /var or /home.\n" &
          gateSkipRemedy())
@@ -1677,7 +1683,12 @@ when isMainModule:
                      " check(s) failed, " & $passes & " passed, " &
                      $skips & " skipped")
     quit(1)
-  echo "attested state seed: PASS (" & $passes & " checks" &
-       (if skips > 0: ", " & $skips &
-        " SKIPPED -- no disk was activated and nothing was seeded twice"
-        else: "") & ")"
+  var summary = "attested state seed: PASS (" & $passes & " checks"
+  const NothingRan =
+    " -- no disk was activated and nothing was seeded twice"
+  if layerSummaryFragment().len > 0:
+    summary.add ", " & layerSummaryFragment() & NothingRan
+  elif skips > 0:
+    summary.add ", " & $skips & " SKIPPED" & NothingRan
+  summary.add ")"
+  echo summary

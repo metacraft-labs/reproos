@@ -60,6 +60,7 @@ import "../repro/generations" as generations
 import "../repro/package_sets" as packageSets
 import "../repro/verity" as verity
 import "./root_policy_fixture"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -475,9 +476,14 @@ proc digestOfFile(path: string): string =
   r.output.strip().split(' ')[0]
 
 proc caseCarriersReceiveTheVerityPair(workRoot: string) =
-  if getEnv(GateEnv) != "1":
-    skip("t_installed_carriers_hold_the_verity_pair: not requested (" &
-         GateEnv & " is not 1).\n" &
+  let layer = optInLayer(GateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(GateEnv,
+      "bash tests/test-attested-carriers.sh, with " & GateEnv & "=1"))
+    return
+  if layer == lrNotRequested:
+    skip("t_installed_carriers_hold_the_verity_pair: " &
+         notRequestedNote(GateEnv) & "\n" &
          gateSkipRemedy("  No disk was written and no partition was read."))
     return
 
@@ -753,7 +759,9 @@ if failures > 0:
   quit(1)
 
 var summary = "attested carriers: PASS (" & $passes & " checks"
-if skips > 0:
+if layerSummaryFragment().len > 0:
+  summary.add ", " & layerSummaryFragment() & " -- no disk was written"
+elif skips > 0:
   summary.add ", " & $skips & " SKIPPED -- no disk was written"
 summary.add ")"
 echo summary

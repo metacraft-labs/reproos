@@ -73,6 +73,7 @@ import repro_profile/disk_apply
 
 import "../repro/disk_layouts"
 import "../repro/package_sets"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -664,9 +665,15 @@ proc digestOfWindows(path: string; size: int64): string =
     hexOf(readBytes(path, int(size) - GptProbeBytes, GptProbeBytes))
 
 proc caseRealToolsHonourTheArguments(workRoot: string) =
-  if getEnv(RealToolsEnv) != "1":
-    skip("t_pinned_identifiers_survive_the_real_tools: not requested (" &
-         RealToolsEnv & " is not 1). NO REAL FILESYSTEM WAS CREATED and " &
+  let layer = optInLayer(RealToolsEnv)
+  if layer.isBlocked:
+    fail(blockedNote(RealToolsEnv,
+      "bash tests/test-disk-identity-pinning.sh, with " &
+      RealToolsEnv & "=1"))
+    return
+  if layer == lrNotRequested:
+    skip("t_pinned_identifiers_survive_the_real_tools: " &
+         notRequestedNote(RealToolsEnv) & " NO REAL FILESYSTEM WAS CREATED and " &
          "no on-disk identifier was read back; the layers above compared " &
          "argv only.\n" &
          "  To run it: re-run this gate with " & RealToolsEnv & "=1 on a " &
@@ -938,7 +945,10 @@ if failures > 0:
   quit(1)
 
 var summary = "disk identity pinning: PASS (" & $passes & " checks"
-if skips > 0:
+if layerSummaryFragment().len > 0:
+  summary.add ", " & layerSummaryFragment() &
+    " -- no real filesystem was created"
+elif skips > 0:
   summary.add ", " & $skips & " SKIPPED -- no real filesystem was created"
 summary.add ")"
 echo summary

@@ -95,6 +95,7 @@ import "../repro/uki"
 import "../repro/verity"
 import "../repro/generations"
 import "../repro/disk_layouts"
+import "./gate_layers"
 
 import nimcrypto/[hash, sha2]
 
@@ -1159,12 +1160,16 @@ proc transcript(path: string): string =
   if fileExists(path): readFile(path) else: ""
 
 block layerRealBoot:
-  if getEnv(BootGateEnv) != "1":
+  let bootLayer = optInLayer(BootGateEnv)
+  if bootLayer.isBlocked:
+    fail(blockedNote(BootGateEnv,
+      "bash tests/test-uki.sh, with " & BootGateEnv & "=1"))
+  elif bootLayer == lrNotRequested:
     skip("the boot layer did not run: NO firmware loaded a unified " &
          "kernel image, NO kernel was started, and nothing here is " &
-         "evidence that the image boots. Set " & BootGateEnv &
-         "=1 to run it (~40s; needs qemu-system-x86_64, mkfs.vfat, " &
-         "mtools, an OVMF pair, a kernel and the pinned EFI stub).")
+         "evidence that the image boots. " & notRequestedNote(BootGateEnv) &
+         " It takes ~40s and needs qemu-system-x86_64, mkfs.vfat, " &
+         "mtools, an OVMF pair, a kernel and the pinned EFI stub.")
   else:
     let gate = "uki boot layer"
     let (artifacts, why) = discoverBootArtifacts()
@@ -1386,5 +1391,8 @@ if failures > 0:
   stderr.writeLine("test_uki: " & $failures & " check(s) failed, " &
                    $passes & " passed, " & $skips & " skipped")
   quit(1)
-echo "unified kernel image: PASS (" & $passes & " checks, " & $skips &
-     " skipped layer(s))"
+var ukiSummary = "unified kernel image: PASS (" & $passes & " checks"
+if layerSummaryFragment().len > 0:
+  ukiSummary.add ", " & layerSummaryFragment()
+ukiSummary.add ")"
+echo ukiSummary

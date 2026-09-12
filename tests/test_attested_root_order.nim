@@ -88,6 +88,7 @@ import "../repro/package_sets" as packageSets
 import "../repro/uki" as ukiModule
 import "../repro/verity" as verity
 import "./root_policy_fixture"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -753,13 +754,18 @@ proc valueAfter(cmdline, key: string): string =
   ""
 
 proc runLayer2(workRoot: string) =
-  if getEnv(GateEnv) != "1":
-    skip("t_attested_root_matches_its_measured_hash: not requested (" &
-         GateEnv & " is not 1).\n" &
+  let layer = optInLayer(GateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(GateEnv,
+      "bash tests/test-attested-root-order.sh, with " & GateEnv & "=1"))
+    return
+  if layer == lrNotRequested:
+    skip("t_attested_root_matches_its_measured_hash: " &
+         notRequestedNote(GateEnv) & "\n" &
          gateSkipRemedy("  No disk was written, nothing was mounted and " &
                         "no hash was checked against a partition."))
-    skip("t_readwrite_mount_of_a_hashed_carrier_is_refused: not requested (" &
-         GateEnv & " is not 1).\n" &
+    skip("t_readwrite_mount_of_a_hashed_carrier_is_refused: " &
+         notRequestedNote(GateEnv) & "\n" &
          "  The refusal was not exercised against a real carrier, and the " &
          "zero-write\n  falsification did not run.")
     return
@@ -1191,6 +1197,10 @@ when isMainModule:
                      " check(s) failed, " & $passes & " passed, " &
                      $skips & " skipped")
     quit(1)
-  echo "attested root order: PASS (" & $passes & " checks" &
-       (if skips > 0: ", " & $skips & " SKIPPED -- no disk was written"
-        else: "") & ")"
+  var summary = "attested root order: PASS (" & $passes & " checks"
+  if layerSummaryFragment().len > 0:
+    summary.add ", " & layerSummaryFragment() & " -- no disk was written"
+  elif skips > 0:
+    summary.add ", " & $skips & " SKIPPED -- no disk was written"
+  summary.add ")"
+  echo summary

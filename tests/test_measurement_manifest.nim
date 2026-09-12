@@ -88,6 +88,7 @@ import "../repro/attest" as attestModule
 import "../repro/uki" as ukiModule
 import "../repro/verity"
 import "../repro/generations"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -1089,13 +1090,18 @@ proc pcrFromResponse(hexResponse: string): (string, string) =
   (hexResponse[60 ..< 124], "")
 
 block layerMeasuredBoot:
-  if getEnv(BootGateEnv) != "1":
+  let bootLayer = optInLayer(BootGateEnv)
+  if bootLayer.isBlocked:
+    fail(blockedNote(BootGateEnv,
+      "bash tests/test-measurement-manifest.sh, with " & BootGateEnv & "=1"))
+  elif bootLayer == lrNotRequested:
     skip("the measured-boot layer did not run: NO firmware measured " &
          "anything, NO TPM was attached, NO PCR was read, and nothing " &
-         "here is evidence that the precomputation matches hardware. Set " &
-         BootGateEnv & "=1 to run it (~2 min; needs qemu-system-x86_64, " &
+         "here is evidence that the precomputation matches hardware. " &
+         notRequestedNote(BootGateEnv) & " It takes ~2 min and needs " &
+         "qemu-system-x86_64, " &
          "swtpm, mkfs.vfat, mtools, xz, a C compiler, an OVMF pair " &
-         "carrying the TCG2 protocol, a kernel and the pinned EFI stub).")
+         "carrying the TCG2 protocol, a kernel and the pinned EFI stub.")
   else:
     let gate = "measured-boot layer"
     let (artifacts, why) = discoverBootArtifacts()
@@ -1489,10 +1495,12 @@ if failures > 0:
                    " check(s) failed, " & $passes & " passed, " & $skips &
                    " skipped")
   quit(1)
-echo "measurement manifest: PASS (" & $passes & " checks, " & $skips &
-     " skipped layer(s))" &
-     (if not layer2Ran: " -- NO real stub or shipped emitter was exercised"
-      else: "") &
-     (if getEnv(BootGateEnv) != "1":
-        " -- NO PCR was read from a machine"
-      else: "")
+var manifestSummary = "measurement manifest: PASS (" & $passes & " checks"
+if layerSummaryFragment().len > 0:
+  manifestSummary.add ", " & layerSummaryFragment()
+manifestSummary.add ")"
+if not layer2Ran:
+  manifestSummary.add " -- NO real stub or shipped emitter was exercised"
+if getEnv(BootGateEnv) != "1":
+  manifestSummary.add " -- NO PCR was read from a machine"
+echo manifestSummary

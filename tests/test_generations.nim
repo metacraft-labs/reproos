@@ -82,6 +82,7 @@ import "../repro/generations"
 import "../repro/uki"
 import "../repro/verity"
 import "../repro/disk_layouts"
+import "./gate_layers"
 
 import nimcrypto/[hash, sha2]
 
@@ -1338,13 +1339,18 @@ block layerRealBoot:
   # is a named red line rather than an exception that takes every
   # check after it down with it.
   try:
-    if getEnv(BootGateEnv) != "1":
+    let bootLayer = optInLayer(BootGateEnv)
+    if bootLayer.isBlocked:
+      fail(blockedNote(BootGateEnv,
+        "bash tests/test-generations.sh, with " & BootGateEnv & "=1"))
+    elif bootLayer == lrNotRequested:
       skip("the boot layer did not run: NO firmware loaded a generation, NO " &
            "kernel was started, and nothing here is evidence that a staged " &
            "generation boots or that a rolled-back one boots the old " &
-           "configuration. Set " & BootGateEnv & "=1 to run it (~4 min; " &
+           "configuration. " & notRequestedNote(BootGateEnv) &
+           " It takes ~4 min and " &
            "needs qemu-system-x86_64, mkfs.vfat, mtools, an OVMF pair, a " &
-           "kernel and the pinned EFI stub).")
+           "kernel and the pinned EFI stub.")
     else:
       let gate = "generation boot layer"
       let (artifacts, why) = discoverBootArtifacts()
@@ -1609,5 +1615,9 @@ if failures > 0:
   stderr.writeLine("test_generations: " & $failures & " check(s) failed, " &
                    $passes & " passed, " & $skips & " skipped")
   quit(1)
-echo "generations under attestation: PASS (" & $passes & " checks, " &
-     $skips & " skipped layer(s))"
+var generationsSummary =
+  "generations under attestation: PASS (" & $passes & " checks"
+if layerSummaryFragment().len > 0:
+  generationsSummary.add ", " & layerSummaryFragment()
+generationsSummary.add ")"
+echo generationsSummary

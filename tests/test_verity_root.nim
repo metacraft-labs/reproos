@@ -95,6 +95,7 @@ import std/[options, os, osproc, strutils, times]
 import "../repro/verity"
 import "../repro/disk_layouts"
 import "./root_policy_fixture"
+import "./gate_layers"
 
 import nimcrypto/[hash, sha2]
 
@@ -585,11 +586,15 @@ proc runVerityRootBuilder(treeDir, outDir: string; extraEnv = ""): int =
   r.exitCode
 
 block layerReferenceImplementation:
-  if getEnv(ToolGateEnv) != "1":
+  let toolLayer = optInLayer(ToolGateEnv)
+  if toolLayer.isBlocked:
+    fail(blockedNote(ToolGateEnv,
+      "bash tests/test-verity-root.sh, with " & ToolGateEnv & "=1"))
+  elif toolLayer == lrNotRequested:
     skip("the reference-implementation layer did not run: NO real " &
          "veritysetup or mkfs.ext4 was executed and NO image bytes were " &
-         "compared. Set " & ToolGateEnv & "=1 to run it (~20s; needs " &
-         "mkfs.ext4 and veritysetup on PATH).")
+         "compared. " & notRequestedNote(ToolGateEnv) &
+         " It takes ~20s and needs mkfs.ext4 and veritysetup on PATH.")
   else:
     let gate = "verity tool layer"
     discard requireTool(gate, "mkfs.ext4")
@@ -959,13 +964,17 @@ proc transcript(path: string): string =
   if fileExists(path): readFile(path) else: ""
 
 block layerBootedGuest:
-  if getEnv(GuestGateEnv) != "1":
+  let guestLayer = optInLayer(GuestGateEnv)
+  if guestLayer.isBlocked:
+    fail(blockedNote(GuestGateEnv,
+      "bash tests/test-verity-root.sh, with " & GuestGateEnv & "=1"))
+  elif guestLayer == lrNotRequested:
     skip("the booted-guest layer did not run: NO guest was booted, NO " &
          "verity table was loaded by a kernel, and nothing here is " &
-         "evidence about a running system. Set " & GuestGateEnv &
-         "=1 to run it (~1 min; needs qemu-system-x86_64, mkfs.ext4, a " &
+         "evidence about a running system. " & notRequestedNote(GuestGateEnv) &
+         " It takes ~1 min and needs qemu-system-x86_64, mkfs.ext4, a " &
          "kernel with a module tree, a static BusyBox and a veritysetup " &
-         "to stage).")
+         "to stage.")
   else:
     let gate = "verity guest layer"
     let (artifacts, why) = discoverGuestArtifacts()
@@ -1194,5 +1203,8 @@ if failures > 0:
   stderr.writeLine("test_verity_root: " & $failures & " check(s) failed, " &
                    $passes & " passed, " & $skips & " skipped")
   quit(1)
-echo "verity read-only root: PASS (" & $passes & " checks, " & $skips &
-     " skipped layer(s))"
+var veritySummary = "verity read-only root: PASS (" & $passes & " checks"
+if layerSummaryFragment().len > 0:
+  veritySummary.add ", " & layerSummaryFragment()
+veritySummary.add ")"
+echo veritySummary

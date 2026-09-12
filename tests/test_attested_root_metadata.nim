@@ -52,6 +52,7 @@
 ## `debugfs` writes the inodes, the kernel reads them.
 
 import std/[algorithm, os, osproc, strutils, tables]
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -594,9 +595,14 @@ proc statInImage(sudo, mountPoint, rel: string): string =
   r.output.strip()
 
 proc runLayer2(workRoot: string) =
-  if getEnv(GateEnv) != "1":
-    skip("t_attested_root_ownership_and_modes: not requested (" & GateEnv &
-         " is not 1).\n" &
+  let layer = optInLayer(GateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(GateEnv,
+      "bash tests/test-attested-root-metadata.sh, with " & GateEnv & "=1"))
+    return
+  if layer == lrNotRequested:
+    skip("t_attested_root_ownership_and_modes: " & notRequestedNote(GateEnv) &
+         "\n" &
          "  NO ext4 image was made and NOTHING was read out of one.\n" &
          gateSkipRemedy())
     skip("t_unpoliced_tree_is_refused: the behavioural half did not run " &
@@ -965,6 +971,10 @@ when isMainModule:
                      " check(s) failed, " & $passes & " passed, " &
                      $skips & " skipped")
     quit(1)
-  echo "attested root metadata: PASS (" & $passes & " checks" &
-       (if skips > 0: ", " & $skips & " SKIPPED -- no ext4 image was made"
-        else: "") & ")"
+  var summary = "attested root metadata: PASS (" & $passes & " checks"
+  if layerSummaryFragment().len > 0:
+    summary.add ", " & layerSummaryFragment() & " -- no ext4 image was made"
+  elif skips > 0:
+    summary.add ", " & $skips & " SKIPPED -- no ext4 image was made"
+  summary.add ")"
+  echo summary

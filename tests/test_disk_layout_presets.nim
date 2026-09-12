@@ -84,6 +84,7 @@ import repro_profile/emit
 
 import "../repro/generations"
 import "../repro/disk_layouts"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -367,10 +368,20 @@ block planRejectsUnknownEndToEnd:
   ##
   ## The snapshot is a regenerable cache under the gitignored
   ## ``.repro/``; the next build rebuilds it.
-  let reproBin = getEnv("REPROOS_DISK_LAYOUT_PLAN_GATE")
-  if reproBin.len == 0:
+  const PlanGateEnv = "REPROOS_DISK_LAYOUT_PLAN_GATE"
+  let reproBin = getEnv(PlanGateEnv)
+  # This layer is switched on by a PATH rather than by ``=1``, so it is
+  # requested exactly when the caller named a binary.
+  let layer = optInLayer(PlanGateEnv, reproBin.len > 0)
+  if layer.isBlocked:
+    fail(blockedNote(PlanGateEnv,
+      "bash tests/test-disk-layout-presets.sh, with " & PlanGateEnv &
+      "=<path to repro>"))
+    break planRejectsUnknownEndToEnd
+  if layer == lrNotRequested:
     skip("t_disk_layout_preset_registry: end-to-end plan rejection not " &
-         "run. Set REPROOS_DISK_LAYOUT_PLAN_GATE=<path to repro> to run " &
+         "run. " & notRequestedNote(PlanGateEnv) & " Set " & PlanGateEnv &
+         "=<path to repro> to run " &
          "`repro lint` against a config naming an unknown layout.")
     break planRejectsUnknownEndToEnd
   let work = getTempDir() / "reproos-b1-plan-gate"
@@ -767,4 +778,7 @@ if failures > 0:
   stderr.writeLine("test_disk_layout_presets: " & $failures &
                    " check(s) failed")
   quit(1)
-echo "disk layout presets: PASS"
+var presetsSummary = "disk layout presets: PASS"
+if layerSummaryFragment().len > 0:
+  presetsSummary.add " (" & layerSummaryFragment() & ")"
+echo presetsSummary

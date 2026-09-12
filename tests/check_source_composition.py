@@ -243,6 +243,67 @@ def required_identities(wrapper: Path) -> set[str]:
     return required
 
 
+def require_registered_wrappers_do_something() -> None:
+    """A registered `bash tests/*.sh` action must run something.
+
+    THE CHECK THAT WAS MISSING, and it was missing in the direction that
+    matters. `nim_gate_wrappers()` below selects wrappers by their CONTENT
+    -- they compile Nim, or they source the helper -- so a wrapper that does
+    NEITHER is not merely unchecked, it is invisible: every rule about tool
+    contracts and declared identities is written about a set it is not in.
+
+    A wrapper reduced to comments is therefore a registered gate that exits
+    0 having executed nothing, and it passes every other check in this file.
+    That is not hypothetical; it was introduced here by an over-broad
+    comment deletion and survived a full run of this script. The failure
+    mode is a green result that describes no work, which is the one failure
+    mode a test suite must not have, so it gets a check of its own rather
+    than a note.
+
+    Deliberately crude, and that is the point: it asks only whether any
+    line survives the strip of comments, blank lines and shell settings.
+    Anything cleverer would be a shell parser, and a check that can be
+    wrong about what "does something" means is worse here than one that
+    can only be wrong about an empty file.
+    """
+    content = source(WORKFLOW_RECIPE)
+    checked = 0
+    # The command string is NOT required to end at the wrapper's name.
+    # Two registered actions forward arguments -- `bash tests/x.sh \"$@\"`
+    # -- and a pattern anchored on the closing quote silently skipped both,
+    # so each could be reduced to comments and still pass this file. That is
+    # the same defect this function exists to forbid, one level up, and it
+    # was found by emptying a wrapper the pattern did not match and watching
+    # the whole script report success.
+    for match in re.finditer(r'command = "bash (tests/[^"\s]+\.sh)', content):
+        rel = match.group(1)
+        wrapper = ROOT / rel
+        if not wrapper.is_file():
+            raise AssertionError(
+                f"a registered action runs {rel}, which does not exist"
+            )
+        body = []
+        for line in source(wrapper).splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith(("set -", "shopt ")):
+                continue
+            body.append(stripped)
+        if not body:
+            raise AssertionError(
+                f"{rel} is registered as a build target but contains no "
+                "executable statement: it would exit 0 having tested "
+                "nothing, which is worse than failing"
+            )
+        checked += 1
+    if checked < 20:
+        raise AssertionError(
+            "expected at least 20 registered bash wrappers, found "
+            f"{checked}; the scan found too little to be meaningful"
+        )
+
+
 def require_nim_gate_declarations() -> None:
     """A registered Nim gate must be runnable BY THE ENGINE.
 
@@ -757,6 +818,7 @@ def main() -> None:
         raise AssertionError("root repro.nim must remain a composition manifest")
     for path in [ISO_RECIPE, IMAGE_RECIPE, CONTAINER_RECIPE, WORKFLOW_RECIPE]:
         require_shell_action_contracts(path)
+    require_registered_wrappers_do_something()
     require_contains(
         ISO_RECIPE,
         ['"xorriso"', '"mtools"', '"squashfs-tools"'],

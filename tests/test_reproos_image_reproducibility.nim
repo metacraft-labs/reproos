@@ -83,6 +83,7 @@ import nimcrypto/[hash, sha2]
 
 import "../repro/disk_layouts"
 import "../repro/package_sets"
+import "./gate_layers"
 
 const
   RepoRoot = currentSourcePath().parentDir().parentDir()
@@ -1138,9 +1139,15 @@ proc expensiveSkipRemedy(reason: string): string =
   "  sudo and loads the nbd module."
 
 proc caseImageBuildsTwiceIdentically(workRoot: string) =
-  if getEnv(ExpensiveGateEnv) != "1":
-    skip("t_reproos_image_reproducibility: not requested (" &
-         ExpensiveGateEnv & " is not 1).\n" &
+  let layer = optInLayer(ExpensiveGateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(ExpensiveGateEnv,
+      "bash tests/test-image-reproducibility.sh, with " &
+      ExpensiveGateEnv & "=1"))
+    return
+  if layer == lrNotRequested:
+    skip("t_reproos_image_reproducibility: " &
+         notRequestedNote(ExpensiveGateEnv) & "\n" &
          expensiveSkipRemedy("  This gate has NOT compared any image bytes."))
     return
 
@@ -1240,7 +1247,10 @@ if failures > 0:
 # PASS must not be able to come away believing an image was compared
 # when the only layer that compares one was skipped.
 var summary = "image reproducibility: PASS (" & $passes & " checks"
-if skips > 0:
+if layerSummaryFragment().len > 0:
+  summary.add ", " & layerSummaryFragment() &
+    " -- no image bytes were compared"
+elif skips > 0:
   summary.add ", " & $skips & " SKIPPED -- no image bytes were compared"
 summary.add ")"
 echo summary

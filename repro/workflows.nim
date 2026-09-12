@@ -1,5 +1,6 @@
 ## Automated checks and interactive ReproOS development workflows.
 
+import std/strutils
 import repro_project_dsl
 import repro_dsl_stdlib/packages/sh
 import repro_dsl_stdlib/packages/nix
@@ -35,6 +36,75 @@ proc withToolIdentities(action: BuildActionDef;
                         tools: openArray[string]): BuildActionDef =
   appendRegisteredActionToolIdentityRefs(action.id, tools)
   action
+
+proc optInLayers(runnable: openArray[string] = [];
+                 unreachable: openArray[string] = []):
+    seq[(string, string)] =
+  ## The environment a gate action declares about its OPT-IN LAYERS.
+  ##
+  ## Several gates below are built in layers: an always-on layer that needs
+  ## nothing but the Nim gate toolchain, and one or more expensive layers
+  ## asked for with an environment variable. Until those variables were
+  ## declared here they were merely INHERITED — the engine layers an
+  ## action's environment over the one it was launched with, so the
+  ## variable reached the script either way, but it contributed nothing to
+  ## the action's cache key. A build could therefore replay a result
+  ## computed under a different setting of it and report success.
+  ##
+  ## Declaring the variable fixes both halves at once. The declared value
+  ## REPLACES the inherited one, so an ambient export can no longer change
+  ## what a build action does; and the (name, value) pair is mixed into the
+  ## action's weak fingerprint, so two settings are two cache entries.
+  ##
+  ## ``unreachable`` names the layers this action CANNOT run whatever the
+  ## caller asks for. That is not pessimism, it is the shape of these
+  ## layers: an action's PATH carries exactly the tools its recipe
+  ## declares, and these layers need ``veritysetup``, ``mkfs.ext4``,
+  ## ``mkfs.vfat``, ``sgdisk``, ``mmd`` and friends — every one of them a
+  ## from-source package here, so declaring one would make the gate
+  ## bootstrap a source package before it could run — plus, for most of
+  ## them, ``sudo``, a loopback block device or a kernel module. A
+  ## hermetic action has none of that.
+  ##
+  ## ``tests/gate_layers.nim`` reads what is declared here and turns it
+  ## into the gate's behaviour: a layer asked for but unreachable FAILS
+  ## naming the ambient command that would run it, and a layer that was not
+  ## asked for is reported as "unreachable here" rather than as "not
+  ## requested", because those two are not the same statement and the
+  ## summary line used to spell them the same way.
+  ##
+  ## THE TWO CLASSES ARE DECLARED DIFFERENTLY, AND THE DIFFERENCE IS THE
+  ## WHOLE DESIGN.
+  ##
+  ##   * A ``runnable`` layer gets its own variable declared with the value
+  ##     this action chose. That closes the inheritance channel AND puts
+  ##     the setting in the key, which is what stops the engine replaying
+  ##     one setting's result under another. The two settings are two
+  ##     actions, because a value read from the host at graph time would be
+  ##     snapshotted by the provider-graph and lowered-graph caches.
+  ##
+  ##   * An ``unreachable`` layer gets its NAME listed and NOTHING ELSE.
+  ##     Declaring its variable would be actively worse than leaving it
+  ##     alone: the declared value replaces the inherited one, so an
+  ##     operator who exported ``REPROOS_UKI_BOOT_GATE=1`` and ran
+  ##     ``repro build`` would have the request silently overwritten and
+  ##     get a green skip — the exact silent-green shape this whole
+  ##     mechanism exists to remove. Left undeclared, the request is
+  ##     inherited, the gate SEES that it was asked for, and it fails.
+  ##
+  ## An unkeyed inherited request is only safe because every gate action
+  ## here is ``cacheable = false``, so no result of one setting can ever be
+  ## replayed under another. ``tests/test_optin_layers.nim`` holds that
+  ## pairing structurally rather than leaving it to this comment: an action
+  ## that names an unreachable layer and is cacheable turns it red.
+  var declared: seq[string] = @[]
+  for name in runnable:
+    declared.add(name)
+    result.add((name, "0"))
+  for name in unreachable:
+    declared.add(name)
+  result.add(("REPRO_GATE_DECLARED_LAYERS", declared.join(",")))
+  result.add(("REPRO_GATE_UNREACHABLE_LAYERS", @unreachable.join(",")))
 
 proc withHostVmRuntime(command: string): string =
   ## Prefer an available unprivileged libvirt session when no system daemon is
@@ -794,6 +864,7 @@ package reproosWorkflows:
       actionId = "reproos.test-disk-layout-presets",
       extraInputs = @[
         "tests/test-disk-layout-presets.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_disk_layout_presets.nim",
         "tests/golden/disko-uefi-ext4.json",
@@ -803,6 +874,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-image/scripts/image-config.sh",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_DISK_LAYOUT_PLAN_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang", "git",
       ])
@@ -887,6 +959,7 @@ package reproosWorkflows:
       actionId = "reproos.test-image-reproducibility",
       extraInputs = @[
         "tests/test-image-reproducibility.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_reproos_image_reproducibility.nim",
         "tools/reproos_image_metadata.py",
@@ -904,6 +977,8 @@ package reproosWorkflows:
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/scripts/build-iso.sh",
       ],
+      extraEnv = optInLayers(unreachable = [
+        "REPROOS_IMAGE_REPRODUCIBILITY_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -920,6 +995,7 @@ package reproosWorkflows:
       actionId = "reproos.test-disk-identity-pinning",
       extraInputs = @[
         "tests/test-disk-identity-pinning.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_disk_identity_pinning.nim",
         "tests/fixtures/auto-config-minimal.toml",
@@ -928,6 +1004,8 @@ package reproosWorkflows:
         "recipes/reproos-image/package.nim",
         "recipes/reproos-image/scripts/build-reproos-image.sh",
       ],
+      extraEnv = optInLayers(unreachable = [
+        "REPROOS_DISK_IDENTITY_FILESYSTEM_GATE"]),
       cacheable = false).withToolIdentities([
         "nim", "mkdir", "clang",
       ])
@@ -952,6 +1030,7 @@ package reproosWorkflows:
       actionId = "reproos.test-verity-root",
       extraInputs = @[
         "tests/test-verity-root.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_verity_root.nim",
         "tests/root_policy_fixture.nim",
@@ -961,6 +1040,8 @@ package reproosWorkflows:
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
+      extraEnv = optInLayers(unreachable = [
+        "REPROOS_VERITY_TOOL_GATE", "REPROOS_VERITY_GUEST_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -993,6 +1074,7 @@ package reproosWorkflows:
       actionId = "reproos.test-uki",
       extraInputs = @[
         "tests/test-uki.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_uki.nim",
         "repro/uki.nim",
@@ -1003,6 +1085,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/build-reproos-image.sh",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_UKI_BOOT_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -1078,6 +1161,7 @@ package reproosWorkflows:
       actionId = "reproos.test-generations",
       extraInputs = @[
         "tests/test-generations.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_generations.nim",
         "repro/generations.nim",
@@ -1090,6 +1174,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/stage-installed-root.sh",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_GENERATION_BOOT_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -1126,6 +1211,7 @@ package reproosWorkflows:
       actionId = "reproos.test-attested-carriers",
       extraInputs = @[
         "tests/test-attested-carriers.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_attested_carriers.nim",
         "tests/root_policy_fixture.nim",
@@ -1139,6 +1225,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/write-verity-carriers.sh",
         "recipes/reproos-image/scripts/build-verity-root.sh",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_ATTESTED_CARRIER_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -1165,6 +1252,7 @@ package reproosWorkflows:
       actionId = "reproos.test-attested-root-order",
       extraInputs = @[
         "tests/test-attested-root-order.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_attested_root_order.nim",
         "tests/root_policy_fixture.nim",
@@ -1192,6 +1280,8 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/reproos-desktop.qml",
         "recipes/reproos-image/scripts/repro-sway-diag",
       ],
+      extraEnv = optInLayers(unreachable = [
+        "REPROOS_ATTESTED_ROOT_ORDER_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
@@ -1219,6 +1309,7 @@ package reproosWorkflows:
       actionId = "reproos.test-attested-root-metadata",
       extraInputs = @[
         "tests/test-attested-root-metadata.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_attested_root_metadata.nim",
         "tools/reproos_image_metadata.py",
@@ -1226,6 +1317,8 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/build-verity-root.sh",
         "recipes/reproos-iso/scripts/build-iso.sh",
       ],
+      extraEnv = optInLayers(unreachable = [
+        "REPROOS_ATTESTED_ROOT_METADATA_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang", "python3",
       ])
@@ -1259,6 +1352,7 @@ package reproosWorkflows:
       actionId = "reproos.test-attested-state-seed",
       extraInputs = @[
         "tests/test-attested-state-seed.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_attested_state_seed.nim",
         "tests/root_policy_fixture.nim",
@@ -1287,6 +1381,7 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/repro-sway-diag",
         "recipes/reproos-iso/initramfs/init-disk",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_STATE_SEED_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang", "python3",
       ])
@@ -1310,6 +1405,7 @@ package reproosWorkflows:
       actionId = "reproos.test-measurement-manifest",
       extraInputs = @[
         "tests/test-measurement-manifest.sh",
+        "tests/gate_layers.nim",
         "tests/nim-gate.sh",
         "tests/test_measurement_manifest.nim",
         "repro/attest.nim",
@@ -1318,16 +1414,52 @@ package reproosWorkflows:
         "repro/generations.nim",
         "recipes/reproos-image/package.nim",
       ],
+      extraEnv = optInLayers(unreachable = ["REPROOS_PCR_BOOT_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
     discard target("test-measurement-manifest", testMeasurementManifest)
+
+    # The gates' own opt-in switches.
+    #
+    # Every gate above has an expensive layer behind an environment
+    # variable, and for a long time none of those variables was declared
+    # on the action that runs the gate. The variable still ARRIVED — an
+    # action's environment is layered over the one the build was launched
+    # with — but the graph had no opinion about it, so a requested layer
+    # that could not possibly run here reported the same "skipped" as one
+    # nobody had asked for. This gate holds both halves shut: no gate may
+    # read a switch its action has not declared, and a switch this action
+    # cannot honour is refused out loud.
+    #
+    # It declares NO opt-in layer of its own, on purpose. A gate whose
+    # subject is opt-in layers must not have one, or its own summary line
+    # becomes part of what it is testing.
+    let testOptInLayers = shell(
+      command = "bash tests/test-optin-layers.sh",
+      actionId = "reproos.test-optin-layers",
+      extraInputs = @[
+        "tests/test-optin-layers.sh",
+        "tests/nim-gate.sh",
+        "tests/test_optin_layers.nim",
+        "tests/gate_layers.nim",
+        "tests/test_verity_root.nim",
+        "tests/root_policy_fixture.nim",
+        "repro/verity.nim",
+        "repro/disk_layouts.nim",
+        "repro/workflows.nim",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-optin-layers", testOptInLayers)
 
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
     discard collect("test", actions = @[
       sourceComposition,
+      testOptInLayers,
       testInstallerPreview,
       testInstallerVisuals,
       testInstallerArtifacts,

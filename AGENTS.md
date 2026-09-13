@@ -68,8 +68,10 @@ Use Reprobuild as the only contributor command surface:
   a VM or root access. Other hosts report an explicit platform skip. Run it
   after changing image ownership policy or its packaging/health callers; see
   `docs/image-metadata.md` for the declared tool contract.
-  `repro build test-source-runtime` checks source-library links, the loader,
-  and rewritten shebang interpreters in the staged image's filesystem namespace.
+  `repro build test-source-runtime` checks source-library and exposed catalog
+  links, the loader, and rewritten shebang interpreters in the staged image's
+  filesystem namespace. Staging uses the same resolver for `ldconfig` and
+  refuses links that still point into the host build catalog.
   Its small compiled ELF fixtures use real `patchelf`, require neither root nor
   a VM, and reject host-only, dangling, cyclic, and non-source library targets
   before modifying the image. Run it after changing source-runtime normalization.

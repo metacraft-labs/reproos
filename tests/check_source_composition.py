@@ -1765,14 +1765,13 @@ def main() -> None:
         '"$patchelf_bin" --force-rpath',
         '"$localedef_runner"',
         'SOURCE_RUNTIME_REPRO_BIN="${REPRO_CLI_BIN:-${REPROBUILD_SRC:-$REPO_ROOT/../reprobuild}/build/bin/repro}"',
-        'resolve_staged_image_path "/sbin/ldconfig"',
+        '"$ISO_SRC_MIRROR_ROOT" --check "/sbin/ldconfig" --executable',
         'ldconfig_runner="$(realpath -m "$STAGE_DIR/tmp/reproos-ldconfig")"',
         "source ldconfig must be dynamically linked for observable cache generation",
         '"$ldconfig_runner" -r "$STAGE_DIR"',
         '"$STAGE_DIR$SOURCE_GLIBC_LOADER"',
         '"$SOURCE_GLIBC_VERSION"',
-        '"$ISO_SRC_MIRROR_ROOT"/*) continue',
-        'resolve_staged_image_path "$image_link"',
+        '--audit-source-links --build-source-root "$SRC_RECIPES_ROOT"',
     ]
     for value in stage_requirements:
         if value not in stage_content:

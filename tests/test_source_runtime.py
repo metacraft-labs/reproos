@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "recipes/reproos-iso/scripts"
@@ -95,6 +96,93 @@ class ImagePaths(unittest.TestCase):
         self.assertEqual(records["broken alias.so"][0], b"/opt/source/broken alias.so")
         self.assertIn(b"unresolved image path", records["broken alias.so"][1])
         self.assertIn(b"not a regular file", records["directory.so"][1])
+
+    def expose(self, name, target):
+        link = self.stage / "usr/bin" / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+        return link
+
+    def audit(self, *args, code=0, diagnostic=None):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS / "source-runtime-providers.py"),
+             str(self.stage), str(self.source), "--audit-source-links", *args],
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+        if diagnostic:
+            self.assertIn(diagnostic, result.stderr)
+        if code:
+            self.assertNotIn("exposed source image symlinks", result.stdout)
+        return result
+
+    def test_audit_checks_relocated_absolute_relative_and_directory_links(self):
+        self.expose("absolute", "/opt/source/libfixture.so.1")
+        self.expose("relative", "../../opt/source/libfixture.so.1")
+        self.expose("directory", "//opt/source")
+        self.assertIn("resolved 3 exposed source image symlinks", self.audit().stdout)
+
+    def test_audit_rejects_missing_relocated_source_link(self):
+        self.expose("missing", "/opt/source/missing")
+        self.audit(code=75, diagnostic="unresolved image path")
+
+    def test_audit_rejects_host_only_file_through_directory_symlink(self):
+        host = self.stage.parent / "host-only"
+        host.mkdir()
+        (host / "file").write_text("not in image\n")
+        (self.source / "parent").symlink_to(host)
+        link = self.expose("host-file", "/opt/source/parent/file")
+        self.assertTrue((self.source / "parent/file").exists())
+        self.audit(code=75, diagnostic="unresolved image path")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual((host / "file").read_text(), "not in image\n")
+
+    def test_audit_rejects_source_cycle(self):
+        (self.source / "loop").symlink_to("loop")
+        self.expose("cycle", "/opt/source/loop")
+        self.audit(code=75, diagnostic="40 links")
+
+    def test_audit_ignores_unused_development_and_non_catalog_links(self):
+        (self.source / "unused.so").symlink_to("absent")
+        self.expose("runtime-state", "/run/not-created-yet")
+        self.expose("different-prefix", "/opt/source-other/absent")
+        self.assertIn("resolved 0 exposed source image symlinks", self.audit().stdout)
+
+    def test_audit_rejects_links_into_original_host_catalog(self):
+        host = self.stage.parent / "checkout"
+        host.mkdir()
+        (host / "file").write_text("host source\n")
+        self.expose("host-source", str(host / "file"))
+        self.audit("--build-source-root", str(host), code=75,
+                   diagnostic="build-root source link remains")
+
+    def test_audit_allows_identical_build_and_runtime_roots(self):
+        self.expose("same-root", "/opt/source/libfixture.so.1")
+        self.assertIn("resolved 1 exposed source image symlinks",
+                      self.audit("--build-source-root", "/opt/source").stdout)
+
+    def test_audit_preserves_whitespace_paths(self):
+        file = self.source / "file with spaces\nand newline"
+        file.write_text("fixture\n")
+        self.expose("link with spaces\nand newline", "/opt/source/" + file.name)
+        self.assertIn("resolved 1 exposed source image symlinks", self.audit().stdout)
+
+    def test_audit_refuses_conflicting_modes_and_invalid_build_root(self):
+        self.audit("--check", "/opt/source/libfixture.so.1", code=2,
+                   diagnostic="not allowed with argument")
+        self.audit("--source-only", code=2, diagnostic="require --check")
+        for root in ("relative", "/", "//", "///", "//directory/.."):
+            with self.subTest(root=root):
+                self.audit("--build-source-root", root, code=75,
+                           diagnostic="absolute and non-root")
+
+    def test_audit_does_not_suppress_filesystem_errors(self):
+        self.expose("entry", "/opt/source/libfixture.so.1")
+        for owner, name in ((providers.os, "walk"), (providers.os, "readlink"),
+                            (Path, "lstat")):
+            with self.subTest(operation=name):
+                with patch.object(owner, name, side_effect=PermissionError("unreadable")):
+                    with self.assertRaisesRegex(PermissionError, "unreadable"):
+                        providers.audit_source_links(self.stage, self.source)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux image runtime gate")

@@ -6,7 +6,8 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import posixpath
 import stat
 import sys
 
@@ -81,16 +82,55 @@ def provider_records(stage: Path, source: Path):
         yield path.name, image_path, error
 
 
+def audit_source_links(stage: Path, source: Path, build_source_root: str | None = None) -> int:
+    runtime_root = PurePosixPath("/" + source.relative_to(stage).as_posix())
+    build_root = None
+    if build_source_root is not None:
+        normalized_build_root = "/" + posixpath.normpath(build_source_root).lstrip("/")
+        if not posixpath.isabs(build_source_root) or normalized_build_root == "/":
+            raise ImagePathError("build source root must be absolute and non-root")
+        build_root = PurePosixPath(normalized_build_root)
+
+    def failed_walk(error: OSError):
+        raise error
+
+    checked = 0
+    for directory, dirs, files in os.walk(stage, followlinks=False, onerror=failed_walk):
+        if Path(directory) == source:
+            # Unused development links inside a package are not exposed runtime links.
+            dirs.clear()
+            continue
+        for name in sorted(files + dirs):
+            path = Path(directory) / name
+            if not stat.S_ISLNK(path.lstat().st_mode):
+                continue
+            image_path = "/" + path.relative_to(stage).as_posix()
+            target = PurePosixPath("/" + posixpath.normpath(posixpath.join(
+                posixpath.dirname(image_path), os.readlink(path))).lstrip("/"))
+            if build_root and build_root != runtime_root and target.is_relative_to(build_root):
+                raise ImagePathError(f"build-root source link remains: {image_path} -> {target}")
+            if target.is_relative_to(runtime_root):
+                resolve_image_path(stage, image_path)
+                checked += 1
+    return checked
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", type=Path)
     parser.add_argument("source", type=Path)
-    parser.add_argument("--check", help="check one image path instead of indexing libraries")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", help="check one image file instead of indexing libraries")
+    mode.add_argument("--audit-source-links", action="store_true",
+                      help="check exposed links directly targeting the image source catalog")
+    parser.add_argument("--build-source-root", help="reject links into the original build catalog")
     parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--executable", action="store_true")
     args = parser.parse_args()
     if not args.check and (args.source_only or args.executable):
         parser.error("--source-only and --executable require --check")
+    if args.build_source_root is not None and not args.audit_source_links:
+        parser.error("--build-source-root requires --audit-source-links")
     try:
         stage = args.stage.resolve(strict=True)
         source = args.source.resolve(strict=True)
@@ -101,6 +141,9 @@ def main() -> int:
         if args.check:
             runtime_file(stage, args.check, source=source if args.source_only else None,
                          executable=args.executable)
+        elif args.audit_source_links:
+            checked = audit_source_links(stage, source, args.build_source_root)
+            print(f"[source-runtime-providers] resolved {checked} exposed source image symlinks")
         else:
             # NUL-framed triples preserve whitespace in paths and diagnostics.
             for record in provider_records(stage, source):

@@ -2441,62 +2441,10 @@ for runtime_dir in \
 done
 $patchelf_bin --set-rpath "$repro_runtime_rpath" "$STAGE_DIR/usr/bin/repro"
 
-# Resolve source-mirror symlinks as image paths, never as host paths. A normal
-# host-side `find -L` can incorrectly accept a dangling image link when the
-# same absolute build path happens to exist on the build machine.
-resolve_staged_image_path() {
-  local image_path="$1"
-  local hop=0
-  case "$image_path" in
-    /*) ;;
-    *) return 1 ;;
-  esac
-  while [ "$hop" -lt 40 ]; do
-    local staged_path="$STAGE_DIR$image_path"
-    if [ -L "$staged_path" ]; then
-      local target
-      target="$(readlink "$staged_path")"
-      case "$target" in
-        /*) image_path="$target" ;;
-        *) image_path="$(realpath -ms "$(dirname "$image_path")/$target")" ;;
-      esac
-      hop=$((hop + 1))
-      continue
-    fi
-    [ -e "$staged_path" ] && return 0
-    echo "[stage-de-rootfs] dangling image symlink target: $image_path" >&2
-    return 1
-  done
-  echo "[stage-de-rootfs] image symlink chain exceeds 40 hops: $image_path" >&2
-  return 1
-}
-
-source_symlinks_checked=0
-source_symlink_failure=0
-while IFS= read -r -d '' staged_link; do
-  link_target="$(readlink "$staged_link")"
-  case "$staged_link" in
-    # The install mirrors intentionally retain development-only links such as
-    # kernel `build`, libtool archives, and unversioned linker names. Audit the
-    # source-backed links exposed through the image filesystem; resolving one
-    # of those links still follows every subsequent hop inside the mirror.
-    "$ISO_SRC_MIRROR_ROOT"/*) continue ;;
-  esac
-  case "$link_target" in
-    "$SRC_RECIPES_ROOT"/*) ;;
-    *) continue ;;
-  esac
-  image_link="${staged_link#$STAGE_DIR}"
-  if ! resolve_staged_image_path "$image_link"; then
-    echo "[stage-de-rootfs] unresolved source symlink: $image_link -> $link_target" >&2
-    source_symlink_failure=1
-  fi
-  source_symlinks_checked=$((source_symlinks_checked + 1))
-done < <(find "$STAGE_DIR" -type l -print0)
-if [ "$source_symlink_failure" -ne 0 ]; then
-  exit 75
-fi
-echo "[stage-de-rootfs] resolved $source_symlinks_checked source image symlinks"
+# Use the same image-namespace resolver as the ELF and shebang preflight.
+# Development-only links within source mirrors remain outside this audit.
+python3 "$SCRIPT_DIR_SELF/source-runtime-providers.py" "$STAGE_DIR" \
+  "$ISO_SRC_MIRROR_ROOT" --audit-source-links --build-source-root "$SRC_RECIPES_ROOT"
 
 for bootstrap_store in "$STAGE_DIR/nix" "$STAGE_DIR/repro/store"; do
   [ -e "$bootstrap_store" ] || continue
@@ -2552,7 +2500,8 @@ for candidate in \
     break
   fi
 done
-if resolve_staged_image_path "/sbin/ldconfig" >/dev/null && \
+if python3 "$SCRIPT_DIR_SELF/source-runtime-providers.py" "$STAGE_DIR" \
+     "$ISO_SRC_MIRROR_ROOT" --check "/sbin/ldconfig" --executable >/dev/null && \
    [ -n "$source_ldconfig" ]; then
   # M9.R.37.3 — ``chroot $STAGE_DIR /sbin/ldconfig`` requires root
   # privilege (Linux's mount-namespace barrier).  The engine runs the

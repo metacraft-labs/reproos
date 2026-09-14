@@ -44,12 +44,14 @@ class ImageMetadataTests(unittest.TestCase):
         for directory in ("etc", "usr/bin", "opt/store/sudo/bin", "home/live",
                           "home/alice", "var/empty", "tmp"):
             (self.root / directory).mkdir(parents=True, exist_ok=True)
+            (self.root / directory).chmod(0o755)
         (self.root / "etc/passwd").write_text(
             "root:x:0:0:root:/root:/bin/sh\n"
             "live:x:1000:1002:Live:/home/live:/bin/sh\n"
             "alice:x:1001:1003:Alice:/home/alice:/bin/sh\n")
         (self.root / "home/live").chmod(0o700)
         (self.root / "home/alice/note with spaces").write_text("user data\n")
+        (self.root / "home/alice/note with spaces").chmod(0o644)
         (self.root / "tmp").chmod(0o1777)
         (self.root / "etc/sudo.conf").write_text("# sudo configuration\n")
         (self.root / "etc/sudoers").write_text("root ALL=(ALL:ALL) ALL\n")

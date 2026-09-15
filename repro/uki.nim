@@ -155,18 +155,33 @@ const
     ## same sections in a different order produce different bytes and
     ## therefore a different launch measurement for an identical system.
 
-  UkiMeasurementOrder*: array[5, string] = [
-    UkiLinuxSection,
-    UkiOsRelSection,
-    UkiCmdlineSection,
-    UkiInitrdSection,
-    UkiUnameSection,
+  UkiStubSectionOrder*: array[15, string] = [
+    ".linux", ".osrel", ".cmdline", ".initrd", ".ucode", ".splash",
+    ".dtb", ".uname", ".sbat", ".pcrsig", ".pcrpkey", ".profile",
+    ".dtbauto", ".hwids", ".efifw",
   ]
-    ## The order ``systemd-stub`` EXTENDS the sections into PCR 11, which
-    ## is its own fixed list and is deliberately NOT the file order above.
-    ## Recorded here because the measurement work precomputes PCR 11 and the
-    ## two orders being different is exactly the kind of detail that
-    ## produces a calculator which agrees only with itself.
+    ## The order ``systemd-stub`` EXTENDS sections into PCR 11: its own
+    ## unified-section table, walked from the top, and deliberately NOT
+    ## the file order above.
+    ##
+    ## It is the STUB's table and not this repository's section list, and
+    ## the difference is the whole point. A ReproOS image carries five
+    ## sections this repository appends; the stub measures those AND the
+    ## ones it brought itself, ``.sbat`` among them. A list built from
+    ## the appended sections alone is short by one, and replays to a
+    ## register no machine can hold.
+    ##
+    ## The table is duplicated from the measurement library rather than
+    ## imported, because this module is compiled into the assembler and
+    ## the recipe closure; a gate checks the two against each other, and
+    ## the library's copy is in turn checked against the NUL-separated
+    ## run of strings the pinned stub carries in its own read-only data.
+
+  UkiStubUnmeasuredSections*: array[2, string] = [".pcrsig", ".pcrpkey"]
+    ## The two sections a stub deliberately does NOT measure: the signed
+    ## policy over the measurements, and the key that policy is verified
+    ## with. Both are statements ABOUT the measurement, so measuring them
+    ## would make the value they describe depend on itself.
 
   UkiFileName* = "reproos.efi"
   UkiManifestFileName* = "reproos.efi.json"
@@ -770,6 +785,40 @@ proc validateUkiAssembleRequest*(request: UkiAssembleRequest): string =
     return "the unified kernel image has no output directory"
   ""
 
+proc ukiMeasurementOrder*(image: string): seq[string] =
+  ## The sections a stub will measure THIS image by, in the order it
+  ## walks its own table.
+  ##
+  ## Derived from the finished image rather than declared, because the
+  ## measured set is not a property of this repository's inputs: the
+  ## stub contributes sections of its own — ``.sbat`` on every build —
+  ## and a list of what the assembler appended is short by however many
+  ## of those there are. A manifest carrying that short list describes
+  ## an image no machine can produce: replaying it yields a register no
+  ## TPM will ever hold, and every comparison against a real boot fails
+  ## for a reason that points at the machine instead of at the document.
+  ##
+  ## Sections the image does not carry are skipped, and the two the stub
+  ## deliberately does not measure are skipped even when present.
+  ##
+  ## One shape this does not special-case, recorded so it is not
+  ## rediscovered as a defect: a ``.profile`` section means the image
+  ## selects one of several profiles at boot, and no single register
+  ## value describes it. The measurement work refuses such an image
+  ## outright, so there is no order for this to be wrong about — the
+  ## refusal happens before anyone can compare.
+  result = @[]
+  let present = readPeSections(image)
+  for want in UkiStubSectionOrder:
+    var unmeasured = false
+    for skip in UkiStubUnmeasuredSections:
+      if want == skip: unmeasured = true
+    if unmeasured: continue
+    for info in present:
+      if info.name == want:
+        result.add want
+        break
+
 proc renderUkiManifest*(spec: UkiSpec; image: string): string =
   ## The manifest written beside the UKI. Hand-rendered in a fixed key
   ## order, because it is compared byte for byte by its gate and because
@@ -799,6 +848,6 @@ proc renderUkiManifest*(spec: UkiSpec; image: string): string =
   "  \"measurementOrder\": [" &
     (block:
       var parts: seq[string] = @[]
-      for name in UkiMeasurementOrder: parts.add "\"" & name & "\""
+      for name in ukiMeasurementOrder(image): parts.add "\"" & name & "\""
       parts.join(", ")) & "]\n" &
   "}\n"

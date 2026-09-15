@@ -295,8 +295,19 @@ proc putU32(b: var string; at: int; v: int64) =
   for i in 0 ..< 4:
     b[at + i] = char((v shr (8 * i)) and 0xFF)
 
-proc syntheticStub(): string =
-  ## A minimal but genuine PE32+ EFI application carrying one `.sbat`.
+proc syntheticStub(stubSection = ".sbat"): string =
+  ## A minimal but genuine PE32+ EFI application carrying one section of
+  ## its own.
+  ##
+  ## The name is a parameter because the sections a STUB contributes are
+  ## the ones this repository's assembler never appends, and two rules
+  ## are about exactly those: the stub table skips `.pcrsig`/`.pcrpkey`,
+  ## and `measureUkiPcr11` refuses a `.profile` image outright. With a
+  ## fixed `.sbat` here neither rule had a reachable input — deleting
+  ## either one left every case green — so each was a rule nothing could
+  ## falsify. Only the NAME varies; the content and every offset stay as
+  ## they were, so `.sbat` images are byte-identical to before.
+  doAssert stubSection.len <= 8, "a COFF section header holds 8 name bytes"
   let headerRoom = 1536
   let firstRaw = max(headerRoom, SynthFileAlignment)
   result = newString(firstRaw + SynthFileAlignment)
@@ -319,8 +330,8 @@ proc syntheticStub(): string =
   putU32(result, opt + 60, headerRoom)
   putU32(result, opt + 64, 0)
   let at = SynthSectionTable
-  for j in 0 ..< ".sbat".len:
-    result[at + j] = ".sbat"[j]
+  for j in 0 ..< stubSection.len:
+    result[at + j] = stubSection[j]
   putU32(result, at + 8, SynthSbat.len)
   putU32(result, at + 12, SynthSectionAlignment)
   putU32(result, at + 16, SynthFileAlignment)
@@ -476,6 +487,149 @@ block layerCalculatorStructure:
   check(replayEventLogTemplate(tmpl) == measured.pcr11,
         "the event-log template replays to the precomputed register")
 
+block layerManifestOrderReplaysToTheRegisterAMachineHolds:
+  # THE DOCUMENT BESIDE THE IMAGE HAS TO DESCRIBE AN IMAGE A MACHINE CAN
+  # PRODUCE.
+  #
+  # `reproos.uki.v1` carries a `measurementOrder`, and that field is the
+  # one thing in the document a consumer could replay. It was a list of
+  # the sections this repository APPENDS, which is not the set a stub
+  # measures: the stub brings `.sbat` of its own. Replaying the declared
+  # order therefore produced a register no machine holds, and nothing
+  # noticed, because the calculator reads the PE section table and never
+  # consults the manifest.
+  #
+  # So the field is checked the only way that means anything: replay it,
+  # and require the result to be the register the machine reports.
+  let image = synthUki(katCmdline)
+  let measured = measureUkiPcr11(image)
+  let manifest = renderUkiManifest(UkiSpec(
+    cmdline: katCmdline, osRelease: defaultOsRelease("0.1.0"),
+    sourceDateEpoch: PinnedEpoch), image)
+
+  # The order is read back out of the RENDERED DOCUMENT rather than from
+  # the function that produced it, so an emitter that renders something
+  # other than what it computed is caught here too.
+  var declaredOrder: seq[string] = @[]
+  for node in parseJson(manifest)["measurementOrder"]:
+    declaredOrder.add node.getStr()
+
+  var contentDigests = initTable[string, string]()
+  var measuredOrder: seq[string] = @[]
+  for e in measured.events:
+    contentDigests[e.section] = e.dataDigest
+    measuredOrder.add e.section
+
+  check(declaredOrder == measuredOrder,
+        "the manifest's measurementOrder is the order the sections are " &
+        "actually measured in (declared " & declaredOrder.join(", ") &
+        "; measured " & measuredOrder.join(", ") & ")")
+
+  # And the replay, which is the statement a consumer of the document
+  # would make. A permutation, a missing section or an extra one all
+  # land on a different register, so this one comparison covers every
+  # way the list can be wrong.
+  var replayed = ZeroPcr
+  var replayable = true
+  for name in declaredOrder:
+    if name notin contentDigests:
+      replayable = false
+      break
+    replayed = extendPcr(replayed, sectionNameEventDigest(name))
+    replayed = extendPcr(replayed, contentDigests[name])
+  check(replayable,
+        "every section the manifest declares is one the stub measures, " &
+        "so the declared order can be replayed at all")
+  check(replayable and replayed == measured.pcr11,
+        "replaying the manifest's own declared order reproduces the " &
+        "register a machine reports (declared order replays to " &
+        (if replayable: replayed else: "<unreplayable>") &
+        ", the machine holds " & measured.pcr11 & ")")
+
+  # `.sbat` is the section that was missing, named here so the gate says
+  # what it is protecting rather than only that a digest moved.
+  check(".sbat" in declaredOrder,
+        "the stub's own .sbat section is in the declared order, even " &
+        "though this repository does not append it")
+
+  # The stub table this module walks is the measurement library's,
+  # checked value for value. The library's copy is in turn checked
+  # against the NUL-separated run of strings the pinned stub carries in
+  # its own read-only data (see the stub-anchor case below), so the two
+  # copies cannot drift apart silently and neither can drift from the
+  # stub.
+  var mine: seq[string] = @[]
+  for s in UkiStubSectionOrder: mine.add s
+  var theirs: seq[string] = @[]
+  for s in UnifiedSectionOrder: theirs.add s
+  check(mine == theirs,
+        "repro/uki.nim walks the same unified-section table the " &
+        "measurement library does (" & mine.join(", ") & ")")
+  var mineUnmeasured: seq[string] = @[]
+  for s in UkiStubUnmeasuredSections: mineUnmeasured.add s
+  var theirsUnmeasured: seq[string] = @[]
+  for s in UnmeasuredSections: theirsUnmeasured.add s
+  check(mineUnmeasured == theirsUnmeasured,
+        "... and agrees on which sections a stub deliberately skips")
+
+  # AND THAT SKIP HAS A REACHABLE INPUT, which until now it did not.
+  #
+  # Every image the corpus builds carries `.sbat` and nothing else the
+  # assembler does not append, so the two skipped names never occurred in
+  # one — deleting the skip loop from `ukiMeasurementOrder` outright left
+  # every case above green. A rule no input can reach is not a rule. The
+  # stub's own section name is a parameter for this reason: a stub that
+  # contributes `.pcrsig` or `.pcrpkey` is the only shape in which the
+  # skip decides anything.
+  #
+  # The replay is what carries the claim, not the absence. `.pcrsig` is
+  # a signed policy OVER the measurements, so a manifest that declared it
+  # would name a section `measureUkiPcr11` never extended, and the two
+  # sides would disagree about the register.
+  for skipped in UkiStubUnmeasuredSections:
+    let stubbed = assembleUki(syntheticStub(skipped), ukiSections(UkiSpec(
+      cmdline: katCmdline, osRelease: defaultOsRelease("0.1.0"),
+      uname: "6.12.0-reproos"), "SYNTHETIC-KERNEL-PAYLOAD",
+      "SYNTHETIC-INITRD-PAYLOAD"), PinnedEpoch)
+    var carried = false
+    for info in readPeSections(stubbed):
+      if info.name == skipped: carried = true
+    check(carried,
+          "the fixture really carries " & skipped & ", so the skip below " &
+          "is a decision and not a section that was never there")
+
+    var stubbedDeclared: seq[string] = @[]
+    for node in parseJson(renderUkiManifest(UkiSpec(
+        cmdline: katCmdline, osRelease: defaultOsRelease("0.1.0"),
+        sourceDateEpoch: PinnedEpoch), stubbed))["measurementOrder"]:
+      stubbedDeclared.add node.getStr()
+    check(skipped notin stubbedDeclared,
+          skipped & " is present in the image and absent from the " &
+          "declared order, because a stub does not measure it (declared " &
+          stubbedDeclared.join(", ") & ")")
+
+    let stubbedMeasured = measureUkiPcr11(stubbed)
+    var stubbedDigests = initTable[string, string]()
+    var stubbedOrder: seq[string] = @[]
+    for e in stubbedMeasured.events:
+      stubbedDigests[e.section] = e.dataDigest
+      stubbedOrder.add e.section
+    check(stubbedDeclared == stubbedOrder,
+          "... and the declared order is still the measured one")
+    var stubbedReplay = ZeroPcr
+    var stubbedReplayable = true
+    for name in stubbedDeclared:
+      if name notin stubbedDigests:
+        stubbedReplayable = false
+        break
+      stubbedReplay = extendPcr(stubbedReplay, sectionNameEventDigest(name))
+      stubbedReplay = extendPcr(stubbedReplay, stubbedDigests[name])
+    check(stubbedReplayable and stubbedReplay == stubbedMeasured.pcr11,
+          "... and it still replays to the register this image measures " &
+          "to (" & (if stubbedReplayable: stubbedReplay
+                    else: "<unreplayable>") & " against " &
+          stubbedMeasured.pcr11 & ")")
+
 block tManifestRejectsUnknownLaunchShapeSchema:
   let image = synthUki(katCmdline)
   let good = renderAttestedImageManifest(manifestFor(image))
@@ -527,12 +681,29 @@ block tManifestRejectsUnknownLaunchShapeSchema:
     var doc6 = parseJson(good)
     doc6["expected"][BackendTpm][0]["pcr11"] = newJString(repeat("a", 64))
     discard parseAttestedImageManifest($doc6, "<mutated>")
-  refuses("an image no single register describes -- one carrying a " &
-          ".profile section -- is refused rather than measured for " &
-          "profile 0 alone"):
-    discard measureUkiPcr11(assembleUki(syntheticStub(), @[
-      UkiSection(name: ".linux", content: "K"),
-      UkiSection(name: ".profile", content: "ID=alt\n")], PinnedEpoch))
+  # The `.profile` section comes from the STUB, not from the section
+  # list. `assembleUki` refuses a section outside `UkiSectionOrder`, and
+  # refuses a list with no `.cmdline` before that -- so a list carrying
+  # `.profile` raised in the ASSEMBLER and `measureUkiPcr11` was never
+  # reached. Measured: deleting its `.profile` refusal outright left this
+  # gate green at 124/124. Two different refusals satisfying one check is
+  # the shape; the fix is to give the refusal under test the only input
+  # that reaches it, and to name the refusal rather than accept any
+  # exception.
+  block:
+    let profiled = assembleUki(syntheticStub(".profile"), @[
+      UkiSection(name: ".cmdline", content: katCmdline),
+      UkiSection(name: ".linux", content: "K")], PinnedEpoch)
+    var said = ""
+    try:
+      discard measureUkiPcr11(profiled)
+    except MeasurementError as err:
+      said = err.msg
+    check(".profile" in said and "profiles at boot" in said,
+          "t_manifest_rejects_unknown_launch_shape: an image no single " &
+          "register describes -- one whose STUB carries .profile -- is " &
+          "refused by the calculator itself, and says why (got " &
+          said.escape() & ")")
 
   # And the good document still parses, so the refusals are
   # discriminating rather than universal.

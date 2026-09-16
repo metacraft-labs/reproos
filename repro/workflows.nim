@@ -156,6 +156,7 @@ package reproosWorkflows:
     "mktemp"
     "rm"
     "readlink"
+    "dirname"
     "wc"
     "cut"
     "tail"
@@ -1114,6 +1115,19 @@ package reproosWorkflows:
         @["bash", "mksquashfs", "unsquashfs"])
     discard target("test-image-metadata", testImageMetadata)
 
+    let testIsoSourceBootloader = shell(
+      command = "python3 tests/test_iso_source_bootloader.py",
+      actionId = "reproos.test-iso-source-bootloader",
+      extraInputs = @[
+        "tests/test_iso_source_bootloader.py",
+        "recipes/reproos-iso/scripts/build-iso.sh",
+      ],
+      cacheable = false).withToolIdentities(["python3"])
+    when defined(linux):
+      appendRegisteredActionToolIdentityRefs(testIsoSourceBootloader.id,
+        @["bash", "dirname", "readlink"])
+    discard target("test-iso-source-bootloader", testIsoSourceBootloader)
+
     let testSourceRuntime = shell(
       command = "python3 tests/test_source_runtime.py",
       actionId = "reproos.test-source-runtime",
@@ -1473,6 +1487,7 @@ package reproosWorkflows:
       testIsoReproducibility,
       testImageReproducibility,
       testImageMetadata,
+      testIsoSourceBootloader,
       testSourceRuntime,
       testDiskIdentityPinning,
       testVerityRoot,

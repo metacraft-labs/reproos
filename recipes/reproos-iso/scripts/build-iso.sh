@@ -39,6 +39,45 @@ OUT_ISO="$3"
 : "${LC_ALL:?LC_ALL=C required for byte-identical output}"
 : "${TZ:?TZ=UTC required for byte-identical output}"
 
+# Source-mode boot media must not borrow host bootloader tools or modules.
+# Validate before generating initramfs or staging any image content.
+GRUB_SOURCE_PREFIX=""
+if [ -n "${REPRO_FROM_SOURCE_ROOT:-}" ]; then
+  GRUB_SOURCE_PREFIX=$(cd "$REPRO_FROM_SOURCE_ROOT/grub/.repro/output/install/usr" 2>/dev/null && pwd -P) || {
+    echo "build-iso.sh: source GRUB prefix is missing; build the grub source package" >&2
+    exit 69
+  }
+  for relative in bin/grub-mkrescue bin/grub-mkimage \
+      lib/grub/i386-pc/modinfo.sh lib/grub/x86_64-efi/modinfo.sh; do
+    candidate="$GRUB_SOURCE_PREFIX/$relative"
+    if [ ! -f "$candidate" ] || [ ! -s "$candidate" ]; then
+      echo "build-iso.sh: source GRUB file missing or invalid: $candidate" >&2
+      exit 69
+    fi
+    case "$relative" in
+      bin/*)
+        if [ ! -x "$candidate" ]; then
+          echo "build-iso.sh: source GRUB tool is not executable: $candidate" >&2
+          exit 69
+        fi ;;
+    esac
+    resolved=$(readlink -f -- "$candidate") || {
+      echo "build-iso.sh: source GRUB path cannot be resolved: $candidate" >&2
+      exit 69
+    }
+    case "$resolved" in
+      "$GRUB_SOURCE_PREFIX"/*) ;;
+      *)
+        echo "build-iso.sh: source GRUB path resolves outside its prefix: $candidate" >&2
+        exit 69 ;;
+    esac
+  done
+  GRUB_MKRESCUE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkrescue"
+  GRUB_MKIMAGE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkimage"
+  GRUB_BIOS_DIR="$GRUB_SOURCE_PREFIX/lib/grub/i386-pc"
+  GRUB_EFI_DIR="$GRUB_SOURCE_PREFIX/lib/grub/x86_64-efi"
+fi
+
 # Generate a live-init-capable initramfs that knows how to loop-mount
 # /live/filesystem.squashfs + pivot_root into the DE rootfs overlay.
 # the SquashFS payload and pivot into the staged source package tree.
@@ -68,7 +107,11 @@ done
 # grub-mkimage + mkfs.fat are required for the hybrid BIOS+UEFI path
 # (M9.R.28.1 fix); without them the UEFI El Torito alt-boot block is
 # silently dropped from the ISO.
-for tool in xorriso grub-mkrescue grub-mkimage mformat mcopy mmd mkfs.fat; do
+required_tools=(xorriso mformat mcopy mmd mkfs.fat)
+if [ -z "$GRUB_SOURCE_PREFIX" ]; then
+  required_tools+=(grub-mkrescue grub-mkimage)
+fi
+for tool in "${required_tools[@]}"; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "required tool missing: $tool (apt-get install xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools)" >&2
     exit 66
@@ -368,27 +411,20 @@ REPRO_MODIFICATION_DATE='2025010100000000'
 #      xorriso call and appends ``-eltorito-alt-boot -e
 #      boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat`` so
 #      the resulting ISO has BOTH boot entries.
-GRUB_SOURCE_PREFIX="${REPRO_FROM_SOURCE_ROOT:-}/grub/.repro/output/install/usr"
-if [ -x "$GRUB_SOURCE_PREFIX/bin/grub-mkrescue" ]; then
-  GRUB_MKRESCUE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkrescue"
-else
+if [ -z "$GRUB_SOURCE_PREFIX" ]; then
+  # The standalone non-source builder retains host provisioning. Source-mode
+  # callers have already selected and validated both platforms above.
   GRUB_MKRESCUE_BIN=$(command -v grub-mkrescue)
-fi
-if [ -x "$GRUB_SOURCE_PREFIX/bin/grub-mkimage" ]; then
-  GRUB_MKIMAGE_BIN="$GRUB_SOURCE_PREFIX/bin/grub-mkimage"
-else
   GRUB_MKIMAGE_BIN=$(command -v grub-mkimage)
+  GRUB_BIOS_DIR=""
+  GRUB_EFI_DIR=""
+  for d in /nix/store/*-grub-2.*/lib/grub/i386-pc; do
+    if [ -d "$d" ]; then GRUB_BIOS_DIR="$d"; break; fi
+  done
+  for d in /nix/store/*-grub-2.*/lib/grub/x86_64-efi; do
+    if [ -d "$d" ]; then GRUB_EFI_DIR="$d"; break; fi
+  done
 fi
-GRUB_BIOS_DIR=""
-GRUB_EFI_DIR=""
-for d in "$GRUB_SOURCE_PREFIX/lib/grub/i386-pc" \
-    /nix/store/*-grub-2.*/lib/grub/i386-pc; do
-  if [ -d "$d" ]; then GRUB_BIOS_DIR="$d"; break; fi
-done
-for d in "$GRUB_SOURCE_PREFIX/lib/grub/x86_64-efi" \
-    /nix/store/*-grub-2.*/lib/grub/x86_64-efi; do
-  if [ -d "$d" ]; then GRUB_EFI_DIR="$d"; break; fi
-done
 GRUB_HAS_BIOS=0
 GRUB_HAS_EFI=0
 [ -n "$GRUB_BIOS_DIR" ] && GRUB_HAS_BIOS=1

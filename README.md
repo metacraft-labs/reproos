@@ -72,6 +72,7 @@ repro build test-iso-reproducibility
 repro build test-image-reproducibility
 repro build test-image-metadata
 repro build test-source-runtime
+repro build test-iso-source-bootloader
 repro build test-iso
 repro build test-image-health
 repro build test-installed-desktop
@@ -103,6 +104,12 @@ interpreters must be executable files in the image. Invalid required providers
 fail before ELF or shebang mutation. Other hosts report a platform skip. The
 fixture loader and libc are stand-ins: this is filesystem-preflight coverage,
 not evidence of ABI compatibility or a successful guest boot.
+
+`test-iso-source-bootloader` exercises the ISO builder's GRUB preflight without
+building an image. Source-mode builds require source-prefix executables and both
+BIOS and UEFI module metadata; missing or escaping paths fail before staging.
+They never substitute ambient GRUB tools or Nix-store modules. This preflight
+does not replace `test-iso-reproducibility` or installed-guest acceptance.
 
 The unattended test compares the wizard's generated configuration with the
 reviewed fixture, applies it to the installed image build, waits for the boot

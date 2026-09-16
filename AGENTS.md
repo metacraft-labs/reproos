@@ -77,6 +77,10 @@ Use Reprobuild as the only contributor command surface:
   before modifying the image. Run it after changing source-runtime normalization.
   Other hosts report an explicit Linux platform skip; a missing declared tool
   on Linux fails. This gate does not replace source-image or guest acceptance.
+  `repro build test-iso-source-bootloader` exercises the ISO builder's source
+  GRUB preflight with small filesystem fixtures. Run it after changing GRUB
+  selection: source mode requires both BIOS and UEFI modules and cannot fall
+  back to ambient tools or Nix-store modules when source artifacts are missing.
   `repro build test-image-boot-smoke` asserts the installed image's serial
   boot sequence through to a login prompt via the vm-harness sibling's
   `boot_smoke` engine. Its transcript-replay case always runs; the live boot

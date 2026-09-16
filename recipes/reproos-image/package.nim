@@ -332,6 +332,18 @@ package reproosImage:
     "tail"
 
   build:
+    # This body resolves every path it declares against the project root,
+    # reads the auto-config file, and refuses an unknown disk layout. None
+    # of that is possible during the DSL's startup pass over the body,
+    # which runs before any request exists and therefore without a project
+    # root. Return there; the real invocation runs the same body again
+    # with a root and registers everything.
+    #
+    # Ask for the pass, not for an empty root. An empty root during a real
+    # invocation is a planning fault the engine refuses by name, and
+    # treating the two alike would turn it into a silently empty graph.
+    if providerStartupBodyActive():
+      return
     let projectRoot = activeProviderProjectRoot()
     let reprobuildRoot = block:
       let configured = getEnv("REPROBUILD_SRC")

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Two gates: the registered Nim gates must RUN under `repro build`,
-# and a gate whose tool identities are incomplete must still FAIL LOUDLY.
+# Three gates: the registered Nim gates must RUN under `repro build`, a gate
+# whose tool identities are incomplete must still FAIL LOUDLY, and no recipe
+# may fail while the provider binary is starting up.
 #
 #   t_registered_nim_gates_run_through_the_engine
 #     Every registered target below is built through `repro build` and must
@@ -20,6 +21,12 @@ set -uo pipefail
 #     failures into four silent passes -- strictly worse than the bug.
 #     The mutation is applied to a working copy of repro/workflows.nim and
 #     unconditionally restored, including on the failure paths.
+#
+#   t_no_recipe_fails_during_provider_startup
+#     Every `repro build` above is also read for the engine's
+#     startup-body-failure line. See the check's own comment below for why
+#     one recipe's startup-time assumption is a project-wide outage, and why
+#     the engine containing it is not a reason to stop looking.
 #
 # This script is deliberately NOT a registered `repro build` target: it
 # drives the engine, and registering it would nest `repro build` inside
@@ -107,6 +114,47 @@ run_target() {
     >"$log" 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# t_no_recipe_fails_during_provider_startup
+# ---------------------------------------------------------------------------
+#
+# Every recipe in this repository is linked into ONE provider binary, and the
+# DSL runs each package's `build:` body once while that binary is still
+# starting up -- before any request exists, so with no project root. A body
+# that cannot run in that state used to abort the binary, and one recipe doing
+# it made EVERY target here unbuildable, including targets that never
+# reference it. The engine now contains such a failure and prints it; the
+# operator gets a line naming the package instead of an anonymous
+# `provider exited with code 1`.
+#
+# Containment is what keeps one recipe from taking the project down. It is not
+# permission to leave a recipe broken: a body that fails its startup pass is
+# still a recipe nobody has run in that state, and nothing else in this
+# repository looks at the record. So every `repro build` this script runs is
+# also read for the line, and the run is charged for it whether or not the
+# build itself succeeded.
+#
+# This check is free -- it reads a log the positive case already produced --
+# and it is fail-closed twice over: an EMPTY log fails rather than passes, and
+# the check runs on the failing path too, where the line is most likely to
+# appear.
+STARTUP_FAILURE_MARKER='repro project provider: startup body failed:'
+
+check_no_recipe_failed_at_provider_startup() {
+  # check_no_recipe_failed_at_provider_startup <target> <logfile>
+  local target="$1" log="$2"
+  if [[ ! -s "$log" ]]; then
+    fail "t_no_recipe_fails_during_provider_startup: $target produced no output at all; a check that reads nothing proves nothing"
+    return
+  fi
+  if grep -qF "$STARTUP_FAILURE_MARKER" "$log"; then
+    fail "t_no_recipe_fails_during_provider_startup: a recipe failed its startup pass while building $target"
+    grep -F "$STARTUP_FAILURE_MARKER" "$log" | sed -e 's/^/    | /' >&2
+    return
+  fi
+  pass "t_no_recipe_fails_during_provider_startup: no recipe failed its startup pass while building $target"
+}
+
 mkdir -p "$WORK"
 
 # ---------------------------------------------------------------------------
@@ -124,6 +172,7 @@ if [[ $run_positive -eq 1 ]]; then
       fail "t_registered_nim_gates_run_through_the_engine: repro build $target exited $code"
       sed -e 's/^/    | /' "$log" >&2
     fi
+    check_no_recipe_failed_at_provider_startup "$target" "$log"
   done
 fi
 

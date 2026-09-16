@@ -385,3 +385,13 @@ bash tests/test-nim-gates-through-the-engine.sh
 It builds every Nim gate through the engine and then, as a negative case,
 removes `nim` from one target's declared identities and requires that
 `repro build` fails naming the missing tool.
+
+It also reads each of those build logs for the engine's
+`repro project provider: startup body failed:` line. Every recipe here is
+linked into one provider binary and the DSL runs each `build:` body once at
+provider startup, before any request exists and so without a project root — a
+body that cannot run in that state is a project-wide outage, not a recipe-wide
+one. A body that needs the root must ask `providerStartupBodyActive()` and
+return, rather than testing `activeProviderProjectRoot()` for emptiness: an
+empty root during a real invocation is a planning fault the engine refuses by
+name, and conflating the two turns it into a silently empty graph.

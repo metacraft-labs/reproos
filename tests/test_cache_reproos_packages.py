@@ -97,21 +97,36 @@ if args and args[0] == "graph":
         )
     time.sleep(0.2)
     key = {"alpha": alpha_key, "beta": beta_key, "gamma": gamma_key}[cwd.name]
+    if cwd.name == "alpha":
+        key = os.environ.get("FAKE_ALPHA_KEY", key)
     tool_refs = []
     if cwd.name == "beta" and os.environ.get("FAKE_TRANSITIVE_SOURCE"):
         tool_refs = [os.environ["FAKE_TRANSITIVE_SOURCE"], "nested-ignored"]
-    print(json.dumps({
-        "actions": [{
+    actions = [{
+            "id": "install-mirror-" + cwd.name,
             "publishToBinaryCache": True,
             "binaryCacheKey": key,
             "toolIdentityRefs": tool_refs,
         }]
-    }))
+    if cwd.name == "alpha" and os.environ.get("FAKE_PENDING_IDENTITY"):
+        pending = {
+            "id": "pending-source-output",
+            "publishToBinaryCache": True,
+            "binaryCacheKey": "",
+            "binaryCacheIdentityError": "incomplete source identity",
+        }
+        if os.environ["FAKE_PENDING_IDENTITY"] == "mixed":
+            actions.append(pending)
+        else:
+            actions = [pending]
+    print(json.dumps({"actions": actions}))
     raise SystemExit(0)
 
 if args[:2] == ["cache", "lookup"]:
     entries = set(json.loads(state_path.read_text()))
     key = args[2]
+    with log_path.with_suffix(".lookups").open("a", encoding="utf-8") as stream:
+        stream.write(key + "\n")
     if key in entries:
         print(f"hit {key}")
         raise SystemExit(0)
@@ -266,7 +281,7 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertIn("publisher public certificate not found", result.stderr)
         self.assertFalse(self.graph_log.exists())
 
-    def test_resume_skips_completed_package_graphs_for_matching_inputs(self) -> None:
+    def test_resume_rechecks_current_package_graphs_for_matching_inputs(self) -> None:
         self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
         first = self.run_backfill("--verify-only")
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -278,7 +293,55 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertTrue(report["complete"])
         self.assertEqual(report["schemaVersion"], 3)
         self.assertTrue(all(item["resumed"] for item in report["packages"]))
-        self.assertEqual(self.graph_log.read_text(encoding="utf-8"), "iso\n")
+        graphs = self.graph_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line.split(":")[0] for line in graphs], ["iso", "alpha", "beta"])
+
+    def test_mixed_pending_identity_refuses_all_cache_requests(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY]), encoding="utf-8")
+        self.extra_env["FAKE_PENDING_IDENTITY"] = "mixed"
+        result = self.run_backfill("--verify-only", "--package", "alpha")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertFalse(report["complete"])
+        self.assertIn("pending-source-output", report["packages"][0]["error"])
+        self.assertIn("incomplete source identity", report["packages"][0]["error"])
+        self.assertFalse(self.log.with_suffix(".lookups").exists())
+        self.assertFalse(self.log.exists())
+
+    def test_malformed_publication_key_cannot_be_ignored(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY]), encoding="utf-8")
+        self.extra_env["FAKE_ALPHA_KEY"] = "invalid"
+        result = self.run_backfill("--verify-only", "--package", "alpha")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertIn("install-mirror-alpha", report["packages"][0]["error"])
+        self.assertFalse(self.log.with_suffix(".lookups").exists())
+
+    def test_resume_cannot_bypass_current_pending_identity(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only", "--package", "alpha")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.log.with_suffix(".lookups").unlink()
+        self.extra_env["FAKE_PENDING_IDENTITY"] = "only"
+        resumed = self.run_backfill("--verify-only", "--resume", "--package", "alpha")
+        self.assertEqual(resumed.returncode, 1, resumed.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertFalse(report["complete"])
+        self.assertIn("incomplete source identity", report["packages"][0]["error"])
+        self.assertFalse(self.log.with_suffix(".lookups").exists())
+
+    def test_resume_rejects_old_hit_after_resolved_key_changes(self) -> None:
+        self.state.write_text(json.dumps([ALPHA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only", "--package", "alpha")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.log.with_suffix(".lookups").unlink()
+        self.extra_env["FAKE_ALPHA_KEY"] = GAMMA_KEY
+        resumed = self.run_backfill("--verify-only", "--resume", "--package", "alpha")
+        self.assertEqual(resumed.returncode, 1, resumed.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["packages"][0]["cacheKeys"], [GAMMA_KEY])
+        self.assertEqual(self.log.with_suffix(".lookups").read_text().splitlines(), [GAMMA_KEY])
 
     def test_resume_rechecks_entries_removed_from_the_cache(self) -> None:
         self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
@@ -348,7 +411,8 @@ class CacheBackfillTests(unittest.TestCase):
         report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
         self.assertEqual(report["sourcePackageCount"], 3)
         self.assertTrue(all(item["resumed"] for item in report["packages"]))
-        self.assertEqual(self.graph_log.read_text(encoding="utf-8"), "iso\n")
+        graphs = self.graph_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line.split(":")[0] for line in graphs], ["iso", "alpha", "beta", "gamma"])
 
     def test_resume_rejects_a_changed_source_catalog(self) -> None:
         self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
@@ -360,6 +424,25 @@ class CacheBackfillTests(unittest.TestCase):
         resumed = self.run_backfill("--verify-only", "--resume")
         self.assertEqual(resumed.returncode, 1)
         self.assertIn("resume report inputs changed: source catalog", resumed.stderr)
+
+    def test_resume_discovers_new_transitive_refs_with_unchanged_keys(self) -> None:
+        gamma_dir = self.packages_root / "packages" / "source" / "gamma"
+        gamma_dir.mkdir(parents=True)
+        (gamma_dir / "repro.nim").write_text("discard\n", encoding="utf-8")
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")
+        first = self.run_backfill("--verify-only")
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        self.extra_env["FAKE_TRANSITIVE_SOURCE"] = "gamma"
+        resumed = self.run_backfill("--verify-only", "--resume", "--jobs", "2")
+        self.assertEqual(resumed.returncode, 1, resumed.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["sourcePackageCount"], 3)
+        packages = {item["package"]: item for item in report["packages"]}
+        self.assertEqual(packages["gamma"]["missingAfter"], [GAMMA_KEY])
+        self.assertFalse(packages["beta"]["resumed"])
+        self.assertIn("nested-ignored", report["ignoredToolIdentityRefs"])
 
     def test_parallel_verification_keeps_report_order_deterministic(self) -> None:
         self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY]), encoding="utf-8")

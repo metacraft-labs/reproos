@@ -181,21 +181,24 @@ def package_graph_details(
     timeout: int,
 ) -> tuple[list[str], list[str], list[str]]:
     graph = load_graph(repro, package_dir, "", env, timeout)
-    keys = sorted(
-        {
-            action.get("binaryCacheKey", "")
-            for action in graph_actions(graph)
-            if action.get("publishToBinaryCache") is True
-            and isinstance(action.get("binaryCacheKey"), str)
-            and CACHE_KEY_RE.fullmatch(action["binaryCacheKey"])
-        }
-    )
+    keys: set[str] = set()
+    for action in graph_actions(graph):
+        if action.get("publishToBinaryCache") is not True:
+            continue
+        key = action.get("binaryCacheKey")
+        error = action.get("binaryCacheIdentityError")
+        if error or not isinstance(key, str) or not CACHE_KEY_RE.fullmatch(key):
+            raise BackfillError(
+                f"{package_dir.name} publication action {action.get('id', '<unnamed>')}: "
+                f"{error or 'missing or invalid binary-cache identity'}"
+            )
+        keys.add(key)
     if not keys:
         raise BackfillError(
             f"{package_dir.name} has no materialized binary-cache publication action"
         )
     source_packages, ignored_refs = graph_source_package_refs(graph, packages_root)
-    return keys, source_packages, ignored_refs
+    return sorted(keys), source_packages, ignored_refs
 
 
 def cache_lookup(
@@ -533,7 +536,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="reuse completed packages from a matching report",
+        help="recheck completed packages against their current graphs and cache entries",
     )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--graph-timeout-sec", type=int, default=900)
@@ -714,7 +717,21 @@ def main(argv: list[str] | None = None) -> int:
                 keys = item["cacheKeys"]
                 started = time.monotonic()
                 try:
-                    verified = all(
+                    # The report's entry-recipe fingerprint does not bind
+                    # imports, options or solved tools. Ask the current graph
+                    # before trusting any saved key or transitive package ref.
+                    current_keys, current_refs, current_ignored = package_graph_details(
+                        repro,
+                        packages_root / "packages" / "source" / package,
+                        packages_root,
+                        provider_worker_env(env),
+                        args.graph_timeout_sec,
+                    )
+                    ignored_ref_set.update(current_ignored)
+                    verified = (
+                        current_keys == keys
+                        and current_refs == item["sourcePackageRefs"]
+                    ) and all(
                         cache_lookup(
                             repro,
                             key,
@@ -724,11 +741,11 @@ def main(argv: list[str] | None = None) -> int:
                         )[0]
                         for key in keys
                     )
-                except (OSError, subprocess.SubprocessError):
+                except (BackfillError, OSError, subprocess.SubprocessError):
                     verified = False
                 if not verified:
-                    # A saved graph is reusable, but its cache hits can expire.
-                    # Retry through the normal audit/publication path.
+                    # Changed/incomplete graphs and expired hits must go
+                    # through the normal fail-closed audit/publication path.
                     del resume_items[package]
                     continue
                 print(f"[{package}] resumed and reverified", flush=True)

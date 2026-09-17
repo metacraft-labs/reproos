@@ -271,11 +271,16 @@ against `https://repro-cache.metacraft-labs.com`. Publishing requires the
 authorized `REPRO_BINARY_CACHE_KEY_PATH` and `REPRO_BINARY_CACHE_CERT_PATH`
 environment variables. Use `-- --packages-root PATH` when the
 `reprobuild-packages` checkout is not the normal sibling directory. Long audits
-can use `-- --resume` to reuse completed packages from the report when the
-Reprobuild executable and source catalog fingerprints still match. Resumed
-entries are looked up again on the cache server; missing entries are audited
-again and republished unless `--verify-only` is set. Verification and publication
-counts describe the current run, not the saved report.
+can use `-- --resume` when the Reprobuild executable and source catalog
+fingerprints still match. Every resumed package's current graph is checked
+before reusing its keys or dependency list; those fingerprints alone do not
+bind imported code, resolved options or tools. Pending or malformed publication
+identities reject the package before any cache lookup or publication, even if
+another output has a valid key. Resumed entries are looked up again on the cache
+server; changed graphs and missing entries go through the normal audit and are
+republished unless `--verify-only` is set. Verification and publication counts
+describe the current run, not the saved report. A successful audit verifies the
+reported keys, not independent installation or relocation of their payloads.
 
 `boot-iso` and `boot-image` open the VM in `virt-viewer`. Closing the viewer
 reclaims the transient domain and its writable disk overlay; the ISO or QCOW2

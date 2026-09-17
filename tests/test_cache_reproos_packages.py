@@ -100,6 +100,8 @@ if args and args[0] == "graph":
     if cwd.name == "alpha":
         key = os.environ.get("FAKE_ALPHA_KEY", key)
     tool_refs = []
+    if cwd.name == "alpha" and os.environ.get("FAKE_ALPHA_SOURCE"):
+        tool_refs = [os.environ["FAKE_ALPHA_SOURCE"]]
     if cwd.name == "beta" and os.environ.get("FAKE_TRANSITIVE_SOURCE"):
         tool_refs = [os.environ["FAKE_TRANSITIVE_SOURCE"], "nested-ignored"]
     actions = [{
@@ -114,11 +116,15 @@ if args and args[0] == "graph":
             "publishToBinaryCache": True,
             "binaryCacheKey": "",
             "binaryCacheIdentityError": "incomplete source identity",
+            "toolIdentityRefs": tool_refs,
         }
         if os.environ["FAKE_PENDING_IDENTITY"] == "mixed":
             actions.append(pending)
         else:
             actions = [pending]
+    if cwd.name == "alpha" and os.environ.get("FAKE_NO_PUBLICATION"):
+        for action in actions:
+            action["publishToBinaryCache"] = False
     print(json.dumps({"actions": actions}))
     raise SystemExit(0)
 
@@ -491,6 +497,57 @@ class CacheBackfillTests(unittest.TestCase):
         self.assertEqual(report["ignoredToolIdentityRefs"], ["ignored", "nested-ignored"])
         beta = next(item for item in report["packages"] if item["package"] == "beta")
         self.assertEqual(beta["sourcePackageRefs"], ["gamma"])
+
+    def prepare_nested_closure(self) -> None:
+        gamma_dir = self.packages_root / "packages" / "source" / "gamma"
+        gamma_dir.mkdir(parents=True)
+        (gamma_dir / "repro.nim").write_text("discard\n", encoding="utf-8")
+        self.extra_env["FAKE_ALPHA_SOURCE"] = "beta"
+        self.extra_env["FAKE_TRANSITIVE_SOURCE"] = "gamma"
+        self.state.write_text(json.dumps([ALPHA_KEY, BETA_KEY, GAMMA_KEY]))
+
+    def assert_failed_alpha_keeps_closure(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 1, result.stdout)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["sourcePackageCount"], 3)
+        self.assertEqual([item["package"] for item in report["packages"]],
+                         ["alpha", "beta", "gamma"])
+        self.assertEqual(report["packages"][0]["sourcePackageRefs"], ["beta"])
+        self.assertEqual(report["packages"][0]["status"], "failed")
+        self.assertEqual(report["packages"][0]["cacheKeys"], [])
+        self.assertEqual(report["verifiedEntryCount"], 2)
+        self.assertEqual(report["ignoredToolIdentityRefs"], ["nested-ignored"])
+        self.assertEqual(self.log.with_suffix(".lookups").read_text().splitlines(),
+                         [BETA_KEY, GAMMA_KEY])
+        self.assertFalse(self.log.exists())
+
+    def test_pending_identity_keeps_transitive_closure(self) -> None:
+        self.prepare_nested_closure()
+        self.extra_env["FAKE_PENDING_IDENTITY"] = "pending"
+        self.assert_failed_alpha_keeps_closure(
+            self.run_backfill("--verify-only", "--package", "alpha"))
+
+    def test_mixed_pending_identity_keeps_transitive_closure_in_parallel(self) -> None:
+        self.prepare_nested_closure()
+        self.extra_env["FAKE_PENDING_IDENTITY"] = "mixed"
+        self.assert_failed_alpha_keeps_closure(
+            self.run_backfill("--verify-only", "--package", "alpha", "--jobs", "2"))
+
+    def test_missing_publication_keeps_transitive_closure(self) -> None:
+        self.prepare_nested_closure()
+        self.extra_env["FAKE_NO_PUBLICATION"] = "1"
+        self.assert_failed_alpha_keeps_closure(
+            self.run_backfill("--verify-only", "--package", "alpha"))
+
+    def test_resume_pending_identity_keeps_current_transitive_closure(self) -> None:
+        self.prepare_nested_closure()
+        first = self.run_backfill("--verify-only", "--package", "alpha")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.log.with_suffix(".lookups").unlink()
+        self.extra_env["FAKE_PENDING_IDENTITY"] = "pending"
+        self.assert_failed_alpha_keeps_closure(
+            self.run_backfill("--verify-only", "--package", "alpha", "--resume"))
 
 
 if __name__ == "__main__":

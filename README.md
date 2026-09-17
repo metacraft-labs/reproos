@@ -276,7 +276,11 @@ fingerprints still match. Every resumed package's current graph is checked
 before reusing its keys or dependency list; those fingerprints alone do not
 bind imported code, resolved options or tools. Pending or malformed publication
 identities reject the package before any cache lookup or publication, even if
-another output has a valid key. Resumed entries are looked up again on the cache
+another output has a valid key. Its graph's source dependencies remain in the
+audit and are inspected recursively, so an identity refusal cannot hide an
+uncached transitive package. `--fail-fast` stops this traversal at the first
+failure; counts in an incomplete report are not a full-closure certificate.
+Resumed entries are looked up again on the cache
 server; changed graphs and missing entries go through the normal audit and are
 republished unless `--verify-only` is set. Verification and publication counts
 describe the current run, not the saved report. A successful audit verifies the

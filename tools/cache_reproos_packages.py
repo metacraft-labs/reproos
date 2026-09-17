@@ -173,14 +173,10 @@ def graph_source_package_refs(
     return packages, ignored
 
 
-def package_graph_details(
-    repro: str,
+def package_cache_keys(
+    graph: dict[str, Any],
     package_dir: Path,
-    packages_root: Path,
-    env: dict[str, str],
-    timeout: int,
-) -> tuple[list[str], list[str], list[str]]:
-    graph = load_graph(repro, package_dir, "", env, timeout)
+) -> list[str]:
     keys: set[str] = set()
     for action in graph_actions(graph):
         if action.get("publishToBinaryCache") is not True:
@@ -197,8 +193,7 @@ def package_graph_details(
         raise BackfillError(
             f"{package_dir.name} has no materialized binary-cache publication action"
         )
-    source_packages, ignored_refs = graph_source_package_refs(graph, packages_root)
-    return sorted(keys), source_packages, ignored_refs
+    return sorted(keys)
 
 
 def cache_lookup(
@@ -324,15 +319,15 @@ def process_package(
     worker_env = provider_worker_env(env)
     started = time.monotonic()
     try:
-        keys, source_package_refs, ignored_refs = package_graph_details(
-            repro,
-            package_dir,
-            packages_root,
-            worker_env,
-            graph_timeout,
+        graph = load_graph(repro, package_dir, "", worker_env, graph_timeout)
+        source_package_refs, ignored_refs = graph_source_package_refs(
+            graph, packages_root
         )
-        item["cacheKeys"] = keys
+        # A publication refusal must not hide the dependencies whose cache
+        # coverage still needs auditing. No key is used before validation.
         item["sourcePackageRefs"] = source_package_refs
+        keys = package_cache_keys(graph, package_dir)
+        item["cacheKeys"] = keys
         counts["cacheEntryCount"] = len(keys)
 
         missing: list[str] = []
@@ -720,14 +715,19 @@ def main(argv: list[str] | None = None) -> int:
                     # The report's entry-recipe fingerprint does not bind
                     # imports, options or solved tools. Ask the current graph
                     # before trusting any saved key or transitive package ref.
-                    current_keys, current_refs, current_ignored = package_graph_details(
+                    package_dir = packages_root / "packages" / "source" / package
+                    current_graph = load_graph(
                         repro,
-                        packages_root / "packages" / "source" / package,
-                        packages_root,
+                        package_dir,
+                        "",
                         provider_worker_env(env),
                         args.graph_timeout_sec,
                     )
+                    current_refs, current_ignored = graph_source_package_refs(
+                        current_graph, packages_root
+                    )
                     ignored_ref_set.update(current_ignored)
+                    current_keys = package_cache_keys(current_graph, package_dir)
                     verified = (
                         current_keys == keys
                         and current_refs == item["sourcePackageRefs"]

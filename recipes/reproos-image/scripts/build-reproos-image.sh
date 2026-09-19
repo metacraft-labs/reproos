@@ -751,8 +751,28 @@ case "$REPROOS_DISK_LAYOUT" in
     # boot entry, so one built image boots on any UEFI machine and in a
     # fresh VM whose variable store is empty.
     # The installed image is GENERATION A, and it is put on the ESP
-    # through the same stager an apply uses rather than by copying the
-    # binary into place here. That is not tidiness: an attested machine
+    # through the same stager BINARY a later apply would use rather than
+    # by copying the UKI into place here. Read "the same stager an apply
+    # uses" as a statement about the tool, not about a wiring that
+    # exists: NOTHING routes `repro infra apply` through this stager
+    # today. There is no resource kind for it, and no profile declares
+    # it -- indeed this recipe declares no profile at all, and an apply
+    # only ever dispatches edges that came from one, so a plain build
+    # target like this one can never reach an apply's dispatcher. The
+    # only callers of the binary are this script and the
+    # `test-generations` gate, which compiles its own copy. Establishing
+    # the routing needs a machine running an attested image to apply ON,
+    # and this layout is still refused at plan time for a reason the
+    # refusal states, so the routing has never had anything to run
+    # against. Note what that is and is not: the obstacle is that
+    # nothing DECLARES the routing, not that the engine forbids it -- a
+    # profile could dispatch this binary today if there were a machine
+    # for it to act on. Said here because the previous wording read as a
+    # description of an existing seam and someone will otherwise go
+    # looking for it.
+    #
+    # Why the ESP carries a generation store from the first install is a
+    # separate point, and that one IS load-bearing: an attested machine
     # boots one generation for the lifetime of a boot and a new one is
     # staged BESIDE it, so the ESP has to carry a generation store from
     # the first install -- two slots and an index -- or the first apply

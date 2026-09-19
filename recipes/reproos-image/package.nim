@@ -759,9 +759,14 @@ package reproosImage:
     # is not failed by a host that has no need of one.
     let resolvedStub = ukiModule.resolveUkiStub()
     # The volumes this generation's command line names. An installed image
-    # is generation A: it is the first one on the machine, and the first
-    # `repro infra apply` stages its successor into slot B rather than
-    # over the top of it. The specifiers are PARTITION GUIDs derived from
+    # is generation A: it is the first one on the machine, and a later
+    # apply is INTENDED to stage its successor into slot B rather than
+    # over the top of it. Intended, not wired -- no apply reaches the
+    # stager from any command an operator runs, because nothing declares
+    # that routing, and there is no machine to declare it for until an
+    # attested image can be installed to apply on. The layout
+    # below is what makes that future apply possible, not evidence that
+    # it happens. The specifiers are PARTITION GUIDs derived from
     # the same identity seed the partition table's own identifiers come
     # from, so the measured command line names the exact partitions the
     # apply will create, before either the image or the machine exists —

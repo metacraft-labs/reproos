@@ -76,6 +76,7 @@ TARGETS=(
   test-guest-verity-tpm
   test-image-boot-smoke
   test-image-reproducibility
+  test-image-layout-record
 )
 
 # The target the negative case mutates. `test-disk-layout-presets` is the

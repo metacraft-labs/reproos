@@ -85,6 +85,11 @@ import std/[json, macros, os, osproc, streams, strutils, tables, tempfiles, time
 import repro_attest
 
 import "../repro/attest" as attestModule
+# `imageSdkCommand` below re-evaluates the image recipe's whole `const`
+# section in THIS scope, so every module alias a recipe constant names has
+# to resolve here too — the same reason `ukiModule` is imported and never
+# written in this file.
+import "../repro/image_layout_record" as layoutRecord
 import "../repro/uki" as ukiModule
 import "../repro/verity"
 import "../repro/generations"

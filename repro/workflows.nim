@@ -1434,6 +1434,40 @@ package reproosWorkflows:
       ])
     discard target("test-measurement-manifest", testMeasurementManifest)
 
+    # The layout a profile NAMES is the layout its image was BUILT with.
+    #
+    # The rule that refuses a non-mock attestation tier on a writable
+    # root decided it against a string the profile wrote, so both its
+    # sides came from one source and the one thing it could not catch
+    # was the profile and the image disagreeing. The image build now
+    # publishes which layout it resolved, bound to the digest of the
+    # partition table that layout renders, and the activity reads the
+    # layout out of that record. This gate drives both halves: a record
+    # that does not describe the table the build applies is refused, and
+    # a profile naming a layout its image was not built with does not
+    # plan.
+    #
+    # No opt-in layer and no switch: nothing here boots or partitions,
+    # so `optInLayers` is given an empty reachable set the same way the
+    # other always-on gates are given theirs.
+    let testImageLayoutRecord = shell(
+      command = "bash tests/test-image-layout-record.sh",
+      actionId = "reproos.test-image-layout-record",
+      extraInputs = @[
+        "tests/test-image-layout-record.sh",
+        "tests/gate_layers.nim",
+        "tests/nim-gate.sh",
+        "tests/test_image_layout_record.nim",
+        "tests/fixtures/auto-config-minimal.toml",
+        "repro/disk_layouts.nim",
+        "repro/image_layout_record.nim",
+        "recipes/reproos-image/package.nim",
+      ],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+      ])
+    discard target("test-image-layout-record", testImageLayoutRecord)
+
     # The gates' own opt-in switches.
     #
     # Every gate above has an expensive layer behind an environment

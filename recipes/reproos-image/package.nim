@@ -15,6 +15,7 @@ import "../../repro/disk_layouts" as diskLayouts
 import "../../repro/verity" as verity
 import "../../repro/uki" as ukiModule
 import "../../repro/attest" as attestModule
+import "../../repro/image_layout_record" as layoutRecord
 import "../../repro/generations" as generations
 
 const
@@ -80,6 +81,18 @@ const
   ReproosUkiDigestOutput* = ReproosUkiDir & "/" & ukiModule.UkiDigestFileName
   ReproosUkiCmdlineOutput* =
     ReproosUkiDir & "/" & ukiModule.UkiCmdlineFileName
+
+  ReproosImageLayoutActionId* = "reproosImage.publish_layout_record"
+  ReproosImageLayoutRecordOutput* =
+    "recipes/reproos-image/build/" & layoutRecord.ImageLayoutRecordFileName
+    ## WHICH DISK LAYOUT THIS IMAGE WAS BUILT WITH, published as an
+    ## artifact rather than left to be restated by whoever configures the
+    ## machine. A profile that enables attestation has to know whether
+    ## this image's root filesystem is integrity-checked and read-only
+    ## for the life of the boot; before this document the only answer
+    ## available was the one the profile wrote itself, which is no answer
+    ## at all. The record carries the digest of the partition table the
+    ## build applies, so the name in it is tied to an artifact.
 
   ReproosAttestActionId* = "reproosImage.build_measurement_manifest"
   ReproosAttestDir* = "recipes/reproos-image/build/attest"
@@ -448,6 +461,48 @@ package reproosImage:
           " rendered a disko document containing a quote or a backslash," &
           " which the single-line environment hand-off cannot carry")
     let diskoSpecLine = diskoSpec.replace("\n", "\\n")
+
+    # WHAT THIS IMAGE IS BEING BUILT AS, published so the profile that
+    # configures the machine does not have to assert it.
+    #
+    # The record is rendered from the RESOLVED layout request; the
+    # partition table above is rendered separately and is the document
+    # the driver actually feeds `repro disk apply`. The verification
+    # below compares the two, which is the only reason either is worth
+    # publishing: a record and a table that came from one expression
+    # would agree whatever that expression said. Building one layout
+    # while declaring another therefore fails HERE -- before the image
+    # action takes sudo and partitions anything -- rather than at a
+    # verifier six steps later, which would accept the quote because the
+    # quote would be honest about a machine nobody described.
+    let imageLayoutRecord = layoutRecord.imageLayoutRecordFor(layoutRequest)
+    let imageLayoutError = layoutRecord.verifyImageLayoutRecord(
+      imageLayoutRecord, diskoSpec)
+    if imageLayoutError.len > 0:
+      raise newException(ValueError,
+        "recipes/reproos-image: " & imageLayoutError)
+    for ch in imageLayoutRecord:
+      if ch == '\'' or ch == '\\':
+        raise newException(ValueError,
+          "recipes/reproos-image: the image layout record contains a" &
+          " quote or a backslash, which the single-line environment" &
+          " hand-off cannot carry")
+    let imageLayoutRecordLine = imageLayoutRecord.replace("\n", "\\n")
+    let layoutRecordAction = shell(
+      command = "set -euo pipefail; mkdir -p build; printf '%b' '" &
+        imageLayoutRecordLine & "' > " &
+        quoteShellPosix("build/" & layoutRecord.ImageLayoutRecordFileName),
+      actionId = ReproosImageLayoutActionId,
+      deps = @[],
+      extraInputs = @[],
+      extraOutputs = @[
+        "build/" & layoutRecord.ImageLayoutRecordFileName,
+      ])
+    appendRegisteredActionToolIdentityRefs(layoutRecordAction.id,
+      @["bash"])
+    setRegisteredActionCwd(layoutRecordAction.id, acwdCustom,
+      "recipes/reproos-image")
+    discard target("image-layout-record", layoutRecordAction)
 
     # The identity document that rides beside the disko document.
     #
@@ -954,12 +1009,14 @@ package reproosImage:
                 @[installerPackage.ReproosInstallerReadyActionId,
                   isoPackage.ReproosIsoRootfsActionId,
                   buildDiskInitrdAction.id,
+                  layoutRecordAction.id,
                   buildUkiAction.id,
                   buildAttestAction.id,
                   generationToolAction.id]
               else:
                 @[installerPackage.ReproosInstallerReadyActionId,
                   isoPackage.ReproosIsoRootfsActionId,
+                  layoutRecordAction.id,
                   buildDiskInitrdAction.id]),
       extraInputs = @[
         reproCliInput,
@@ -985,6 +1042,11 @@ package reproosImage:
         "recipes/reproos-image/scripts/reproos-network.service",
         "recipes/reproos-image/scripts/reproos-udhcpc-hook",
         "tests/fixtures/auto-config-minimal.toml",
+        # The layout record rides WITH the image, on both arms. It says
+        # which layout these bytes were built as, and that question is
+        # asked of an ordinary writable-root image exactly as often as
+        # of an attested one -- the answer is just a different one.
+        ReproosImageLayoutRecordOutput,
         installerPackage.ReproosInstallerBinary,
         isoPackage.ReproosIsoRootfsOutput,
         ReproosDiskInitrdOutput,

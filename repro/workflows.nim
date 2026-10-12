@@ -22,8 +22,14 @@ import repro_dsl_stdlib/packages/nix
 import repro_dsl_stdlib/packages/nim
 import repro_dsl_stdlib/packages/clang
 import repro_dsl_stdlib/packages/git
-# `mkdir` (and the rest of the coreutils command names) live here.
+# `mkdir` (and the rest of the coreutils command names) live here, and so
+# do `mkfs.vfat` and `xz`.
 import repro_dsl_stdlib/packages/host_system_tools
+# The system emulator, the software TPM and the two FAT applets the opt-in
+# measured-boot edge runs. Registered for the same reason as the modules
+# above: `toInterfaceToolUse` only sees packages whose module was imported
+# before `package reproosWorkflows:` fires.
+import ./measured_boot_tools
 import repro_resources/run_edge
 import ./image_metadata_tools
 
@@ -37,7 +43,7 @@ proc withToolIdentities(action: BuildActionDef;
   appendRegisteredActionToolIdentityRefs(action.id, tools)
   action
 
-proc optInLayers(runnable: openArray[string] = [];
+proc optInLayers(runnable: openArray[(string, string)] = [];
                  unreachable: openArray[string] = []):
     seq[(string, string)] =
   ## The environment a gate action declares about its OPT-IN LAYERS.
@@ -77,11 +83,14 @@ proc optInLayers(runnable: openArray[string] = [];
   ## WHOLE DESIGN.
   ##
   ##   * A ``runnable`` layer gets its own variable declared with the value
-  ##     this action chose. That closes the inheritance channel AND puts
-  ##     the setting in the key, which is what stops the engine replaying
-  ##     one setting's result under another. The two settings are two
-  ##     actions, because a value read from the host at graph time would be
-  ##     snapshotted by the provider-graph and lowered-graph caches.
+  ##     this action chose — spelled as a ``(name, value)`` pair, because
+  ##     the value is the whole point and a bare name would have to default
+  ##     to one of the two settings. That closes the inheritance channel
+  ##     AND puts the setting in the key, which is what stops the engine
+  ##     replaying one setting's result under another. The two settings are
+  ##     two actions, because a value read from the host at graph time
+  ##     would be snapshotted by the provider-graph and lowered-graph
+  ##     caches.
   ##
   ##   * An ``unreachable`` layer gets its NAME listed and NOTHING ELSE.
   ##     Declaring its variable would be actively worse than leaving it
@@ -98,9 +107,9 @@ proc optInLayers(runnable: openArray[string] = [];
   ## pairing structurally rather than leaving it to this comment: an action
   ## that names an unreachable layer and is cacheable turns it red.
   var declared: seq[string] = @[]
-  for name in runnable:
+  for (name, value) in runnable:
     declared.add(name)
-    result.add((name, "0"))
+    result.add((name, value))
   for name in unreachable:
     declared.add(name)
   result.add(("REPRO_GATE_DECLARED_LAYERS", declared.join(",")))
@@ -185,6 +194,30 @@ package reproosWorkflows:
     "mkdir"
     "clang"
     "git"
+    # The opt-in measured-boot edge's own tool set, and nothing else uses
+    # it. `qemu-system-x86_64` emulates the machine, `swtpm` is the TPM 2.0
+    # behind its `tpm-tis` device, and `mkfs.vfat`/`mmd`/`mcopy` build the
+    # EFI system partition the firmware loads the measured image from.
+    # `xz` decompresses the guest kernel's TPM drivers when they are
+    # modular. Declared here as a `uses:` entry so the resolver has
+    # something to resolve; the ONE action that names them is the opt-in
+    # edge, and the always-on measurement gate deliberately names none of
+    # them.
+    #
+    # `xz` is the only one of these with a sibling from-source recipe in
+    # this project's corpus, so it is the only one `from-source` routes
+    # there rather than to a pinned channel. Every other recipe here that
+    # touches a compressed archive already names it, so the opt-in edge
+    # adds no build that the image and ISO paths do not already carry.
+    # It is also the only one of the six the boot layer can do without:
+    # it is needed when, and only when, the guest kernel's TPM drivers
+    # are compressed modules rather than built in.
+    "qemu-system-x86_64"
+    "swtpm"
+    "mkfs.vfat"
+    "mmd"
+    "mcopy"
+    "xz"
 
   devEnv:
     useTool("python3")
@@ -1414,6 +1447,27 @@ package reproosWorkflows:
     # deliberately NOT declared: the boot layer is opt-in and ambient, and
     # naming from-source packages would make an always-on gate bootstrap
     # them.
+    #
+    # WHERE THE MEASURED BOOT'S EVIDENCE LANDS, and why the name is
+    # declared on BOTH edges. The opt-in edge below preserves what it
+    # measured under this directory; this one declares the SAME name with
+    # an EMPTY value. A declared value replaces the inherited one, so an
+    # operator who exported the variable cannot make the always-on edge
+    # claim to have preserved evidence, and the directory's existence is
+    # therefore an answer to "which edge ran" rather than to "what did the
+    # caller export". The gate reads it, finds it empty, and preserves
+    # nothing -- which is correct, because here the boot layer is out of
+    # reach and there is nothing to preserve.
+    let measuredBootEvidenceEnv = "REPROOS_PCR_EVIDENCE_DIR"
+    let measuredBootEvidenceDir = "build/test-evidence/attestation-local-vm"
+    #
+    # Each edge spells its own input list out, rather than sharing one
+    # hoisted `let`. `tests/test_optin_layers.nim` locates the action that
+    # runs a gate by looking for the gate source in an `extraInputs` list
+    # and then reading that action's own layer declaration; a shared list
+    # above both actions would put the first mention of the source outside
+    # either of them, and the structural check would report an action that
+    # declares its layer as declaring nothing.
     let testMeasurementManifest = shell(
       command = "bash tests/test-measurement-manifest.sh",
       actionId = "reproos.test-measurement-manifest",
@@ -1428,11 +1482,84 @@ package reproosWorkflows:
         "repro/generations.nim",
         "recipes/reproos-image/package.nim",
       ],
-      extraEnv = optInLayers(unreachable = ["REPROOS_PCR_BOOT_GATE"]),
+      extraEnv = optInLayers(unreachable = ["REPROOS_PCR_BOOT_GATE"]) &
+        @[(measuredBootEvidenceEnv, "")],
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])
     discard target("test-measurement-manifest", testMeasurementManifest)
+
+    # THE SAME MEASUREMENT, ASKED FOR BY NAME: a real machine, a real
+    # register, and the evidence kept.
+    #
+    # The edge above is always on and its boot layer is UNREACHABLE there
+    # -- its tool set is deliberately the Nim gate toolchain and nothing
+    # else, so no always-on gate can be made to bootstrap an emulator. That
+    # decision stands, and it leaves a gap: nothing a developer could
+    # invoke by name actually read a register off a machine. Exporting the
+    # layer variable and running the always-on edge does not close it; the
+    # request is inherited, the gate sees that the layer is out of reach
+    # for that action, and it refuses.
+    #
+    # So the ON setting of that one layer is a SECOND, SEPARATELY NAMED
+    # edge, which is the shape a sibling repository already uses for its
+    # own live-TPM layer. Two declarations, two environments, two weak
+    # fingerprints -- so asking for the boot cannot be answered out of the
+    # other setting's cache entry, and the variable's setting is part of
+    # what identifies each action rather than something the caller's shell
+    # decides. One edge reading the host instead would not work: the
+    # provider-graph and lowered-graph snapshots are reused across
+    # invocations that differ only in the ambient environment, so the first
+    # run's reading would be baked into every later one.
+    #
+    # THIS EDGE DECLARES WHAT IT NEEDS FOR ITSELF, and five of the six
+    # names cost nothing. `repro/measured_boot_tools.nim` pins the
+    # emulator, the software TPM and the two FAT applets to the same
+    # nixpkgs channel `nim` and `clang` come from, and `mkfs.vfat` is
+    # already pinned in the stdlib tool set; none of those five is
+    # mirrored by a source recipe's `executable` declaration, so none of
+    # them can start a source build. The sixth is `xz`, which IS mirrored
+    # and so does come from source -- see the `uses:` note above, and note
+    # that two older actions in this recipe already declare it, so the
+    # mirror was in this closure before this edge existed. That is what
+    # makes a second edge possible at all, and it is why the first edge
+    # does not have to change.
+    #
+    # IT IS REACHABLE BY ITS NAME ONLY. It is in no collection: `repro
+    # build` and the `test` collection must not schedule two emulated boots
+    # and a four-minute wait, and its result is not a function of its
+    # declared inputs -- it launches transient emulators seeded from the
+    # system random source -- so it is `cacheable = false` and must never
+    # be replayed.
+    #
+    # It does NOT skip. The layer variable is declared ON, so the gate
+    # cannot report it as "not requested"; a missing tool, a missing
+    # firmware pair, a missing kernel or a guest that does not power off is
+    # a FAILURE naming what was absent. And because this edge names the
+    # evidence directory, the gate additionally refuses to exit 0 unless it
+    # really read a register off a machine -- a run that preserved no
+    # evidence measured nothing, whatever else it printed.
+    let attestationLocalVm = shell(
+      command = "bash tests/test-measurement-manifest.sh",
+      actionId = "reproos.attestation-local-vm",
+      extraInputs = @[
+        "tests/test-measurement-manifest.sh",
+        "tests/gate_layers.nim",
+        "tests/nim-gate.sh",
+        "tests/test_measurement_manifest.nim",
+        "repro/attest.nim",
+        "repro/uki.nim",
+        "repro/verity.nim",
+        "repro/generations.nim",
+        "recipes/reproos-image/package.nim",
+      ],
+      extraEnv = optInLayers(runnable = [("REPROOS_PCR_BOOT_GATE", "1")]) &
+        @[(measuredBootEvidenceEnv, measuredBootEvidenceDir)],
+      cacheable = false).withToolIdentities([
+        "bash", "nim", "mkdir", "clang",
+        "qemu-system-x86_64", "swtpm", "mkfs.vfat", "mmd", "mcopy", "xz",
+      ])
+    discard target("attestation-local-vm", attestationLocalVm)
 
     # The layout a profile NAMES is the layout its image was BUILT with.
     #

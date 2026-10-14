@@ -100,6 +100,24 @@ const
 
   BootGateEnv = "REPROOS_PCR_BOOT_GATE"
   KeepEnv = "REPROOS_PCR_KEEP"
+  EvidenceDirEnv = "REPROOS_PCR_EVIDENCE_DIR"
+    ## Where the measured-boot layer preserves what it measured: each
+    ## guest's serial transcript, the TCG event log the firmware handed
+    ## that guest, the software TPM's own log and persistent state, the
+    ## predicted and observed registers, the document the shipped emitter
+    ## wrote, and the verdict.
+    ##
+    ## A PATH, not a switch, and it is declared on BOTH of the recipe's
+    ## edges over this gate — empty on the always-on one, set on the
+    ## opt-in one. A declared value replaces the inherited one, so the
+    ## directory's contents are an answer to "which edge ran" rather than
+    ## to "what did the caller export".
+    ##
+    ## It is also a CONTRACT, checked at the end of this file: a run told
+    ## where to preserve what it measured and which preserved nothing did
+    ## not measure anything, and does not get to exit 0. That is the
+    ## difference between this layer and a gate that reports success
+    ## without having read a register.
   GuestKernelEnv = "REPROOS_PCR_GUEST_KERNEL"
   GuestModuleDirEnv = "REPROOS_PCR_GUEST_MODULE_DIR"
 
@@ -189,6 +207,11 @@ void _start(void) {
   sys(SYS_mount, (long)"none", (long)"/proc", (long)"proc", 0, 0);
   sys(SYS_mount, (long)"none", (long)"/sys", (long)"sysfs", 0, 0);
   sys(SYS_mount, (long)"none", (long)"/dev", (long)"devtmpfs", 0, 0);
+  /* The TCG event log is published through securityfs, not sysfs, and the
+   * mount point only exists once sysfs is up. The log is the firmware's
+   * own account of what it hashed into which register, so it is the one
+   * artifact that explains a PCR value instead of merely asserting it. */
+  sys(SYS_mount, (long)"none", (long)"/sys/kernel/security", (long)"securityfs", 0, 0);
   say("REPROOS-PCR-GUEST-START\n");
 
   {
@@ -245,6 +268,35 @@ void _start(void) {
     if (n > 0) sayhex(resp, n); else saydec(n);
     say("\n");
     sys(SYS_close, t, 0, 0, 0, 0);
+  }
+  /* The firmware's event log, as the kernel publishes it. Evidence only:
+   * this gate's verdict is the register, and a firmware that publishes no
+   * log still measured. So an absent log is REPORTED and never fatal --
+   * which is also why the marker always appears, with `absent` when there
+   * was nothing to read. */
+  {
+    long f = sys(SYS_open,
+      (long)"/sys/kernel/security/tpm0/binary_bios_measurements",
+      0, 0, 0, 0);
+    if (f < 0) {
+      say("REPROOS-PCR-EVENTLOG=absent\n");
+    } else {
+      static unsigned char ev[2048];
+      long total = 0;
+      say("REPROOS-PCR-EVENTLOG=");
+      /* Bounded on purpose: a log this gate cannot print in full is
+       * better truncated than a guest that never powers off, and the
+       * byte count below says which happened. */
+      while (total < 262144) {
+        long n = sys(SYS_read, f, (long)ev, sizeof ev, 0, 0);
+        if (n <= 0) break;
+        sayhex(ev, n);
+        total += n;
+      }
+      say("\n");
+      say("REPROOS-PCR-EVENTLOG-BYTES="); saydec(total); say("\n");
+      sys(SYS_close, f, 0, 0, 0, 0);
+    }
   }
   say("REPROOS-PCR-GUEST-DONE\n");
   /* LINUX_REBOOT_MAGIC1, MAGIC2, CMD_POWER_OFF */
@@ -1265,6 +1317,200 @@ proc pcrFromResponse(hexResponse: string): (string, string) =
     return ("", "the response is truncated before the digest")
   (hexResponse[60 ..< 124], "")
 
+# =====================================================================
+# EVIDENCE: what the measured boot leaves behind.
+#
+# The layer below is the only thing in this repository that reads a
+# register off a machine, and until now everything it learned went to a
+# terminal and was gone. A developer asking "what did it measure, and
+# why that value" had to run it again and watch. So every artifact the
+# boot is a function of, and every artifact it produces, is written under
+# `REPROOS_PCR_EVIDENCE_DIR` when the caller names one:
+#
+#   <case>/serial.log      the guest's whole serial transcript
+#   <case>/event-log.bin   the TCG event log the FIRMWARE published to
+#                          that guest, raw -- the account of what was
+#                          hashed into the register, as opposed to the
+#                          register's value
+#   <case>/swtpm.log       the software TPM's own trace
+#   <case>/tpm-state/*     the TPM's persistent state after the boot
+#   <case>/pcr11.predicted the register the build said this image would
+#                          produce
+#   <case>/pcr11.measured  the register the machine reported
+#   <case>/cmdline         the measured command line, exactly
+#   <case>/uki.sha256      the digest of the image that was measured
+#   <case>/qemu-argv       the machine the guest actually was
+#   verity-root-hash       the root hash the command line pins
+#   reproos.attested-image.json
+#                          the document the SHIPPED emitter wrote, when a
+#                          shipped emitter was available
+#   verdict.txt            what was compared with what, and the outcome
+#
+# NO CERTIFICATE IS PRESERVED, AND `verdict.txt` SAYS SO rather than
+# leaving the absence to be noticed. This layer starts a bare `swtpm`
+# with no manufacturing step, so its TPM carries no endorsement key
+# certificate and there is no chain to keep. What the layer proves is
+# that the predicted register is the register a real firmware and a real
+# stub produce; who vouches for the TPM is a different claim and this is
+# not evidence for it.
+#
+# The directory is also the layer's CONTRACT. See the end of this file:
+# a run that was told where to put evidence and produced none did not
+# measure anything, and `verdict.txt` records that as a FAIL rather than
+# letting the check tally speak for a guest that never started.
+#
+# TWO RULES ABOUT THE DIRECTORY ITSELF, both of them scars:
+#
+#   * it is REFUSED EARLY and CLEARED LATE. A directory this gate does
+#     not recognise stops the run before any work; a directory it does
+#     recognise is not emptied until the layer is committed to measuring.
+#     Clearing up front let a run that then refused destroy the previous
+#     run's evidence and leave its own account of having measured
+#     nothing in its place.
+#   * what makes it recognisable is the BYTES of `verdict.txt`, not the
+#     name. Keying a recursive delete on a filename deleted a directory
+#     whose `verdict.txt` was someone else's.
+# =====================================================================
+
+let evidenceRoot = block:
+  # Anchored to the CHECKOUT, not to the process's current directory. A
+  # relative path is what the recipe declares, because a recipe should
+  # not carry an absolute path from the machine it was written on; but a
+  # build action's working directory is the engine's to choose, and
+  # evidence a developer cannot find afterwards is not preserved.
+  let raw = getEnv(EvidenceDirEnv)
+  if raw.len == 0: ""
+  elif isAbsolute(raw): raw
+  else: RepoRoot / raw
+
+const
+  VerdictFileName = "verdict.txt"
+  VerdictHeader = "measured-boot verdict"
+    ## The first bytes of every `verdict.txt` this gate writes, and the
+    ## ONLY thing that makes a directory clearable. See
+    ## `evidenceDirectoryIsOurs`.
+
+proc evidenceDirectoryIsOurs(dir: string): bool =
+  ## May this gate recursively delete `dir`? Only when it is empty, or
+  ## when it holds a `verdict.txt` whose first bytes are the header this
+  ## gate writes.
+  ##
+  ## THE CONTENT CHECK IS THE WHOLE CHECK. Keying on the file's mere
+  ## EXISTENCE made a `removeDir` answerable to a bare filename:
+  ## measured, a directory holding an unrelated `verdict.txt` beside a
+  ## `notes.md` and an `important-subdir/` was recursively deleted. That
+  ## is precisely the "deleting something that was never evidence" this
+  ## procedure exists to refuse, so the name is no longer evidence of
+  ## anything and the bytes decide.
+  var empty = true
+  for _ in walkDir(dir):
+    empty = false
+    break
+  if empty: return true
+  let verdict = dir / VerdictFileName
+  if not fileExists(verdict): return false
+  try:
+    # A file too large to be one of ours is not one of ours; reading it
+    # to find out would be the second mistake.
+    if getFileSize(verdict) > 1_000_000: return false
+    readFile(verdict).startsWith(VerdictHeader)
+  except CatchableError:
+    false
+
+var evidenceOwned = false
+  ## Does this run own the evidence directory -- has it cleared it and
+  ## may it write there?
+  ##
+  ## REFUSED EARLY, CLEARED LATE, and the two moments are deliberately
+  ## different. A directory this gate does not recognise is refused
+  ## before any work starts, because four minutes of booting should not
+  ## precede a diagnostic the inputs already implied. But clearing waits
+  ## until the layer is COMMITTED to measuring -- every artifact found,
+  ## every tool resolved, the first guest about to start.
+  ##
+  ## Clearing up front was wrong in a way that only showed up on the
+  ## failure path: a run that then refused -- no pinned stub, a missing
+  ## tool, the layer switched off at the recipe -- had already destroyed
+  ## the previous run's evidence, and wrote its own account of having
+  ## measured nothing into the space where that evidence had been. A
+  ## refusal must leave the last real measurement exactly where it was.
+
+if evidenceRoot.len > 0 and dirExists(evidenceRoot) and
+   not evidenceDirectoryIsOurs(evidenceRoot):
+  stderr.writeLine("test_measurement_manifest: " & EvidenceDirEnv &
+    " resolves to " & evidenceRoot & ", which holds files this gate did " &
+    "not write (no " & VerdictFileName & " beginning \"" & VerdictHeader &
+    "\"). NOTHING was deleted and nothing was measured: name an empty " &
+    "directory, or one a previous run of this gate produced.")
+  quit(2)
+
+proc commitToEvidence() =
+  ## Take ownership of the evidence directory. Called once, at the point
+  ## the layer can no longer refuse: past artifact discovery, past tool
+  ## resolution, with the first guest about to be built.
+  if evidenceRoot.len == 0 or evidenceOwned: return
+  removeDir(evidenceRoot)
+  createDir(evidenceRoot)
+  evidenceOwned = true
+  echo "[info] preserving what this run measures under ", evidenceRoot
+
+var
+  evidenceWritten: seq[string] = @[]
+  measuredRegisterReads = 0
+    ## How many registers this run read off a machine. Counted rather
+    ## than inferred from the check tally, because a check can pass for
+    ## reasons that are not "a guest answered a TPM2_PCR_Read".
+  verdictLines: seq[string] = @[]
+
+proc record(line: string) =
+  ## One line of the verdict, echoed as it happens so a run watched live
+  ## and a run read afterwards say the same thing.
+  verdictLines.add(line)
+  echo "[evidence] " & line
+
+proc keepEvidence(relPath, content: string) =
+  # `evidenceOwned`, not `evidenceRoot.len > 0`. A run that never
+  # committed to measuring must not write into a directory it did not
+  # clear -- the previous run's evidence is still in there, and dropping
+  # this run's verdict on top of it would leave a directory that is half
+  # one measurement and half another.
+  if not evidenceOwned: return
+  let dest = evidenceRoot / relPath
+  createDir(dest.parentDir)
+  writeFile(dest, content)
+  if relPath notin evidenceWritten:
+    evidenceWritten.add(relPath)
+
+proc keepEvidenceFile(relPath, sourcePath: string) =
+  ## Copy one artifact in. A source that is not there is recorded as
+  ## absent rather than passed over: "the firmware wrote no log" and "the
+  ## gate forgot to collect it" must not look alike in the directory.
+  if not evidenceOwned: return
+  if fileExists(sourcePath):
+    keepEvidence(relPath, readFile(sourcePath))
+  else:
+    keepEvidence(relPath & ".absent",
+      sourcePath & " did not exist when the guest was torn down\n")
+
+proc bytesFromHex(hex: string): string =
+  const digits = "0123456789abcdef"
+  var i = 0
+  while i + 1 < hex.len:
+    let hi = digits.find(hex[i])
+    let lo = digits.find(hex[i + 1])
+    if hi < 0 or lo < 0: break
+    result.add char(hi * 16 + lo)
+    i += 2
+
+proc markerValue(transcript, marker: string): string =
+  ## The run of hex digits a guest printed after one marker.
+  let at = transcript.find(marker)
+  if at < 0: return ""
+  var i = at + marker.len
+  while i < transcript.len and transcript[i] in {'0' .. '9', 'a' .. 'f'}:
+    result.add transcript[i]
+    inc i
+
 block layerMeasuredBoot:
   let bootLayer = optInLayer(BootGateEnv)
   if bootLayer.isBlocked:
@@ -1309,6 +1555,12 @@ block layerMeasuredBoot:
         let work = getTempDir() / "reproos-pcr-boot-" & $getCurrentProcessId()
         removeDir(work)
         createDir(work)
+        # PAST THE LAST REFUSAL. Every artifact is present, every tool
+        # resolved; from here a failure is a measurement that went wrong
+        # rather than a host that could not try. This is therefore the
+        # first moment at which clearing the previous run's evidence is
+        # honest, and the only place that does it.
+        commitToEvidence()
 
         # --- the guest's userspace ---------------------------------
         let initSrc = work / "init.c"
@@ -1498,6 +1750,30 @@ block layerMeasuredBoot:
               discard sw.waitForExit()
               sw.close()
               removeFile(tpmSock)
+              # Preserved whether the guest succeeded or not, and BEFORE
+              # the early return below. A boot that failed is exactly when
+              # a developer needs the transcript and the TPM's own log,
+              # and collecting evidence only on the success path would
+              # withhold it from the only case that needs it.
+              keepEvidence(caseName & "/qemu-argv",
+                qemu & "\n" & args.join("\n") & "\n")
+              keepEvidenceFile(caseName & "/serial.log", serial)
+              keepEvidenceFile(caseName & "/swtpm.log", runDir / "swtpm.log")
+              if evidenceOwned and dirExists(tpmState):
+                for kind, path in walkDir(tpmState):
+                  if kind != pcFile: continue
+                  keepEvidenceFile(
+                    caseName & "/tpm-state/" & path.extractFilename, path)
+              if evidenceOwned:
+                let logHex = markerValue(transcript, "REPROOS-PCR-EVENTLOG=")
+                if logHex.len > 0:
+                  keepEvidence(caseName & "/event-log.bin",
+                    bytesFromHex(logHex))
+                else:
+                  keepEvidence(caseName & "/event-log.bin.absent",
+                    "the guest published no TCG event log through " &
+                    "securityfs. The register is still the gate's " &
+                    "verdict; the log would only have explained it.\n")
               if startError.len > 0:
                 stderr.writeLine(transcript)
                 return ("", startError)
@@ -1538,6 +1814,14 @@ block layerMeasuredBoot:
             echo "[info] stub: ", artifacts.stub
             echo "[info] firmware: ", artifacts.ovmfCode
             echo "[info] precomputed PCR 11: ", expected.pcr11
+            record("firmware: " & artifacts.ovmfCode)
+            record("efi stub: " & artifacts.stub)
+            record("guest kernel: " & artifacts.kernel)
+            record("measured case: uki digest " & ukiDigest(image))
+            keepEvidence("measured/cmdline", bootCmdline & "\n")
+            keepEvidence("measured/uki.sha256", ukiDigest(image) & "\n")
+            keepEvidence("measured/pcr11.predicted", expected.pcr11 & "\n")
+            keepEvidence("verity-root-hash", rootHash & "\n")
 
             # The value under test is the SHIPPED emitter's, when the
             # shipped emitter is available -- so the boot checks the
@@ -1565,7 +1849,10 @@ block layerMeasuredBoot:
                   readFile(manifestPath), manifestPath)
                 published = parsed.tpm[0].pcr11
                 publishedFrom = "the manifest the shipped command wrote"
+                keepEvidenceFile(AttestManifestFileName, manifestPath)
             echo "[info] the register under test comes from ", publishedFrom
+            record("the register under test comes from " & publishedFrom)
+            record("measured case: predicted PCR 11 " & published)
 
             let esp = work / "esp.img"
             if not buildEsp(ukiPath, esp):
@@ -1589,6 +1876,14 @@ block layerMeasuredBoot:
                   fail(gate & ": " & readWhy)
                 else:
                   echo "[info] the guest read PCR 11 = ", observed
+                  measuredRegisterReads.inc
+                  keepEvidence("measured/pcr11.measured", observed & "\n")
+                  record("measured case: the machine reported PCR 11 " &
+                         observed)
+                  record("measured case: " &
+                         (if observed == published: "AGREES with the " &
+                            "prediction" else: "DISAGREES with the " &
+                            "prediction"))
                   check(observed != ZeroPcr,
                         "t_pcr11_precomputation_matches_measured_boot: the " &
                         "register was really extended -- an unmeasured boot " &
@@ -1631,6 +1926,14 @@ block layerMeasuredBoot:
                       "precomputed register with the image the same length")
                 echo "[info] precomputed PCR 11 (altered): ",
                   alteredExpected.pcr11
+                record("altered case: uki digest " & ukiDigest(alteredImage))
+                record("altered case: predicted PCR 11 " &
+                       alteredExpected.pcr11)
+                keepEvidence("altered/cmdline", altered & "\n")
+                keepEvidence("altered/uki.sha256",
+                             ukiDigest(alteredImage) & "\n")
+                keepEvidence("altered/pcr11.predicted",
+                             alteredExpected.pcr11 & "\n")
                 let esp2 = work / "esp-altered.img"
                 if not buildEsp(alteredPath, esp2):
                   fail(gate & ": could not build the altered ESP image")
@@ -1650,6 +1953,15 @@ block layerMeasuredBoot:
                     else:
                       echo "[info] the guest read PCR 11 (altered) = ",
                         observed2
+                      measuredRegisterReads.inc
+                      keepEvidence("altered/pcr11.measured", observed2 & "\n")
+                      record("altered case: the machine reported PCR 11 " &
+                             observed2)
+                      record("altered case: " &
+                             (if observed2 == alteredExpected.pcr11:
+                                "AGREES with the NEW prediction, so the " &
+                                "agreement above is not a constant"
+                              else: "DISAGREES with the NEW prediction"))
                       check(observed2 == alteredExpected.pcr11,
                             "t_pcr11_precomputation_matches_measured_boot: " &
                             "one changed character moves the MACHINE's " &
@@ -1666,11 +1978,109 @@ block layerMeasuredBoot:
           else:
             removeDir(work)
 
+const ExpectedRegisterReads = 2
+  ## How many registers a complete run reads off a machine.
+  ##
+  ## Two, because the falsification is not optional: one guest agreeing
+  ## with a prediction is consistent with a calculator that returns a
+  ## constant, and the second guest -- booted from an image whose command
+  ## line differs by one character -- is what rules that out. A run with
+  ## one is not most of a measurement, it is a different and much weaker
+  ## claim.
+  ##
+  ## DECLARED ABOVE THE VERDICT, not beside the exit check below, and
+  ## that placement is the fix for a real defect rather than tidying.
+  ## The verdict used to derive `outcome` from the check tally alone, and
+  ## the check tally does not know whether a guest ever started: a run
+  ## that read NO register left behind a `verdict.txt` reading
+  ## `registers read off a machine: 0` and `outcome: PASS`. The process
+  ## exited 1 — but the process is not what anyone reads a month later,
+  ## the file is, and the file said the run had succeeded.
+
+let registerShortfall = measuredRegisterReads < ExpectedRegisterReads
+let runFailed = failures > 0 or registerShortfall
+
+# The verdict, written last because it is the one artifact that is about
+# the whole run rather than about one guest.
+#
+# `outcome` is a function of BOTH facts, because either one alone can be
+# satisfied by a run that proved nothing. It is also the artifact's own
+# statement rather than a restatement of the exit status: this file
+# outlives the terminal it was printed in, so it has to carry the whole
+# finding, including the finding that there was none.
+if evidenceOwned:
+  var verdict = VerdictHeader & "\n" &
+    "=====================\n\n" &
+    "registers read off a machine: " & $measuredRegisterReads & " of " &
+      $ExpectedRegisterReads & "\n" &
+    "checks passed: " & $passes & "\n" &
+    "checks failed: " & $failures & "\n" &
+    "outcome: " & (if runFailed: "FAIL" else: "PASS") & "\n"
+  if registerShortfall:
+    verdict.add "\nFAIL REASON: this run read " & $measuredRegisterReads &
+      " register(s) off a machine, not " & $ExpectedRegisterReads &
+      ". Nothing recorded below is evidence that a prediction was " &
+      "confirmed by hardware, whatever the check tally says -- most of " &
+      "those checks never needed a guest.\n"
+  verdict.add "\nevidence directory: " & evidenceRoot & "\n"
+  verdict.add "\n"
+  for line in verdictLines:
+    verdict.add "  " & line & "\n"
+  verdict.add "\nno certificate was preserved, and none exists: this " &
+    "layer starts a bare software TPM with no manufacturing step, so it " &
+    "carries no endorsement key certificate. What is proved here is that " &
+    "the predicted register is the register a real firmware and a real " &
+    "stub produce -- not who vouches for the TPM that reported it.\n"
+  keepEvidence(VerdictFileName, verdict)
+
 if failures > 0:
   stderr.writeLine("test_measurement_manifest: " & $failures &
                    " check(s) failed, " & $passes & " passed, " & $skips &
                    " skipped")
   quit(1)
+
+# THE SELECTOR THAT ASKS FOR EVIDENCE IS THE SELECTOR THAT BOOTS.
+#
+# Every check above can pass without a guest ever having started: the
+# always-on layer alone accounts for most of them, and the boot layer is
+# a `skip` when nobody asks for it. That is correct for the always-on
+# edge and WRONG for the named one, whose whole reason to exist is that
+# it reads a register off a machine.
+#
+# The recipe distinguishes them with the evidence directory, declared
+# EMPTY on the always-on edge and set on the named one -- so a non-empty
+# value is this process being told "you are the run that boots". A run
+# that was told that and read no register did not do the work, and must
+# not report success. Two registers, because the falsification is not
+# optional: one guest agreeing with a prediction is consistent with a
+# calculator that returns a constant, and the second guest is what rules
+# that out.
+#
+# A declared value replaces the inherited one, so this cannot be switched
+# off from a caller's shell either: the always-on edge's empty
+# declaration overrides any ambient export, and the named edge's
+# non-empty one cannot be cleared by the absence of it.
+#
+# Keyed on `evidenceRoot` rather than on `evidenceOwned`, deliberately:
+# a run that was ASKED for a measurement and never got far enough to own
+# the directory is exactly the run this has to catch.
+if evidenceRoot.len > 0 and registerShortfall:
+  stderr.writeLine("test_measurement_manifest: this run was told to " &
+    "preserve what it measured (" & EvidenceDirEnv & "=" & evidenceRoot &
+    "), and it read " & $measuredRegisterReads & " register(s) off a " &
+    "machine rather than " & $ExpectedRegisterReads & ". A run that " &
+    "measured nothing does not report success, whatever else it checked: " &
+    "that is the silent-skip this selector exists to remove. Set " &
+    BootGateEnv & "=1 as well if you are driving this gate by hand." &
+    (if evidenceOwned: ""
+     else: " Nothing was written to that directory and nothing in it was " &
+       "deleted: this run never reached the point of measuring, so any " &
+       "evidence a previous run left there is still exactly as it was."))
+  quit(1)
+if evidenceOwned:
+  echo "[info] evidence preserved under " & evidenceRoot & ": " &
+    evidenceWritten.join(", ")
+
 var manifestSummary = "measurement manifest: PASS (" & $passes & " checks"
 if layerSummaryFragment().len > 0:
   manifestSummary.add ", " & layerSummaryFragment()
@@ -1679,4 +2089,7 @@ if not layer2Ran:
   manifestSummary.add " -- NO real stub or shipped emitter was exercised"
 if getEnv(BootGateEnv) != "1":
   manifestSummary.add " -- NO PCR was read from a machine"
+else:
+  manifestSummary.add " -- " & $measuredRegisterReads &
+    " PCR(s) read from a machine"
 echo manifestSummary

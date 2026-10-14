@@ -274,8 +274,49 @@ Use Reprobuild as the only contributor command surface:
   character, and the register must move to the *newly predicted* value —
   a calculator that returns a constant would pass the first guest and
   fail the second. `qemu`, `swtpm`, `dosfstools`, `mtools` and `xz` are
-  deliberately **not** declared identities, for the same reason
-  `veritysetup` is not.
+  deliberately **not** declared identities on this always-on gate, for the
+  same reason `veritysetup` is not, so under it the third layer is
+  reported as UNREACHABLE and a request for it fails rather than skipping.
+  `repro build attestation-local-vm` is that third layer **asked for by
+  name**: a second, opt-in edge over the same gate that declares the layer
+  ON and declares the boot tools for itself. The emulator, the software
+  TPM and the two FAT applets are pinned in
+  `repro/measured_boot_tools.nim` and build nothing from source. `xz` is
+  the exception and is not pinned for this edge: `xzSource` declares
+  `executable xz:`, and under `defaultToolProvisioning "from-source"` a
+  source mirror outranks the pinned channel, so `xz` comes from source —
+  as it already did for the two older actions in this recipe that declare
+  it, which is why the edge adds no source build that was not already
+  there. It is in no collection — `repro build` and the `test` collection
+  must not schedule two emulated boots.
+  **Prerequisites on a fresh host.** The layer needs the pinned EFI stub,
+  and a host that merely has *some* systemd will fail the digest check
+  rather than substitute: realise the pinned one with
+  `nix build --no-link github:NixOS/nixpkgs/addf7cf5f383a3101ecfba091b98d0a1263dc9b8#systemd`
+  (that revision is `CanonicalNixpkgsRev`; `repro/uki.nim` names the
+  digest and the `REPROOS_UKI_STUB` override). It also needs an OVMF pair
+  carrying the TCG2 protocol and a guest kernel — `VMH_OVMF_CODE` /
+  `VMH_OVMF_VARS` and `REPROOS_PCR_GUEST_KERNEL` override the search.
+  Every one of these is a **failure** naming what was absent, never a
+  skip.
+  It preserves what it measured under
+  `build/test-evidence/attestation-local-vm`: each guest's serial
+  transcript, the TCG event log the firmware published to it, the
+  software TPM's log and persistent state, the predicted and observed
+  registers, the document the shipped emitter wrote, and `verdict.txt`.
+  That path is relative to the tree the gate's own sources sit in, so
+  under the engine it lands in the tree the action ran in — which is the
+  checkout for an ordinary local build, but would be a staging directory
+  if the engine ever stages sources; the run prints the absolute path it
+  used and `verdict.txt` records it, so it is always findable. Naming the
+  directory is also the contract that makes the selector honest: a run
+  told to preserve what it measured and which read fewer than two
+  registers off a machine exits non-zero, and `verdict.txt` records
+  `outcome: FAIL` naming the shortfall even when every check passed.
+  The directory is refused rather than emptied if it holds anything this
+  gate did not write, and it is not cleared at all until the layer is
+  committed to measuring, so a refusal cannot destroy an earlier run's
+  evidence.
 - `repro build incus-acceptance` runs the projection, helper, reproducibility,
   live lifecycle, and installed-VM/container parity gates. Use the focused
   `test-incus-*` and `test-vm-incus-parity` targets while iterating.

@@ -1065,9 +1065,124 @@ def main() -> None:
             ]],
             'collect("lint"',
             'collect("incus-remote-acceptance"',
+            'target("attestation-local-vm"',
         ],
         "workflow module",
     )
+
+    # The measured-boot selector is reachable BY ITS NAME ONLY.
+    #
+    # `attestation-local-vm` boots two emulated guests, each with its own
+    # software TPM, and waits minutes for them. `repro build`, `repro test`
+    # and the acceptance collections must not schedule that, so the edge
+    # belongs to no collection. That is checked here rather than left to
+    # the comment beside it, because a collection list is exactly the kind
+    # of place a name gets added to while someone is already editing it.
+    seen_collections = 0
+    found_a_known_member = False
+    for collection in re.finditer(r'collect\("(?P<name>[^"]+)",', workflow_content):
+        start = collection.end()
+        close = workflow_content.find("])", start)
+        if close < 0:
+            raise AssertionError(
+                f'collect("{collection.group("name")}") in the workflow module '
+                "is not terminated; the membership scan cannot read it"
+            )
+        members = workflow_content[start:close]
+        seen_collections += 1
+        if "testMeasurementManifest" in members:
+            found_a_known_member = True
+        if "attestationLocalVm" in members:
+            raise AssertionError(
+                "the attestation-local-vm edge is a member of "
+                f'collect("{collection.group("name")}"). It boots two '
+                "emulated guests and must stay reachable by its target name "
+                "only; a collection that schedules it makes every ordinary "
+                "build wait for a measured boot."
+            )
+    # WHAT THE MEASURED-BOOT SELECTOR DECLARES, not merely that it exists.
+    #
+    # The gate binary refuses to report success unless it read two
+    # registers off a machine, but it decides that from the environment it
+    # is handed: the layer variable set to "1" and a non-empty evidence
+    # directory. Those two values live in this recipe, and nothing checked
+    # them. Measured: a TWO-line edit to the edge -- flip the layer value
+    # to "0" and drop the evidence pair -- left every other check in this
+    # tree green while the selector measured nothing and exited 0. Any
+    # ONE-line version of that edit was already caught, which is exactly
+    # the shape that makes a two-line one easy to land.
+    #
+    # So the pair of declarations is pinned here, on both edges, because
+    # the asymmetry between them IS the mechanism: a declared value
+    # replaces the inherited one, so the always-on edge's EMPTY evidence
+    # path is what stops an ambient export making it claim to have
+    # measured, and the named edge's non-empty one is what tells the gate
+    # it is the run that boots.
+    for binding, layer_value, evidence, why in [
+        ("attestationLocalVm", '"1"', "measuredBootEvidenceDir",
+         "the named selector must declare the measured-boot layer ON and "
+         "name the directory its evidence lands in; without both, the gate "
+         "cannot tell that it is the run expected to read a register"),
+        ("testMeasurementManifest", None, '""',
+         "the always-on gate must declare an EMPTY evidence directory, so "
+         "that an ambient export cannot make it claim to have preserved a "
+         "measurement it is not able to perform"),
+    ]:
+        match = re.search(
+            rf"\blet\s+{re.escape(binding)}\s*=\s*shell\((?P<body>.*?)\)"
+            r"\.withToolIdentities\(",
+            workflow_content,
+            flags=re.DOTALL,
+        )
+        if match is None:
+            raise AssertionError(
+                f"no shell action named {binding} in the workflow module; "
+                "the measured-boot selector's declarations cannot be checked"
+            )
+        body = match.group("body")
+        expected_pair = f'(measuredBootEvidenceEnv, {evidence})'
+        if expected_pair not in body:
+            raise AssertionError(
+                f"{binding} does not declare {expected_pair}. {why}."
+            )
+        if layer_value is not None:
+            expected_layer = (
+                f'optInLayers(runnable = [("REPROOS_PCR_BOOT_GATE", '
+                f'{layer_value})])'
+            )
+            if expected_layer not in body:
+                raise AssertionError(
+                    f"{binding} does not declare {expected_layer}. {why}."
+                )
+    # The evidence path the named edge declares has to be a non-empty
+    # literal, or the pin above would be satisfied by a binding that
+    # names the variable and sets it to "".
+    evidence_dir = re.search(
+        r'let\s+measuredBootEvidenceDir\s*=\s*"(?P<path>[^"]*)"',
+        workflow_content,
+    )
+    if evidence_dir is None or not evidence_dir.group("path").strip():
+        raise AssertionError(
+            "measuredBootEvidenceDir is not a non-empty string literal in "
+            "the workflow module; the named measured-boot selector would "
+            "declare an empty evidence directory and the gate would not "
+            "know it is the run that boots"
+        )
+
+    # Without these two the check above would pass on a recipe whose
+    # collections the scan could not find at all.
+    if seen_collections < 3:
+        raise AssertionError(
+            f"the collection membership scan found {seen_collections} "
+            "collections in the workflow module (needs at least 3), so it "
+            "cannot have checked what it claims to"
+        )
+    if not found_a_known_member:
+        raise AssertionError(
+            "the collection membership scan did not find the always-on "
+            "measurement gate in any collection, so it is not reading "
+            "collection members"
+        )
 
     require_contains(
         WORKFLOW_RECIPE,

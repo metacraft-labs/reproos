@@ -42,3 +42,5 @@ if fileExists(blake3Headers / "blake3.h") and
   # Interface-only runners lack that module closure and need the local shim.
   if not defined(reproVendoredHash):
     switch("import", "reproos_vendored_hash_runtime")
+
+switch("maxLoopIterationsVM", "20000000")

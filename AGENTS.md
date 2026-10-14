@@ -299,6 +299,19 @@ Use Reprobuild as the only contributor command surface:
   `VMH_OVMF_VARS` and `REPROOS_PCR_GUEST_KERNEL` override the search.
   Every one of these is a **failure** naming what was absent, never a
   skip.
+  **What the engine has been observed to do, and what it has not.** With the
+  compile-time VM budget `config.nims` sets, `repro build --list-targets`
+  enumerates this edge (`explicit  reproos  attestation-local-vm`) and exits
+  0, and a `--dry-run` of it proceeds through tool-identity selection and on
+  into the from-source closure, validating `xz`, `make`, `gcc` and `gmp`.
+  That closure is the recipe's `defaultToolProvisioning "from-source"`, not
+  anything this edge adds. So a dry run does not finish quickly, and the
+  reason is the closure's size rather than how busy the host is — an earlier
+  note in this repository's history suggested retrying on a quieter host, and
+  that advice was wrong. What remains unobserved is the completed plan, and
+  with it the hermetic action PATH actually carrying `qemu-system-x86_64`,
+  `swtpm`, `mmd` and `mcopy`; reaching it means building that closure, which
+  is the long build this repository otherwise avoids.
   It preserves what it measured under
   `build/test-evidence/attestation-local-vm`: each guest's serial
   transcript, the TCG event log the firmware published to it, the

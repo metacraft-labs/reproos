@@ -22,9 +22,13 @@
 
 PATH=@toolPath@:/bin
 export PATH
+# The hardening controls this build carries (M2): gate ro-store egress.
+controls="@controls@"
+has() { case " $controls " in *" $1 "*) return 0 ;; esac; return 1; }
 
 /bin/busybox mkdir -p /bin /proc /sys /dev /run /tmp /var/empty /etc/ssh
 /bin/busybox --install -s /bin
+ln -s /etc/anywhere/gate /bin/anywhere-gate
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
@@ -59,7 +63,24 @@ fatal() {
 
 case "$session" in ''|*[!0-9a-f]*) fatal bad-session ;; esac
 case "$nonce" in ''|*[!0-9a-f]*) fatal bad-nonce ;; esac
-[ -s /etc/anywhere/authorized_keys ] || fatal no-session-archive
+[ -s /etc/anywhere/session.pub ] || fatal no-session-archive
+case "$(cat /etc/anywhere/session.pub)" in
+  "ssh-ed25519 "*) ;; *) fatal bad-session-key ;;
+esac
+# Per-plan credential: only the key in this session's archive opens the
+# installer, and with the gate it opens nothing but the gate.
+if has gate; then
+  printf 'restrict,command="/etc/anywhere/gate" %s\n' "$(head -n 1 /etc/anywhere/session.pub)" \
+    > /etc/anywhere/authorized_keys
+else
+  head -n 1 /etc/anywhere/session.pub > /etc/anywhere/authorized_keys
+fi
+# Read-only verified closure: nothing in the installer may add or change
+# an executable it then runs from the store.
+if has ro-store; then
+  mount --bind /nix/store /nix/store && mount -o remount,bind,ro /nix/store || fatal ro-store
+fi
+mkdir -p /mnt /run/anywhere/work
 
 # Network: the interface is chosen by the MAC the plan pinned, never by
 # name or enumeration order.
@@ -99,12 +120,15 @@ chmod 0755 /
 mkdir -p /root && chmod 0700 /root
 
 ip -o addr show > /dev/console 2>&1; ip route > /dev/console 2>&1
+if has egress; then
+  nft -f /etc/anywhere/egress.nft || fatal egress
+fi
 ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key || fatal hostkey
 hostkey=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)
 boot_id=$(cat /proc/sys/kernel/random/boot_id)
 mkdir -p /run/anywhere
-printf 'session=%s\nnonce=%s\nboot_id=%s\nhostkey=%s\n' \
-  "$session" "$nonce" "$boot_id" "$hostkey" > /run/anywhere/identity
+printf 'session=%s\nnonce=%s\nboot_id=%s\nhostkey=%s\ncontrols=%s\n' \
+  "$session" "$nonce" "$boot_id" "$hostkey" "$(echo $controls | tr ' ' ',')" > /run/anywhere/identity
 
 cat > /etc/ssh/sshd_config <<EOF
 Port 22
@@ -128,7 +152,35 @@ SetEnv PATH=@toolPath@:/bin
 EOF
 chmod 0600 /etc/anywhere/authorized_keys
 
+# Detection (M3 DET): the kernel audits every execve and every
+# write-open of a disk device node, and -- with no audit daemon -- prints
+# each record to the console, which the controller reads through the
+# rescue plane. The rules are then locked (-e 2): changing or disabling
+# them now needs a reboot, which the controller would see.
+echo 0 > /proc/sys/kernel/printk_ratelimit
+auditctl -D >/dev/null 2>&1
+auditctl -b 16384 >/dev/null
+auditctl -f 1 >/dev/null
+auditctl -a always,exit -F arch=b64 -S execve -k anywhere-exec >/dev/null || fatal audit-exec
+auditctl -a always,exit -F arch=b32 -S execve -k anywhere-exec >/dev/null || fatal audit-exec32
+for base in vda vdb vdc vdd sda sdb sdc sdd; do
+  for n in "" 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    auditctl -w "/dev/$base$n" -p w -k anywhere-disk-write >/dev/null 2>&1
+  done
+done
+for base in nvme0n1 nvme1n1; do
+  for n in "" p1 p2 p3 p4 p5 p6 p7 p8 p9; do
+    auditctl -w "/dev/$base$n" -p w -k anywhere-disk-write >/dev/null 2>&1
+  done
+done
+auditctl -e 2 >/dev/null || fatal audit-lock
+console "REPROOS_ANYWHERE_INSTALLER:AUDIT locked rules=$(auditctl -l | wc -l)"
+
 # The announcement the controller pins. One line, fixed vocabulary.
+# kauditd prints asynchronously; let it drain so no audit record lands in
+# the middle of the line (echo is a builtin, so the line itself is not
+# preceded by an exec record).
+sleep 2
 console "REPROOS_ANYWHERE_INSTALLER:READY session=$session nonce=$nonce boot_id=$boot_id hostkey=$hostkey"
 
 while :; do

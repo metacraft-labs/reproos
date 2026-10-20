@@ -106,6 +106,41 @@ of running it twice. `--max-rate BYTES_PER_SECOND` bounds the payload
 transfer; an interrupted transfer resumes from the bytes already on the
 target and is verified by digest before it is unpacked.
 
+### The takeover environment's boundary
+
+The controller reaches the installer only with a **per-plan session key**
+carried in the session archive, and that key is restricted
+(`restrict,command=`) to the installer gate,
+`tools/anywhere/installer-gate.sh`: a fixed vocabulary of requests
+(`identity`, `put PATH MODE`, `sha256 PATH`, `op-start ID destroy ...`,
+`unpack`, ...) whose every argument is checked against a closed alphabet
+and a path allowlist (the work area and the mounted target). Anything else
+is refused with exit 126 and a `REPROOS_ANYWHERE_GATE:REFUSED` line on the
+console. The installer also mounts its executable closure (`/nix/store`)
+read-only and drops every connection it did not receive except DHCP
+(`tests/anywhere/fixture/egress.nft`). It reports the controls it runs
+with, and takeover refuses an installer whose controls differ from its
+manifest.
+
+Detection: the installer's kernel audits every `execve` and every
+write-open of a disk device, prints the records to the console (the
+rescue plane) and locks the rules (`auditctl -e 2`). Before and after each
+stage the controller places a barrier (a uniquely tagged exec whose own
+record must reach the console) and attributes everything up to it: an
+execution from outside the closure verified at takeover, a disk write
+outside destroy/format/mount/bootloader, or an audit configuration change
+halts the apply. `resume` then refuses until `--clear-detection`.
+
+Evidence: `--evidence-sink SOCKET` sends every journal record, alert and
+heartbeat to `tools/anywhere/reproos-anywhere-sink serve`, an append-only
+sink that refuses (and records) read, list and delete, refuses a record
+that does not continue its own copy of the chain, and raises
+`heartbeat-lost` when an apply stops without closing its stream.
+`reproos-anywhere-sink audit` compares a controller's local journal with
+the sink's copy; the sink is the authority. Run the sink under its own
+account on its own host: the tests prove the protocol boundary, not
+account separation.
+
 ### What counts as success
 
 The installed system must answer on the pinned **installed** host key,
@@ -126,9 +161,11 @@ python3 tests/anywhere/e2e_convert.py --artifacts DIR debian ubuntu fedora arch 
 python3 tests/anywhere/test_disk_identity_mismatch.py --artifacts DIR
 python3 tests/anywhere/test_negatives.py --artifacts DIR
 python3 tests/anywhere/test_resume.py --artifacts DIR
+python3 tests/anywhere/test_detection.py --artifacts DIR
+python3 tests/anywhere/test_confinement.py --artifacts DIR
 ```
 
-`tests/anywhere/run-vm-gates.sh e2e|diskid|negatives|resume` builds the
+`tests/anywhere/run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement` builds the
 fixtures and runs one gate; the same gates are registered as `repro build`
 targets and in the `test` collection.
 

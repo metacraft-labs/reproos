@@ -153,9 +153,9 @@ class Session:
                 f"remote command failed ({proc.returncode}): {remote[:120]}\n{err.strip()[:2000]}")
         return proc
 
-    def reachable(self, timeout: float = 15) -> bool:
+    def reachable(self, timeout: float = 15, probe: str = "true") -> bool:
         try:
-            self.run("true", timeout=timeout)
+            self.run(probe, timeout=timeout)
             return True
         except HostKeyRejected:
             raise

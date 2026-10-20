@@ -17,6 +17,9 @@
 # Arguments are the sibling checkouts the broker is compiled from; the
 # test driver passes them so nothing here reaches outside its inputs.
 { reproosSrc ? ../../.., reprobuildSrc ? ../../../../reprobuild
+  # The takeover environment's hardening controls. Tests build variants
+  # with one removed to prove each control is what its gate depends on.
+, controls ? [ "gate" "ro-store" "egress" ]
 , nixpkgs ? builtins.fetchTarball {
     # Same revision as the workspace flake lock (nixpkgs addf7cf5).
     url = "https://github.com/NixOS/nixpkgs/archive/addf7cf5f383a3101ecfba091b98d0a1263dc9b8.tar.gz";
@@ -39,7 +42,7 @@ let
     "virtio_pci" "virtio_blk" "virtio_scsi" "virtio_net" "virtio_rng"
     "sd_mod" "sr_mod" "ahci" "ata_piix" "nvme" "e1000" "e1000e"
     "crc32c_generic" "crc32c_intel" "ext4" "vfat" "nls_cp437" "nls_iso8859_1"
-    "efivarfs" "af_packet"
+    "efivarfs" "af_packet" "nf_tables" "nft_ct"
   ];
   modules = modulesFor bootModules;
 
@@ -84,7 +87,7 @@ let
 
   installerTools = with pkgs; [
     util-linux parted gptfdisk e2fsprogs dosfstools grub2_efi kmod zstd
-    gnutar coreutils openssh broker
+    gnutar coreutils openssh broker audit nftables
   ];
   # One profile on PATH; its store closure is what the initramfs carries.
   toolEnv = pkgs.buildEnv {
@@ -100,6 +103,7 @@ let
     replacements = {
       inherit toolPath;
       modules = lib.concatStringsSep " " bootModules;
+      controls = lib.concatStringsSep " " controls;
       sshd = "${pkgs.openssh}/bin/sshd";
     };
   };
@@ -113,6 +117,10 @@ let
       { object = "${modules}/lib/modules"; symlink = "/lib/modules"; }
       { object = ./udhcpc-hook; symlink = "/etc/anywhere/udhcpc-hook"; }
       { object = toolEnv; symlink = "/tools"; }
+      { object = ./egress.nft; symlink = "/etc/anywhere/egress.nft"; }
+      # The gate's vocabulary is always present; the "gate" control decides
+      # whether the session key is RESTRICTED to it (forced command).
+      { object = reproosSrc + "/tools/anywhere/installer-gate.sh"; symlink = "/etc/anywhere/gate"; }
     ];
   };
 
@@ -123,13 +131,14 @@ let
     cp ${kernel}/bzImage $out/vmlinuz
     cp ${installerInitrd}/initrd $out/initrd.img
     unpacked=$(zstd -dc $out/initrd.img | wc -c)
-    python3 - $out "$unpacked" <<'EOF'
+    python3 - $out "$unpacked" "${lib.concatStringsSep " " controls}" <<'EOF'
     import hashlib, json, os, sys
     out, unpacked = sys.argv[1], int(sys.argv[2])
     files = {n: {"sha256": hashlib.sha256(open(os.path.join(out, n), "rb").read()).hexdigest(),
                  "size": os.path.getsize(os.path.join(out, n))} for n in ("vmlinuz", "initrd.img")}
     m = {"schema": "reproos-anywhere-installer/1", "kind": "fixture", "qualified": False,
-         "takeover_protocol": 1, "initrd_unpacked_bytes": unpacked, "files": files}
+         "takeover_protocol": 2, "controls": sys.argv[3].split(), "initrd_unpacked_bytes": unpacked,
+         "files": files}
     open(os.path.join(out, "manifest.json"), "w").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
     EOF
   '';

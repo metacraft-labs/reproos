@@ -24,6 +24,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -32,6 +33,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import canon, compat, cpio, enrollment as enrollment_mod, inventory, keys
+from .detect import Detector
+from .evidence import Client as SinkClient, SinkError
 from . import plan as plan_mod
 from .journal import Journal
 from .rescue import RescueError, adapter as rescue_adapter
@@ -233,10 +236,12 @@ def make_plan(*, state_root: Path, name: str, config_path: Path, artifacts: Arti
 class Apply:
     def __init__(self, *, state_root: Path, name: str, acknowledge: str, artifacts: Artifacts,
                  log: Callable[[str], None] = print, sinks=(), resume: bool = False,
-                 max_rate: int = 0):
+                 max_rate: int = 0, evidence_sink: str | None = None,
+                 clear_detection: bool = False, reformat: bool = False):
         self.state = State(state_root, name)
         self.log = log
         self.max_rate = max_rate        # bytes/s for payload transfer; 0 = unbounded
+        self.rerun_from: str | None = None
         self.artifacts = artifacts
         journal_path = self.state.dir / "journal.jsonl"
         self.resume = resume
@@ -253,8 +258,30 @@ class Apply:
                 artifacts.installer_id != self.plan["installer"]["id"]:
             raise Refused("payload or installer artifacts are not the ones the plan names")
         self.enr = canon.read(self.state.dir / "enrollment.json")
-        self.journal = Journal(journal_path, self.plan_id, sinks)
+        from .recovery import aborted
+        if journal_path.exists() and aborted(Journal(journal_path, self.plan_id)):
+            raise Refused("this plan was aborted and its machine rolled back; make a new plan")
+        self.sink = SinkClient(evidence_sink, self.plan_id) if evidence_sink else None
+        all_sinks = list(sinks) + ([self.sink.append] if self.sink else [])
+        self.journal = Journal(journal_path, self.plan_id, all_sinks)
         self.journal.mirrors.append(self.mirror_to_host)
+        self.detect_state = self.state.dir / "detect.json"
+        self.detector: Detector | None = None
+        halt = self.unresolved_detection()
+        if halt and not clear_detection:
+            raise Refused(f"apply was halted by detection ({halt}); investigate, then resume with "
+                          "--clear-detection to acknowledge it")
+        if halt and clear_detection:
+            self.journal.note("detector", {"resolved": halt})
+        if reformat:
+            done = self.journal.completed()
+            if "destroy" not in done:
+                raise Refused("--reformat is for after destroy; before it, `abort` rolls back instead")
+            if "reboot" in done:
+                raise Refused("the machine already rebooted; use `recover --rematerialize`")
+            self.journal.note("reformat", {"epoch": self.epoch() + 1,
+                                           "reason": "operator-confirmed reformat of the failed install"})
+            self.rerun_from = "format"
         self.rescue = rescue_adapter(self.enr["rescue"])
         self.config_text = (self.state.dir / "auto-config.toml").read_bytes()
         if hashlib.sha256(self.config_text).hexdigest() != self.plan["configuration"]["generation"]:
@@ -265,20 +292,110 @@ class Apply:
         self._installer: Session | None = None
         self._source: Session | None = None
 
+    # -- detection --------------------------------------------------------
+    def unresolved_detection(self) -> str:
+        halt = ""
+        for r in self.journal.records:
+            if r["stage"] == "detector" and r["event"] == "note":
+                if "halt" in r["evidence"]:
+                    halt = r["evidence"]["halt"]
+                elif "resolved" in r["evidence"]:
+                    halt = ""
+        return halt
+
+    def start_detection(self, ready_offset: int) -> None:
+        stores = ["/nix/store/" + n for n in self.gate("store").split()]
+        canon.write(self.detect_state, {"offset": ready_offset, "allowed": sorted(stores), "seen": []})
+
+    def scan(self, window: str, close: bool = False) -> None:
+        """Classify the installer's audit records since the last scan.
+        ``close`` ends detection: after the reboot request the console
+        carries the INSTALLED system's boot, which is not the installer's."""
+        if not self.detect_state.exists():
+            return
+        st = canon.read(self.detect_state)
+        if st.get("closed"):
+            return
+        self.audit_barrier(st["offset"])
+        det = Detector(set(st["allowed"]))
+        det.seen_serials = set(st["seen"])
+        text = self.rescue.console_since(st["offset"])
+        cut = text.rfind("\n") + 1                       # complete lines only
+        events = det.scan(text[:cut], window)
+        consumed = len(text[:cut].encode("utf-8", "replace"))
+        canon.write(self.detect_state, {"offset": st["offset"] + consumed, "allowed": st["allowed"],
+                                        "seen": sorted(det.seen_serials)[-5000:],
+                                        "closed": bool(close)})
+        if not events:
+            return
+        described = [e.describe() for e in events]
+        for e, d in zip(events, described):
+            self.log(f"[detector] {d}")
+            if self.sink:
+                try:
+                    self.sink.alert(e.kind, d)
+                except SinkError:
+                    pass
+        self.journal.note("detector", {"halt": described[0][:500], "events": described[:50]})
+        raise AnywhereError("detection halted the apply: " + "; ".join(described[:3]))
+
+    def audit_barrier(self, offset: int) -> None:
+        """Wait until every audit record generated so far has reached the
+        console. The kernel prints them asynchronously but in order, so
+        exec'ing a uniquely tagged no-op and waiting for ITS record to
+        appear is a barrier: everything before it has been printed and
+        is attributed to the window that is closing, not the next one."""
+        token = secrets.token_hex(6)
+        # An explicit exec (a shell builtin would leave no audit record).
+        self.gate("barrier", token, timeout=30)
+        self.rescue.wait_for_line(offset, re.compile(rf'"anywhere-barrier-{token}"'), timeout=60)
+
+    def alert(self, kind: str, detail: str) -> None:
+        self.log(f"[alert] {kind}: {detail}")
+        if self.sink:
+            try:
+                self.sink.alert(kind, detail)
+            except SinkError:
+                pass
+
     # -- host mirror -----------------------------------------------------
-    HOST_JOURNAL = "/run/anywhere/journal.jsonl"
+    HOST_JOURNAL = "/run/anywhere/work/journal.jsonl"
     DISK_JOURNAL = f"{TARGET_ROOT}/var/log/reproos-anywhere/journal.jsonl"
 
     def mirror_to_host(self, record: bytes) -> None:
         done = set(self.journal.completed())
         if "takeover" not in done or "reboot" in done:
             return
-        inst = self.installer()
         targets = [self.HOST_JOURNAL]
         if "mount" in done:
             targets.append(self.DISK_JOURNAL)
         for path in targets:
-            inst.run(f"mkdir -p $(dirname {path}) && cat >> {path}", stdin=record + b"\n", timeout=30)
+            self.gate("append", path, stdin=record + b"\n", timeout=30)
+
+    # -- the installer gate ----------------------------------------------
+    def gate(self, verb: str, *args: str, stdin: bytes | None = None, check: bool = True,
+             timeout: float = 120) -> str:
+        """One request in the installer gate's fixed vocabulary
+        (tools/anywhere/installer-gate.sh). Arguments are never quoted: the
+        gate refuses anything outside its alphabet, and so must we."""
+        for a in (verb,) + args:
+            if not a or not re.fullmatch(r"[A-Za-z0-9 /._:=+,@-]+", a) or " " in a:
+                raise Refused(f"gate argument {a!r} is outside the request alphabet")
+        proc = self.installer().run(" ".join(("anywhere-gate", verb) + args), stdin=stdin, check=False,
+                                    timeout=timeout)
+        if proc.returncode == 126:
+            raise Refused(f"the installer gate refused {verb}: {proc.stderr.decode().strip()[-300:]}")
+        if check and proc.returncode != 0:
+            raise AnywhereError(f"gate {verb} failed ({proc.returncode}): {proc.stderr.decode().strip()[-500:]}")
+        return proc.stdout.decode()
+
+    def session_key(self, session_id: str | None = None) -> Path:
+        """The per-session credential that opens the installer (and, through
+        the gate, only the gate). One per plan, one per recovery session."""
+        sid = session_id or self.plan["session"]["id"]
+        path = self.state.keys / f"session_{sid}"
+        keys.ensure_keypair(path, f"reproos-anywhere-session-{sid}")
+        return path
 
     # -- endpoints -------------------------------------------------------
     def source(self) -> Session:
@@ -286,12 +403,22 @@ class Apply:
             self._source = source_session(self.enr, self.state)
         return self._source
 
+    def latest_takeover(self) -> dict:
+        """Evidence of the takeover environment now running: the plan's own
+        takeover, or the most recent recovery takeover after it."""
+        for r in reversed(self.journal.records):
+            if r["event"] == "complete" and (r["stage"] == "takeover" or
+                                            (r["stage"].startswith("recover") and r["stage"].endswith("-takeover"))):
+                return r["evidence"]
+        raise AnywhereError("no takeover environment has been verified for this plan")
+
     def installer(self) -> Session:
         if self._installer is None:
-            ev = self.journal.evidence("takeover")
+            ev = self.latest_takeover()
             s = self.enr["ssh"]
             self._installer = Session(Endpoint(s["address"], s["port"], "root", ev["installer_host_key"],
-                                               self.state.controller_key, "root"), self.state.work)
+                                               self.session_key(ev.get("session_id")), "root"),
+                                      self.state.work)
         return self._installer
 
     def installed(self) -> Session:
@@ -302,11 +429,49 @@ class Apply:
 
     # -- driver ----------------------------------------------------------
     def run(self) -> dict:
+        import threading
+        stop = threading.Event()
+        if self.sink:
+            def beat():
+                while not stop.wait(5):
+                    try:
+                        self.sink.heartbeat()
+                    except SinkError:
+                        pass
+            threading.Thread(target=beat, daemon=True).start()
+        try:
+            proof = self._run()
+        except HostKeyRejected as error:
+            self.alert("identity-drift", str(error))
+            raise
+        finally:
+            stop.set()
+            # A controller that stops on purpose -- success, refusal, halt --
+            # closes its stream; only a controller that DIED leaves it open,
+            # which is what the sink's heartbeat-lost alarm then means.
+            if self.sink:
+                try:
+                    self.sink.close()
+                except SinkError:
+                    pass
+        return proof
+
+    def _run(self) -> dict:
         stages = [s["stage"] for s in self.plan["stages"]]
         if not self.resume:
             self.recheck_source()
         done = set(self.journal.completed())
+        if self.rerun_from:
+            done -= set(stages[stages.index(self.rerun_from):])
         open_stage = self.journal.open_stage()
+        if open_stage:
+            # Records printed after the last scan -- by a controller that died,
+            # or by a detached operation that kept running after it -- belong
+            # to the stage that was open, not to whatever runs next.
+            self.scan(open_stage)
+        if self.rerun_from and open_stage:
+            self.journal.abort(open_stage, f"superseded by an operator-confirmed rerun from {self.rerun_from}")
+            open_stage = None
         for stage in stages:
             if stage in done:
                 continue
@@ -330,8 +495,10 @@ class Apply:
                                                           if s["stage"] == stage)})
             open_stage = None
             self.log(f"[{stage}] start")
+            self.scan(f"before {stage}")
             try:
                 evidence = handler()
+                self.scan(stage)
             except Refused as error:
                 # A refusal changed nothing: close the stage so a later
                 # resume starts it afresh instead of "reconciling" it.
@@ -370,26 +537,30 @@ class Apply:
     def staging_dir(self) -> str:
         return f"/dev/shm/reproos-anywhere-{self.plan['session']['id']}"
 
-    def session_initrd(self) -> Path:
+    def session_initrd(self, session_id: str | None = None, nonce: str | None = None) -> Path:
+        session_id = session_id or self.plan["session"]["id"]
+        nonce = nonce or self.plan["session"]["nonce"]
         handoff = {
-            "plan": self.plan_id, "session": self.plan["session"]["id"],
-            "nonce": self.plan["session"]["nonce"], "target_serial": self.target["serial"],
+            "plan": self.plan_id, "session": session_id,
+            "nonce": nonce, "target_serial": self.target["serial"],
             "expires": self.plan["expires"],
         }
         handoff_bytes = canon.encode(handoff)
         archive = cpio.build([
             (".", 0o755, None), ("etc", 0o755, None), ("etc/anywhere", 0o755, None),
-            ("etc/anywhere/authorized_keys", 0o600, (self.state.controller_pub + "\n").encode()),
+            ("etc/anywhere/session.pub", 0o644,
+             (keys.public_line(self.session_key(session_id)) + "\n").encode()),
             ("etc/anywhere/handoff.json", 0o644, handoff_bytes),
             ("etc/anywhere/handoff.sig", 0o644, keys.sign(self.state.controller_key, handoff_bytes)),
         ])
         base = (self.artifacts.installer_dir / "initrd.img").read_bytes()
-        out = self.state.work / f"takeover-initrd-{self.plan['session']['id']}.img"
+        out = self.state.work / f"takeover-initrd-{session_id}.img"
         out.write_bytes(cpio.append_to_initrd(base, archive))
         return out
 
-    def takeover_cmdline(self) -> str:
-        session, nonce = self.plan["session"]["id"], self.plan["session"]["nonce"]
+    def takeover_cmdline(self, session: str | None = None, nonce: str | None = None) -> str:
+        session = session or self.plan["session"]["id"]
+        nonce = nonce or self.plan["session"]["nonce"]
         return (f"console=tty0 console=ttyS0,115200 anywhere.session={session} "
                 f"anywhere.nonce={nonce} anywhere.mac={self.plan['network']['mac']} anywhere.net=dhcp")
 
@@ -474,23 +645,30 @@ class Apply:
             raise AnywhereError("the installer reports the source system's boot id")
         self._installer = None
         inst = Session(Endpoint(self.enr["ssh"]["address"], self.enr["ssh"]["port"], "root", host_key,
-                                self.state.controller_key, "root"), self.state.work)
+                                self.session_key(), "root"), self.state.work)
         deadline = time.monotonic() + 120
-        while not inst.reachable():
+        while not inst.reachable(probe="anywhere-gate identity"):
             if time.monotonic() > deadline:
                 raise AnywhereError("installer announced itself but its SSH is unreachable")
             time.sleep(3)
-        ident = dict(line.split("=", 1) for line in
-                     inst.run("cat /run/anywhere/identity").stdout.decode().splitlines() if "=" in line)
-        cmd = inst.run("cat /proc/cmdline").stdout.decode()
+        self._installer = inst
+        ident = dict(line.split("=", 1) for line in self.gate("identity").splitlines() if "=" in line)
+        cmd = self.gate("cmdline")
         if ident.get("session") != session or ident.get("nonce") != nonce or \
                 ident.get("boot_id") != boot_id or ident.get("hostkey") != host_key or \
                 f"anywhere.nonce={nonce}" not in cmd:
             raise AnywhereError("installer identity does not match its console announcement")
+        want = sorted(self.artifacts.installer.get("controls", []))
+        have = sorted(c for c in ident.get("controls", "").split(",") if c)
+        if have != want:
+            raise Refused(f"the installer reports hardening controls {have}, its manifest declares {want}")
+        self._installer = inst
+        self.start_detection(offset + self.rescue.console_since(offset).encode("utf-8", "replace")
+                             .find(b"REPROOS_ANYWHERE_INSTALLER:READY"))
         return {"installer_host_key": host_key,
                 "installer_fingerprint": fingerprint(*parse_host_key(host_key)),
                 "installer_boot_id": boot_id, "source_boot_id": self.source_boot_id,
-                "kexec_trigger": trigger}
+                "kexec_trigger": trigger, "installer_controls": have}
 
     def reconcile_takeover(self) -> dict:
         offset = 0
@@ -507,8 +685,8 @@ class Apply:
                         "evidence": {}}
         m = found[-1]
         inst = Session(Endpoint(self.enr["ssh"]["address"], self.enr["ssh"]["port"], "root", m.group(4),
-                                self.state.controller_key, "root"), self.state.work)
-        if not inst.reachable():
+                                self.session_key(), "root"), self.state.work)
+        if not inst.reachable(probe="anywhere-gate identity"):
             return {"state": "stuck", "detail": "announced installer is unreachable", "evidence": {}}
         return {"state": "done", "detail": "installer already running",
                 "evidence": {"installer_host_key": m.group(4),
@@ -518,7 +696,8 @@ class Apply:
 
     # -- installer-side helpers ------------------------------------------
     BROKER_OPS = "/run/anywhere/ops"
-    # The irreversible operations; mount/unmount are idempotent and run inline.
+    # The irreversible operations run detached and keyed; resolve, mount and
+    # unmount are idempotent and run inline.
     MUTATING = ("destroy", "apply", "install-root")
 
     def broker(self, args: str, *, timeout: float = 900) -> dict:
@@ -530,25 +709,39 @@ class Apply:
         or a killed controller therefore never interrupts a half-written
         partition table, and a resumed controller re-attaches to the same
         operation -- running or finished -- instead of starting it again."""
-        inst = self.installer()
-        if args.split()[0] not in self.MUTATING:
-            proc = inst.run(f"anywhere_disk {args}", check=False, timeout=600)
+        argv = args.split()
+        if argv[0] not in self.MUTATING:
+            proc = self.installer().run(" ".join(["anywhere-gate", "disk", *argv]), check=False, timeout=600)
+            if proc.returncode == 126:
+                raise Refused(f"the installer gate refused disk {argv[0]}")
             return self._verdict(args, proc.stdout.decode(), proc.returncode, proc.stderr.decode())
-        op = hashlib.sha256(f"{self.plan_id}\0{args}".encode()).hexdigest()[:20]
-        base = f"{self.BROKER_OPS}/{op}"
-        inst.run(f"mkdir -p {self.BROKER_OPS} && if [ ! -e {base}.args ]; then "
-                 f"printf '%s\\n' {sh_quote(args)} > {base}.args && "
-                 f"setsid sh -c {sh_quote(f'anywhere_disk {args} > {base}.out 2> {base}.err; echo $? > {base}.rc')} "
-                 f"< /dev/null > /dev/null 2>&1 & fi")
+        op = hashlib.sha256(f"{self.plan_id}\0{self.epoch()}\0{self.op_salt}\0{args}".encode()).hexdigest()[:20]
+        launched = self.gate("op-start", op, *argv).strip() == "started"
         deadline = time.monotonic() + timeout
         while True:
-            rc = inst.run(f"cat {base}.rc 2>/dev/null", check=False, timeout=30).stdout.decode().strip()
-            if rc:
-                out = inst.run(f"cat {base}.out; cat {base}.err >&2", check=False, timeout=30)
-                return self._verdict(args, out.stdout.decode(), int(rc), out.stderr.decode(), op=op)
+            out = self.installer().run(f"anywhere-gate op-poll {op}", check=False, timeout=30)
+            text = out.stdout.decode()
+            if text.startswith("rc="):
+                rc, _, rest = text.partition("\n")
+                if int(rc[3:]) != 0 and not launched:
+                    # An operation that FAILED before this attempt (a lost
+                    # acknowledgement of a success is re-attached above; a
+                    # failure is retried once, here).
+                    self.log(f"[broker] operation {op} failed earlier; launching it again")
+                    self.gate("op-forget", op)
+                    launched = self.gate("op-start", op, *argv).strip() == "started"
+                    continue
+                return self._verdict(args, rest, int(rc[3:]), out.stderr.decode(), op=op)
             if time.monotonic() > deadline:
                 raise AnywhereError(f"broker {args.split()[0]} (operation {op}) did not finish in {timeout}s")
             time.sleep(1)
+
+    op_salt = ""
+
+    def epoch(self) -> int:
+        """Bumped by every operator-confirmed reformat, so the format (and
+        everything keyed after it) really runs again instead of re-attaching."""
+        return sum(1 for r in self.journal.records if r["stage"] == "reformat" and r["event"] == "note")
 
     def _verdict(self, args: str, stdout: str, rc: int, stderr: str, op: str = "") -> dict:
         try:
@@ -563,19 +756,16 @@ class Apply:
         return result
 
     def put_disko(self) -> str:
-        inst = self.installer()
-        local = self.state.work / "disko.json"
-        local.write_text(self.plan["storage"]["disko"])
-        inst.run(f"mkdir -p {INSTALLER_WORK}")
-        got = inst.upload(local, f"{INSTALLER_WORK}/disko.json")
+        data = self.plan["storage"]["disko"].encode()
+        self.gate("put", f"{INSTALLER_WORK}/disko.json", "0644", stdin=data)
+        got = self.gate("sha256", f"{INSTALLER_WORK}/disko.json").split()[0]
         if got != self.plan["storage"]["disko_sha256"]:
             raise AnywhereError("storage plan bytes changed in transit")
         return f"{INSTALLER_WORK}/disko.json"
 
     def check_target_path(self) -> None:
-        inst = self.installer()
         name = self.target["kernel_name"]
-        syspath = inst.run(f"readlink /sys/block/{name}", check=False).stdout.decode().strip()
+        syspath = self.gate("sysblock", name, check=False).strip()
         if syspath != self.target["syspath"]:
             raise Refused(f"in the takeover environment {name} is at {syspath!r}, the plan bound "
                           f"{self.target['syspath']!r}; a reordered or replaced disk needs a new plan")
@@ -584,11 +774,11 @@ class Apply:
         """Before ANY look at or write to the target from the installer --
         including reconciliation -- prove it is still the planned disk."""
         self.check_target_path()
-        self.broker("resolve " + f"--serial {sh_quote(self.target['serial'])} "
+        self.broker("resolve " + f"--serial {self.target['serial']} "
                     f"--size-sectors {self.target['size_sectors']}")
 
     def target_flags(self) -> str:
-        return (f"--device {self.device} --serial {sh_quote(self.target['serial'])} "
+        return (f"--device {self.device} --serial {self.target['serial']} "
                 f"--size-sectors {self.target['size_sectors']} --confirm-plan {self.hash}")
 
     # -- stage: destroy ---------------------------------------------------
@@ -598,10 +788,8 @@ class Apply:
         return {"broker": result, **self.verify_erased()}
 
     def verify_erased(self) -> dict:
-        inst = self.installer()
         name = self.target["kernel_name"]
-        probe = inst.run(f"blkid -p {self.device}; echo rc=$?; ls /sys/block/{name}", check=False)
-        out = probe.stdout.decode()
+        out = self.gate("probe", name) + self.gate("partitions", name)
         if "rc=2" not in out or re.search(rf"\b{name}p?\d+\b", out.split("rc=")[1]):
             raise AnywhereError(f"target still carries signatures or partitions:\n{out}")
         return {"erased": True}
@@ -619,15 +807,16 @@ class Apply:
 
     # -- stage: format ----------------------------------------------------
     def layout_state(self) -> str:
-        inst = self.installer()
-        out = inst.run(f"blkid -o export {self.device}1 {self.device}2", check=False).stdout.decode()
+        out = self.gate("labels", self.target["kernel_name"], check=False)
         if "LABEL=ESP" in out and "LABEL=reproos-root" in out:
             return "formatted"
         return "partial" if out.strip() else "empty"
 
     def stage_format(self) -> dict:
-        self.prove_target()
         path = self.put_disko()
+        if self.mounted():
+            self.broker(f"unmount {path} --target {TARGET_ROOT}")
+        self.prove_target()
         result = self.broker(f"apply {path} " + self.target_flags())
         if self.layout_state() != "formatted":
             raise AnywhereError("format reported success but the layout labels are absent")
@@ -649,13 +838,12 @@ class Apply:
 
     # -- stage: mount -----------------------------------------------------
     def mounted(self) -> bool:
-        out = self.installer().run("cat /proc/self/mounts").stdout.decode()
+        out = self.gate("mounts")
         return f"{self.device}2 {TARGET_ROOT} " in out and f"{self.device}1 {TARGET_ROOT}/boot " in out
 
     def stage_mount(self) -> dict:
         path = self.put_disko()
         if not self.mounted():
-            self.installer().run(f"mkdir -p {TARGET_ROOT}")
             self.broker(f"mount {path} --target {TARGET_ROOT}")
         if not self.mounted():
             raise AnywhereError("target layout is not mounted as planned")
@@ -668,39 +856,36 @@ class Apply:
     def upload_resumable(self, local: Path, remote: str, want: str) -> None:
         inst = self.installer()
         size = local.stat().st_size
-        have = inst.run(f"stat -c %s {remote} 2>/dev/null || echo 0").stdout.decode().strip()
+        have = self.gate("size", remote).strip()
         have = int(have) if have.isdigit() else 0
         if have > size:
-            inst.run(f"rm -f {remote}")
+            self.gate("remove", remote)
             have = 0
         if have < size:
             self.log(f"[materialize] sending {local.name} from byte {have} of {size}"
                      + (f" at most {self.max_rate} B/s" if self.max_rate else ""))
-            inst.stream(local, have, f"cat >> {remote}", max_rate=self.max_rate)
-        got = inst.run(f"sha256sum {remote}").stdout.decode().split()[0]
+            inst.stream(local, have, f"anywhere-gate append {remote}", max_rate=self.max_rate)
+        got = self.gate("sha256", remote).split()[0]
         if got != want:
-            inst.run(f"rm -f {remote}")
+            self.gate("remove", remote)
             raise AnywhereError(f"{remote} has sha256 {got}, expected {want}; discarded, retry resumes from 0")
 
     def stage_materialize(self) -> dict:
-        inst = self.installer()
         if not self.mounted():
             raise AnywhereError("target is not mounted")
         files = self.plan["payload"]["files"]
-        inst.run(f"mkdir -p {TARGET_ROOT}/.anywhere {INSTALLER_WORK}")
+        self.gate("mkdir", f"{TARGET_ROOT}/.anywhere")
         self.upload_resumable(self.artifacts.payload_dir / "rootfs.tar.zst",
                               f"{TARGET_ROOT}/.anywhere/rootfs.tar.zst", files["rootfs.tar.zst"]["sha256"])
         for name in ("vmlinuz", "initrd.img"):
             self.upload_resumable(self.artifacts.payload_dir / name, f"{INSTALLER_WORK}/{name}",
                                   files[name]["sha256"])
-        inst.run(f"cd {TARGET_ROOT} && zstd -dc .anywhere/rootfs.tar.zst | tar -xpf - --numeric-owner "
-                 f"&& rm -rf {TARGET_ROOT}/.anywhere && sync", timeout=1800)
+        self.gate("unpack", timeout=1800)
         return self.verify_materialized()
 
     def verify_materialized(self) -> dict:
-        inst = self.installer()
-        gen = inst.run(f"cat {TARGET_ROOT}/etc/repro/generation", check=False).stdout.decode().strip()
-        os_id = inst.run(f". {TARGET_ROOT}/etc/os-release && echo $ID", check=False).stdout.decode().strip()
+        facts = dict(line.split("=", 1) for line in self.gate("target-facts").splitlines() if "=" in line)
+        gen, os_id = facts.get("generation", ""), facts.get("os_id", "")
         if gen != self.plan["configuration"]["generation"] or os_id != "reproos":
             raise AnywhereError(f"materialized root is not the planned payload (ID={os_id!r}, generation={gen!r})")
         return {"payload": self.plan["payload"]["id"], "generation": gen,
@@ -709,8 +894,7 @@ class Apply:
     def reconcile_materialize(self) -> dict:
         try:
             if self.mounted():
-                left = self.installer().run(f"test -e {TARGET_ROOT}/.anywhere && echo partial || echo clean").stdout.decode()
-                if "clean" in left:
+                if self.gate("exists", f"{TARGET_ROOT}/.anywhere").strip() == "no":
                     return {"state": "done", "detail": "payload unpacked", "evidence": self.verify_materialized()}
         except AnywhereError:
             pass
@@ -719,16 +903,8 @@ class Apply:
 
     # -- stage: inject-secrets --------------------------------------------
     def put_bytes(self, data: bytes, remote: str, mode: str) -> None:
-        inst = self.installer()
-        tmp = self.state.work / "inject.tmp"
-        tmp.write_bytes(data)
-        tmp.chmod(0o600)
-        try:
-            inst.run(f"umask 077 && mkdir -p $(dirname {remote}) && cat > {remote} && chmod {mode} {remote}",
-                     stdin_file=tmp)
-            got = inst.run(f"sha256sum {remote}").stdout.decode().split()[0]
-        finally:
-            tmp.unlink()
+        self.gate("put", remote, mode, stdin=data)
+        got = self.gate("sha256", remote).split()[0]
         if got != hashlib.sha256(data).hexdigest():
             raise AnywhereError(f"{remote}: written bytes do not verify")
 
@@ -764,7 +940,6 @@ class Apply:
 
     # -- stage: bootloader --------------------------------------------------
     def stage_bootloader(self) -> dict:
-        inst = self.installer()
         gen = self.plan["configuration"]["generation"]
         receipt = {"schema_version": 1, "configuration_generation": gen,
                    "install_source": "anywhere", "target_device": self.device}
@@ -784,15 +959,12 @@ class Apply:
         result = self.broker(
             f"install-root --no-rsync --target {TARGET_ROOT} --source {TARGET_ROOT} --device {self.device} "
             f"--disko {disko} --kernel {INSTALLER_WORK}/vmlinuz --initrd {INSTALLER_WORK}/initrd.img "
-            f"--hostname {sh_quote(self.plan['configuration']['hostname'])}")
+            f"--hostname {self.plan['configuration']['hostname']}")
         return {"install_root": result, **self.verify_bootloader()}
 
     def verify_bootloader(self) -> dict:
-        inst = self.installer()
         files = self.plan["payload"]["files"]
-        out = inst.run(f"test -s {TARGET_ROOT}/boot/EFI/BOOT/BOOTX64.EFI && echo efi; "
-                       f"grep -c 'root={self.device}2' {TARGET_ROOT}/boot/grub/grub.cfg; "
-                       f"sha256sum {TARGET_ROOT}/boot/vmlinuz {TARGET_ROOT}/boot/initrd.img", check=False).stdout.decode()
+        out = self.gate("boot-facts", self.target["kernel_name"])
         if "efi" not in out or files["vmlinuz"]["sha256"] not in out or files["initrd.img"]["sha256"] not in out:
             raise AnywhereError(f"boot path incomplete:\n{out}")
         return {"efi_loader": "EFI/BOOT/BOOTX64.EFI", "kernel": files["vmlinuz"]["sha256"],
@@ -805,23 +977,24 @@ class Apply:
     def stage_reboot(self) -> dict:
         inst = self.installer()
         path = self.put_disko()
-        inst.run("sync")
+        self.gate("sync")
         self.broker(f"unmount {path} --target {TARGET_ROOT}")
-        out = inst.run("cat /proc/self/mounts").stdout.decode()
+        out = self.gate("mounts")
         if f" {TARGET_ROOT} " in out:
             raise AnywhereError("target still mounted; refusing to reboot over a dirty filesystem")
+        self.scan("reboot", close=True)
         self.reboot_offset = self.rescue.console_offset()
         if self.plan["takeover"] == "rescue-media":
             # Leave rescue mode through the management plane; the machine
             # then boots from its own disk.
-            inst.run("sync")
+            self.gate("sync")
             self.rescue.restore_disk_boot()
         else:
-            inst.run("nohup sh -c 'sleep 1; sync; reboot -f' >/dev/null 2>&1 &", check=False, timeout=20)
+            self.gate("reboot", check=False, timeout=20)
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             try:
-                if not inst.reachable(timeout=8):
+                if not inst.reachable(timeout=8, probe="anywhere-gate identity"):
                     break
             except HostKeyRejected:
                 break
@@ -833,7 +1006,7 @@ class Apply:
 
     def reconcile_reboot(self) -> dict:
         try:
-            if self.installer().reachable(timeout=8):
+            if self.installer().reachable(timeout=8, probe="anywhere-gate identity"):
                 return {"state": "redo", "detail": "installer still running", "evidence": {}}
         except HostKeyRejected:
             pass
@@ -858,6 +1031,91 @@ class Apply:
 
     def reconcile_final_verification(self) -> dict:
         return {"state": "redo", "detail": "verification is read-only", "evidence": {}}
+
+    # -- recovery after the reboot (M5) ----------------------------------------
+    def recover(self, rematerialize: bool = False) -> dict:
+        """Re-enter a machine whose installed boot failed the proof: boot the
+        takeover environment through the rescue plane under a NEW recovery
+        session, repair the installed root, leave rescue mode and run the
+        installed-only proof again. Storage is never re-created here."""
+        done = self.journal.completed()
+        if "destroy" not in done:
+            raise Refused("nothing was destroyed; `abort` rolls back instead")
+        if "final-verification" in done:
+            raise Refused("the installed proof already passed; there is nothing to recover")
+        if not self.rescue.can_boot_media:
+            raise Refused("the rescue route cannot boot media; recover through the provider console")
+        if "materialize" not in done and not rematerialize:
+            raise Refused("the payload was never fully materialized; recover with --rematerialize")
+        n = 1 + sum(1 for r in self.journal.records
+                    if r["event"] == "start" and r["stage"].startswith("recover") and r["stage"].endswith("-takeover"))
+        rid, rnonce = secrets.token_hex(8), secrets.token_hex(16)
+        self.op_salt = rid
+        if self.journal.open_stage():
+            self.journal.abort(self.journal.open_stage(), f"superseded by recovery {n}")
+
+        stage = f"recover{n}-takeover"
+        self.journal.start(stage, {"intent": "boot the takeover environment through the rescue plane",
+                                   "session": rid})
+        offset = self.rescue.console_offset()
+        initrd = self.session_initrd(rid, rnonce)
+        self.rescue.boot_media(str(self.artifacts.installer_dir / "vmlinuz"), str(initrd),
+                               self.takeover_cmdline(rid, rnonce))
+        m = self.rescue.wait_for_line(offset, READY_RE, timeout=300, fail=FAIL_RE)
+        time.sleep(5)
+        seen = {(a.group(1), a.group(2), a.group(4)) for a in READY_RE.finditer(self.rescue.console_since(offset))}
+        if len(seen) != 1 or m.group(1) != rid or m.group(2) != rnonce:
+            raise Refused("recovery announcement is not this recovery session's")
+        host_key = m.group(4)
+        inst = Session(Endpoint(self.enr["ssh"]["address"], self.enr["ssh"]["port"], "root", host_key,
+                                self.session_key(rid), "root"), self.state.work)
+        deadline = time.monotonic() + 120
+        while not inst.reachable(probe="anywhere-gate identity"):
+            if time.monotonic() > deadline:
+                raise AnywhereError("the recovery environment announced itself but is unreachable")
+            time.sleep(3)
+        self._installer = inst
+        ident = dict(line.split("=", 1) for line in self.gate("identity").splitlines() if "=" in line)
+        if ident.get("session") != rid or ident.get("nonce") != rnonce or ident.get("hostkey") != host_key:
+            raise Refused("recovery environment identity does not match its announcement")
+        self.journal.complete(stage, {"installer_host_key": host_key, "session_id": rid,
+                                      "installer_boot_id": m.group(3),
+                                      "installer_fingerprint": fingerprint(*parse_host_key(host_key))})
+        self.start_detection(offset + self.rescue.console_since(offset).encode("utf-8", "replace")
+                             .find(b"REPROOS_ANYWHERE_INSTALLER:READY"))
+
+        stage = f"recover{n}-repair"
+        self.journal.start(stage, {"intent": "re-materialize (if asked), re-inject and re-install the "
+                                             "boot path on the existing filesystems", "rematerialize": rematerialize})
+        self.prove_target()
+        path = self.put_disko()
+        if not self.mounted():
+            self.broker(f"mount {path} --target {TARGET_ROOT}")
+        repaired = {}
+        if rematerialize:
+            repaired["materialize"] = self.stage_materialize()
+        repaired["inject-secrets"] = self.stage_inject_secrets()
+        repaired["bootloader"] = self.stage_bootloader()
+        self.scan(stage)
+        self.journal.complete(stage, repaired)
+
+        stage = f"recover{n}-reboot"
+        self.journal.start(stage, {"intent": "leave rescue mode and boot the installed system"})
+        self.gate("sync")
+        self.broker(f"unmount {path} --target {TARGET_ROOT}")
+        self.scan(stage, close=True)
+        self.rescue.restore_disk_boot()
+        self.journal.complete(stage, {"method": "management-plane disk boot"})
+        # Plan stages the failure interrupted were carried out by the repair
+        # above; record which recovery completed them.
+        stages = [x["stage"] for x in self.plan["stages"]]
+        completed = set(self.journal.completed())
+        for st in stages[stages.index("mount"):stages.index("final-verification")]:
+            if st not in completed:
+                self.journal.start(st, {"intent": f"completed by recover{n}"})
+                self.journal.complete(st, {"completed_by": f"recover{n}"})
+        self.log(f"[recover{n}] repaired; verifying the installed system")
+        return self.run()
 
     # -- stage: retire-rescue -------------------------------------------------
     def stage_retire_rescue(self) -> dict:

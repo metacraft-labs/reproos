@@ -1,0 +1,19 @@
+# ReproOS Anywhere takeover environment: zone isolation (M2, MS-1 FLOW).
+# The controller initiates every connection; the installer initiates none
+# except DHCP. Everything else in or out is dropped.
+flush ruleset
+table inet anywhere {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif "lo" accept
+    ct state established,related accept
+    tcp dport 22 accept
+    udp sport 67 udp dport 68 accept
+  }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif "lo" accept
+    ct state established,related accept
+    udp sport 68 udp dport 67 accept
+  }
+}

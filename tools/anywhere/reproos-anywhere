@@ -68,14 +68,31 @@ def main() -> int:
     pl.add_argument("--config", required=True)
     pl.add_argument("--takeover", choices=("auto", "kexec", "rescue-media"), default="auto",
                     help="auto prefers kexec; rescue-media keeps the source kernel out of the takeover")
-    for name in ("apply", "resume"):
+    for name in ("apply", "resume", "recover"):
         a = sub.add_parser(name)
         a.add_argument("--name", required=True)
         a.add_argument("--acknowledge", required=True, metavar="PLAN_ID")
         a.add_argument("--max-rate", type=int, default=0, metavar="BYTES_PER_SECOND",
                        help="bound the payload transfer bandwidth (default: unbounded)")
+        a.add_argument("--evidence-sink", metavar="SOCKET",
+                       help="append-only evidence sink (reproos-anywhere-sink serve); every journal "
+                            "record must be acknowledged there before the stage proceeds")
+        a.add_argument("--clear-detection", action="store_true",
+                       help="resume after an investigated detection halt")
+        if name == "resume":
+            a.add_argument("--reformat", action="store_true",
+                           help="after destroy only: format the failed install again and redo every "
+                                "later stage (operator-confirmed; never touches the source, which is gone)")
+        if name == "recover":
+            a.add_argument("--rematerialize", action="store_true",
+                           help="unpack the payload again over the installed root before repairing")
     st = sub.add_parser("status")
     st.add_argument("--name", required=True)
+    ab = sub.add_parser("abort", help="roll back to the source system (only before destroy)")
+    ab.add_argument("--name", required=True)
+    bu = sub.add_parser("bundle", help="write a failure bundle without credentials")
+    bu.add_argument("--name", required=True)
+    bu.add_argument("--output", required=True)
     args = p.parse_args()
     state = Path(args.state)
     try:
@@ -98,12 +115,26 @@ def main() -> int:
             print("THIS PLAN DESTROYS EVERYTHING ON THAT DISK. To apply it, pass:")
             print(f"  --acknowledge {plan_id}")
             return 0
-        if args.cmd in ("apply", "resume"):
+        if args.cmd in ("apply", "resume", "recover"):
             run = c.Apply(state_root=state, name=args.name, acknowledge=args.acknowledge,
-                          artifacts=artifacts(args), resume=args.cmd == "resume",
-                          max_rate=args.max_rate)
-            proof = run.run()
+                          artifacts=artifacts(args), resume=args.cmd != "apply",
+                          max_rate=args.max_rate, evidence_sink=args.evidence_sink,
+                          clear_detection=args.clear_detection,
+                          reformat=getattr(args, "reformat", False))
+            proof = run.recover(args.rematerialize) if args.cmd == "recover" else run.run()
             print(json.dumps(proof, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "abort":
+            from reproos_anywhere import recovery
+            enr = canon.read(state / args.name / "enrollment.json")
+            evidence = recovery.abort(state / args.name,
+                                      lambda: c.source_session(enr, c.State(state, args.name)))
+            print(json.dumps(evidence, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "bundle":
+            from reproos_anywhere import recovery
+            manifest = recovery.bundle(state / args.name, Path(args.output))
+            print(f"bundle {args.output}: {len(manifest['files'])} files, plan {manifest['plan']}")
             return 0
         if args.cmd == "status":
             from reproos_anywhere.journal import Journal
@@ -120,6 +151,11 @@ def main() -> int:
         print(f"REFUSED: {error}", file=sys.stderr)
         return 2
     except (c.AnywhereError, c.RescueError) as error:
+        print(f"FAILED: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:  # noqa: BLE001 -- RecoveryError and friends, without a traceback
+        if type(error).__name__ != "RecoveryError":
+            raise
         print(f"FAILED: {error}", file=sys.stderr)
         return 1
     return 1

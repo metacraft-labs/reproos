@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""ReproOS Anywhere evidence sink (the Evidence zone).
+
+    reproos-anywhere-sink serve --dir DIR --socket PATH [--heartbeat-window SECONDS]
+    reproos-anywhere-sink audit --dir DIR --journal JOURNAL --plan PLAN_ID
+
+`serve` runs the append-only sink (see reproos_anywhere/evidence.py): it
+accepts hash-chained journal records, alerts and heartbeats, and refuses
+-- and records -- every other request. Run it under its own account, on
+its own host, in production.
+
+`audit` is the auditor's check, made with the SINK's copy as the
+authority: every record the controller's local journal holds must be the
+sink's record at the same position, byte for byte, and the local journal
+may not end before the sink's does. It exits 1 on any divergence, which is
+how an edited newest record -- the one a hash chain alone cannot protect --
+is caught.
+"""
+
+import argparse
+import hashlib
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reproos_anywhere.evidence import Sink  # noqa: E402
+
+
+def audit(directory: Path, journal: Path, plan: str) -> int:
+    authority = (directory / "streams" / f"{plan}.jsonl").read_bytes().splitlines()
+    local = journal.read_bytes().splitlines() if journal.exists() else []
+    problems = []
+    for i, (a, b) in enumerate(zip(authority, local), 1):
+        if a != b:
+            problems.append(f"record {i}: local {hashlib.sha256(b).hexdigest()[:16]} != "
+                            f"sink {hashlib.sha256(a).hexdigest()[:16]}")
+    if len(local) < len(authority):
+        problems.append(f"local journal ends at record {len(local)}, the sink holds {len(authority)}")
+    if len(local) > len(authority):
+        problems.append(f"local journal holds {len(local) - len(authority)} record(s) the sink never "
+                        "acknowledged")
+    for p in problems:
+        print(f"DIVERGENT: {p}")
+    print(f"audit {plan}: {len(authority)} sink record(s), {len(local)} local, "
+          f"{'consistent' if not problems else 'DIVERGENT'}")
+    return 1 if problems else 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("serve")
+    s.add_argument("--dir", required=True)
+    s.add_argument("--socket", required=True)
+    s.add_argument("--heartbeat-window", type=float, default=30.0)
+    a = sub.add_parser("audit")
+    a.add_argument("--dir", required=True)
+    a.add_argument("--journal", required=True)
+    a.add_argument("--plan", required=True)
+    args = p.parse_args()
+    if args.cmd == "serve":
+        Sink(Path(args.dir), args.socket, args.heartbeat_window).serve_forever()
+        return 0
+    return audit(Path(args.dir), Path(args.journal), args.plan)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

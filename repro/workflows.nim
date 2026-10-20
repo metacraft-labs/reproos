@@ -30,6 +30,7 @@ import repro_dsl_stdlib/packages/host_system_tools
 # above: `toInterfaceToolUse` only sees packages whose module was imported
 # before `package reproosWorkflows:` fires.
 import ./measured_boot_tools
+import ./cloud_image_tools
 import repro_resources/run_edge
 import ./image_metadata_tools
 
@@ -424,6 +425,19 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3"])
     discard target("test_cloud_metadata_spoofing_fails_identity_checks",
       testCloudMetadataSpoofing)
+
+    # Cloud Images M2: two conversions of one disk into every provider
+    # format are byte-identical, and each format is what its provider asks for.
+    let testCloudImageFormats = shell(
+      command = "python3 tests/test_cloud_image_formats.py",
+      actionId = "reproos.test-cloud-image-formats",
+      extraInputs = @[
+        "tests/test_cloud_image_formats.py",
+        "tools/reproos-cloud-image.py",
+      ],
+      cacheable = false).withToolIdentities(["python3", "qemu-img"])
+    discard target("verify_cloud_image_formats_are_reproducible",
+      testCloudImageFormats)
 
     let testReproosVmWorkflow = shell(
       command = "python3 tests/test_reproos_vm.py",
@@ -1668,6 +1682,7 @@ package reproosWorkflows:
       testInstanceSecretsCacheKey,
       testCloudFirstBootContract,
       testCloudMetadataSpoofing,
+      testCloudImageFormats,
       testReproosVmWorkflow,
       testCacheBackfill,
       testIncusProjection,

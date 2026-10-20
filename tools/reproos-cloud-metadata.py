@@ -369,8 +369,10 @@ OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def http(url: str, headers: dict | None = None, method: str = "GET",
-         marker: tuple[str, str] | None = None, timeout: float = 3.0) -> bytes:
-    request = urllib.request.Request(url, headers=headers or {}, method=method)
+         marker: tuple[str, str] | None = None, timeout: float = 3.0,
+         data: bytes | None = None) -> bytes:
+    request = urllib.request.Request(url, headers=headers or {}, method=method,
+                                     data=data)
     with OPENER.open(request, timeout=timeout) as response:
         if marker and response.headers.get(marker[0]) != marker[1]:
             raise MetadataError("provider-marker-missing", f"{url}: {marker}")
@@ -473,6 +475,68 @@ def detect_order(hint: str) -> list[str]:
     return preferred + rest
 
 
+WIRESERVER = "http://168.63.129.16"
+WIRESERVER_VERSION = "2012-11-30"
+
+
+def azure_goal_state(xml_text: str) -> tuple[str, str, str]:
+    """(incarnation, container id, role instance id) from a goal state."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise MetadataError("malformed-document", f"goal state: {exc}") from exc
+    incarnation = root.findtext("Incarnation")
+    container = root.find("Container")
+    container_id = container.findtext("ContainerId") if container is not None else None
+    instance = root.find("Container/RoleInstanceList/RoleInstance/InstanceId")
+    if not incarnation or not container_id or instance is None or not instance.text:
+        raise MetadataError("malformed-document", "goal state lacks incarnation, "
+                            "container id or role instance id")
+    return incarnation.strip(), container_id.strip(), instance.text.strip()
+
+
+def azure_health_report(incarnation: str, container_id: str, instance_id: str) -> bytes:
+    from xml.sax.saxutils import escape
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<Health xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n'
+        f"  <GoalStateIncarnation>{escape(incarnation)}</GoalStateIncarnation>\n"
+        "  <Container>\n"
+        f"    <ContainerId>{escape(container_id)}</ContainerId>\n"
+        "    <RoleInstanceList>\n"
+        "      <Role>\n"
+        f"        <InstanceId>{escape(instance_id)}</InstanceId>\n"
+        "        <Health>\n"
+        "          <State>Ready</State>\n"
+        "        </Health>\n"
+        "      </Role>\n"
+        "    </RoleInstanceList>\n"
+        "  </Container>\n"
+        "</Health>\n").encode()
+
+
+def azure_report_ready(state: Path, base: str = WIRESERVER) -> str | None:
+    """Tell Azure the instance provisioned itself (no agent does it for us).
+
+    Without this report Azure keeps the VM in "provisioning" and fails the
+    deployment (matrix section 3.3). Only an instance enrolled from Azure
+    metadata reports; everything else returns None untouched.
+    """
+    receipt = state / "cloud-instance.json"
+    if not receipt.is_file() or json.loads(receipt.read_text()).get("provider") != "azure":
+        return None
+    headers = {"x-ms-version": WIRESERVER_VERSION}
+    goal = http(f"{base}/machine/?comp=goalstate", headers, timeout=10).decode()
+    incarnation, container_id, instance_id = azure_goal_state(goal)
+    http(f"{base}/machine?comp=health",
+         dict(headers, **{"Content-Type": "text/xml;charset=utf-8"}),
+         method="POST", timeout=10,
+         data=azure_health_report(incarnation, container_id, instance_id))
+    return instance_id
+
+
 MEDIA_SOURCES = (("cidata", "nocloud"), ("CIDATA", "nocloud"),
                  ("config-2", "configdrive"), ("CONFIG-2", "configdrive"))
 FAIL_OVER = {"provider-marker-missing"}
@@ -550,6 +614,7 @@ def main(argv: list[str]) -> int:
     f.add_argument("--root", type=Path, default=Path("/"))
     f.add_argument("--attempts", type=int, default=30)
     f.add_argument("--delay", type=float, default=2.0)
+    sub.add_parser("report-ready", help="Azure: report Ready to the WireServer")
     args = parser.parse_args(argv)
     try:
         if args.command == "normalize":
@@ -566,6 +631,10 @@ def main(argv: list[str]) -> int:
             else:
                 COLLECTORS[args.provider](args.raw)
             print(f"REPROOS_CLOUD:COLLECTED:provider={args.provider}")
+        elif args.command == "report-ready":
+            reported = azure_report_ready(Path("/var/lib/reproos"))
+            print("REPROOS_CLOUD:" + (f"READY:azure:{reported}" if reported
+                                      else "SKIP:not-an-azure-instance"))
         elif args.command == "first-boot":
             receipt = first_boot(args.root, args.attempts, args.delay)
             if receipt:

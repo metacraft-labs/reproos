@@ -2236,6 +2236,27 @@ EOF
 ln -sfn /etc/systemd/system/reproos-cloud-enrollment.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-cloud-enrollment.service"
 
+# Azure keeps an agentless VM "provisioning" until the guest reports Ready to
+# the WireServer; the unit reports only on an instance enrolled from Azure
+# metadata and exits 0 everywhere else.
+cat > "$STAGE_DIR/etc/systemd/system/reproos-azure-ready.service" <<'EOF'
+[Unit]
+Description=Report Ready to the Azure WireServer
+After=reproos-first-boot-enroll.service sshd.service reproos-network.service
+ConditionPathExists=/var/lib/reproos/cloud-instance.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-cloud-metadata report-ready
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/reproos-azure-ready.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-azure-ready.service"
+
 cat > "$STAGE_DIR/etc/systemd/system/reproos-first-boot-enroll.service" <<'EOF'
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys

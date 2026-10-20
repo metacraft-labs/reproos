@@ -146,6 +146,41 @@ class CloudFirstBootContract(unittest.TestCase):
             self.assertEqual(identity["machine_id"],
                              MODULE.machine_id_for("hetzner", "41234567"))
 
+    def test_azure_reports_ready_to_the_wireserver(self) -> None:
+        goal = (FIXTURES / "azure-wireserver/goalstate.xml").read_bytes()
+        _WireServer.goal = goal
+        _WireServer.posted = []
+        server = http.server.HTTPServer(("127.0.0.1", 0), _WireServer)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw) / "state"
+            # Not an Azure instance: nothing is sent.
+            MODULE.normalize("gce", FIXTURES / "gce", Path(raw) / "e1", state)
+            self.assertIsNone(MODULE.azure_report_ready(state, base))
+            self.assertEqual(_WireServer.posted, [])
+            # An Azure instance reports Ready for the goal state's container,
+            # role instance and incarnation, with the protocol version header.
+            state = Path(raw) / "azure-state"
+            MODULE.normalize("azure", FIXTURES / "azure", Path(raw) / "e2", state)
+            instance = MODULE.azure_report_ready(state, base)
+        self.assertEqual(instance,
+                         "02aab8a4-74ef-476e-8182-f6d2ba4166a6._reproos-cloud-azure")
+        self.assertEqual(len(_WireServer.posted), 1)
+        path, headers, body = _WireServer.posted[0]
+        self.assertEqual(path, "/machine?comp=health")
+        self.assertEqual(headers.get("x-ms-version"), "2012-11-30")
+        report = body.decode()
+        self.assertIn("<GoalStateIncarnation>1</GoalStateIncarnation>", report)
+        self.assertIn("<ContainerId>6f4c3f1e-7d1c-4f3a-9a1b-2c3d4e5f6a7b</ContainerId>",
+                      report)
+        self.assertIn("<State>Ready</State>", report)
+        # A goal state without a role instance is refused, not half-reported.
+        with self.assertRaises(MODULE.MetadataError):
+            MODULE.azure_goal_state("<GoalState><Incarnation>1</Incarnation></GoalState>")
+
     def test_unsupported_keys_are_refused_by_name(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             receipt = MODULE.normalize("gce", FIXTURES / "gce",
@@ -260,6 +295,27 @@ class _Plain(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
 
+
+
+class _WireServer(http.server.BaseHTTPRequestHandler):
+    goal = b""
+    posted: list = []
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.send_response(200 if self.path == "/machine/?comp=goalstate" else 404)
+        self.end_headers()
+        self.wfile.write(self.goal)
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        type(self).posted.append((self.path,
+                                  {k.lower(): v for k, v in self.headers.items()},
+                                  self.rfile.read(length)))
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args) -> None:
+        pass
 
 if __name__ == "__main__":
     unittest.main()

@@ -1761,6 +1761,13 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(anywhereVmTools)
     discard target("e2e_reproos_anywhere_failure_recovery_matrix", testAnywhereRecovery)
 
+    let testAnywhereRefusals = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh refusals",
+      actionId = "reproos.e2e-anywhere-preflight-refusals",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_preflight_refusals", testAnywhereRefusals)
+
     # Operator commands. Each forwards its arguments; nothing here chooses
     # a machine or a plan on the operator's behalf.
     let anywherePreflightTask = shell(
@@ -1854,6 +1861,7 @@ package reproosWorkflows:
       testAnywhereDetection,
       testAnywhereConfinement,
       testAnywhereRecovery,
+      testAnywhereRefusals,
     ])
 
     discard collect("incus-acceptance", actions = @[

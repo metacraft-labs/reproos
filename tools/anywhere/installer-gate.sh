@@ -41,20 +41,28 @@ name() { case "$1" in ''|*[!a-z0-9]*) refuse "$verb: not a block device name: $1
 octal() { case "$1" in 0[0-7][0-7][0-7]) ;; *) refuse "$verb: bad mode $1" ;; esac; }
 
 # A path the controller may write or remove: under the work area or the
-# mounted target, never containing "..".
+# mounted target, never containing "..". The check is made on the path as
+# given AND on the path with every symlink resolved: the unpacked target
+# root carries absolute symlinks, which resolve against the INSTALLER's
+# root, so a string check alone would let /mnt/<link>/x land outside.
+resolved() { realpath -m -- "$1" 2>/dev/null || echo /unresolvable; }
 writable() {
-  case "$1" in
-    *..*) refuse "$verb: path traversal: $1" ;;
-    /run/anywhere/work/*|/run/anywhere/ops/*|/mnt/*) ;;
-    *) refuse "$verb: path outside the writable area: $1" ;;
-  esac
+  for p in "$1" "$(resolved "$1")"; do
+    case "$p" in
+      *..*) refuse "$verb: path traversal: $1" ;;
+      /run/anywhere/work/*|/run/anywhere/ops/*|/mnt/*) ;;
+      *) refuse "$verb: path outside the writable area: $1 (resolves to $p)" ;;
+    esac
+  done
 }
 readable() {
-  case "$1" in
-    *..*) refuse "$verb: path traversal: $1" ;;
-    /run/anywhere/*|/mnt/*|/proc/cmdline|/proc/self/mounts) ;;
-    *) refuse "$verb: path outside the readable area: $1" ;;
-  esac
+  for p in "$1" "$(resolved "$1")"; do
+    case "$p" in
+      *..*) refuse "$verb: path traversal: $1" ;;
+      /run/anywhere/*|/mnt/*|/proc/cmdline|/proc/self/mounts) ;;
+      *) refuse "$verb: path outside the readable area: $1 (resolves to $p)" ;;
+    esac
+  done
 }
 argc() { [ "$#" -eq "$want" ] || refuse "$verb: wants $want argument(s)"; }
 

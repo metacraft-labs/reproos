@@ -8,13 +8,14 @@
 #   tests/anywhere/run-vm-gates.sh detection  test_reproos_anywhere_detection_and_append_only_capture
 #   tests/anywhere/run-vm-gates.sh confinement test_reproos_anywhere_installer_confinement_and_isolation
 #   tests/anywhere/run-vm-gates.sh recovery   e2e_reproos_anywhere_failure_recovery_matrix
+#   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS sources
 #
 # Every VM is an unprivileged QEMU/KVM guest under build/anywhere/run that
 # the gate destroys; images are digest-pinned (tests/anywhere/distros.json)
 # and cached under build/anywhere/images. A missing tool or /dev/kvm is a
 # failure with a remedy, never a skip.
 set -euo pipefail
-gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement|recovery [distro...]}
+gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement|recovery|refusals [distro...]}
 shift
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -35,5 +36,6 @@ case "$gate" in
   detection) exec python3 "$here/test_detection.py" --artifacts "$art" ;;
   confinement) exec python3 "$here/test_confinement.py" --artifacts "$art" ;;
   recovery) exec python3 "$here/test_recovery.py" --artifacts "$art" ;;
+  refusals) exec python3 "$here/test_preflight_refusals.py" --artifacts "$art" ;;
   *) echo "run-vm-gates: unknown gate $gate" >&2; exit 64 ;;
 esac

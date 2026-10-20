@@ -466,6 +466,25 @@ class InstallerGate(unittest.TestCase):
                 self.assertEqual(p.returncode, 126, (request, p.stdout, p.stderr))
                 self.assertIn("refused", p.stderr)
 
+    def test_symlinks_cannot_lead_outside(self):
+        # The gate resolves symlinks: a link whose string is inside an allowed
+        # area but whose target is not is refused. Exercised with a link under
+        # a temporary directory standing in for the allowed prefix.
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / "mnt").mkdir()
+        (d / "mnt" / "escape").symlink_to("/etc")
+        gate = (self.GATE.read_text().replace("/mnt/*", f"{d}/mnt/*"))
+        g = d / "gate.sh"
+        g.write_text(gate)
+        env = {"PATH": os.environ.get("PATH", "")}
+        for request in (f"anywhere-gate put {d}/mnt/escape/x 0644", f"anywhere-gate read {d}/mnt/escape/shadow"):
+            p = subprocess.run(["sh", str(g)], env={**env, "SSH_ORIGINAL_COMMAND": request},
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 126, (request, p.stderr))
+            self.assertIn("resolves to /etc", p.stderr)
+        self.assertFalse(Path("/etc/x").exists())
+
     def test_allowed_shapes_pass_validation(self):
         # Reaching the action (which then fails here: no installer) proves
         # the request passed validation; refusal would be exit 126.

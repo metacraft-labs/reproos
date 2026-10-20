@@ -104,7 +104,13 @@ def short_socket_path() -> str:
     raise SystemExit("no directory short enough for a QEMU monitor socket (needs < 108 bytes)")
 
 
-def create(distro: str, run: Path, port: int | None) -> dict:
+def create(distro: str, run: Path, port: int | None, *, firmware: str = "uefi",
+           extra_disks: tuple[int, ...] = (), runcmd: tuple[str, ...] = (),
+           network_config: str | None = None, target: str = "boot", mac: str | None = None) -> dict:
+    """``firmware`` uefi|bios; ``extra_disks`` sizes (GiB) attached behind
+    the target before first boot; ``runcmd`` extra first-boot commands;
+    ``network_config`` a cloud-init v2 network document; ``target`` "boot"
+    or "extra-0" -- which disk the enrollment names as the target."""
     spec = DISTROS[distro]
     base = fetch_image(distro)
     run.mkdir(parents=True, exist_ok=False)
@@ -120,12 +126,15 @@ def create(distro: str, run: Path, port: int | None) -> dict:
     machine = {
         "distro": distro, "uuid": str(uuid.uuid4()),
         "serial": "AW-" + uuid.uuid4().hex[:12].upper(),
-        "mac": "52:54:00:%02x:%02x:%02x" % tuple(os.urandom(3)),
+        "mac": mac or "52:54:00:%02x:%02x:%02x" % tuple(os.urandom(3)),
         "port": port or free_port(), "disk_gib": DISK_GIB,
         # A UNIX socket path is limited to 107 bytes, which a run directory
         # deep in a worktree exceeds; the monitor lives in a short one.
         "monitor": short_socket_path(),
+        "firmware": firmware,
+        "target": target,
     }
+    extra_runcmd = "".join(f"  - [sh, -c, {json.dumps(cmd)}]\n" for cmd in runcmd)
     indent = "\n".join("      " + line for line in host_priv.splitlines())
     indent2 = "\n".join("      " + line for line in host_priv.splitlines())
     user_data = f"""#cloud-config
@@ -153,18 +162,23 @@ write_files:
     owner: root:root
     content: "{host_pub}\n"
 runcmd:
-  - [sh, -c, "sed -i 's/^root:![^:]*:/root:*:/' /etc/shadow; sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config; (systemctl restart ssh || systemctl restart sshd || rc-service sshd restart) 2>/dev/null; true"]
+{extra_runcmd}  - [sh, -c, "sed -i 's/^root:![^:]*:/root:*:/' /etc/shadow; sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config; (systemctl restart ssh || systemctl restart sshd || rc-service sshd restart) 2>/dev/null; true"]
 """
-    iso_seed(run, {"user-data": user_data,
-                    "meta-data": f"instance-id: {machine['uuid']}\nlocal-hostname: src-{distro}\n"})
+    seed = {"user-data": user_data,
+            "meta-data": f"instance-id: {machine['uuid']}\nlocal-hostname: src-{distro}\n"}
+    if network_config:
+        seed["network-config"] = network_config
+    iso_seed(run, seed)
     subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", spec.get("format", "qcow2"),
                     "-b", str(base), str(run / "disk.qcow2"), f"{DISK_GIB}G"], check=True)
     vars_fd = run / "OVMF_VARS.fd"
     shutil.copyfile(FIRMWARE / "edk2-i386-vars.fd", vars_fd)
     vars_fd.chmod(0o600)
     (run / "machine.json").write_text(json.dumps(machine, indent=2))
+    for gib in extra_disks:
+        add_disk(run, "after", gib)
     start(run, readonly=False)
-    wait_ssh(run, timeout=spec.get("first_boot_timeout", 300))
+    wait_ssh(run, timeout=spec.get("first_boot_timeout", 300) + 120 * bool(runcmd))
     write_enrollment(run, readonly=False)
     return machine
 
@@ -186,8 +200,7 @@ def qemu_argv(run: Path, readonly: bool) -> list[str]:
         "qemu-system-x86_64", "-name", f"anywhere-{m['distro']}",
         "-machine", "q35,accel=kvm", "-cpu", "host", "-smp", str(CPUS), "-m", str(MEMORY_MIB),
         "-uuid", m["uuid"],
-        "-drive", f"if=pflash,format=raw,readonly=on,file={FIRMWARE / 'edk2-x86_64-code.fd'}",
-        "-drive", f"if=pflash,format=raw,file={run / 'OVMF_VARS.fd'}",
+        *firmware_args(run, m),
         # Explicit PCI slots: the kernel names virtio disks in slot order,
         # so a disk added "before" the target really renames the target.
         "-drive", f"file={run / m.get('disk_file', 'disk.qcow2')},if=none,id=d0,format=qcow2{ro}",
@@ -241,6 +254,13 @@ def normal_boot(run: Path) -> None:
     (run / "machine.json").write_text(json.dumps(m, indent=2))
     stop(run, graceful_timeout=5)
     start(run, readonly=False)
+
+
+def firmware_args(run: Path, m: dict) -> list[str]:
+    if m.get("firmware", "uefi") == "bios":
+        return []                     # QEMU's default SeaBIOS
+    return ["-drive", f"if=pflash,format=raw,readonly=on,file={FIRMWARE / 'edk2-x86_64-code.fd'}",
+            "-drive", f"if=pflash,format=raw,file={run / 'OVMF_VARS.fd'}"]
 
 
 def extra_disk_args(run: Path, m: dict, ro: str) -> list[str]:
@@ -374,8 +394,11 @@ def write_enrollment(run: Path, readonly: bool) -> Path:
     host_pub = " ".join((run / "keys" / "host_ed25519.pub").read_text().split()[:2])
     expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     sectors = m["disk_gib"] * 1024 * 1024 * 1024 // 512
-    extra = "".join(f'\n[[disks]]\nserial = "{d["serial"]}"\nsize_sectors = {d["gib"] * 2097152}\nrole = "keep"\n'
-                    for d in m.get("extra_disks", []))
+    on_extra = m.get("target", "boot") != "boot"
+    target_extra = int(m["target"].split("-")[1]) if on_extra else -1
+    extra = "".join(f'\n[[disks]]\nserial = "{d["serial"]}"\nsize_sectors = {d["gib"] * 2097152}\n'
+                    f'role = "{"target" if i == target_extra else "keep"}"\n'
+                    for i, d in enumerate(m.get("extra_disks", [])))
     text = f'''schema = "reproos-anywhere-enrollment/1"
 name = "{m['distro']}-{m['serial'][-6:].lower()}"
 expires = "{expires}"
@@ -394,7 +417,7 @@ product_uuid = "{m['uuid']}"
 [[disks]]
 serial = "{m['serial']}"
 size_sectors = {sectors}
-role = "target"
+role = "{'keep' if on_extra else 'target'}"
 
 {extra}
 [network]

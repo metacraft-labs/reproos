@@ -1,0 +1,74 @@
+#!/bin/sh
+# Grow the root partition and its ext4 filesystem into the disk a cloud
+# provider attached, which is routinely larger than the image (Cloud Images
+# M1, disk growth). Idempotent: a root that already spans the disk is left
+# alone. Conservative by construction:
+#
+#   * runs only on an instance enrolled from cloud metadata
+#     (/var/lib/reproos/cloud-instance.json), never on a workstation install;
+#   * grows only when root is the LAST partition, into free space after it,
+#     so no other partition and no data outside root is ever touched;
+#   * keeps the partition's type GUID, unique GUID and name, so the
+#     installed fstab / kernel command line still find it.
+#
+# The outcome is recorded in /var/lib/reproos/disk-growth.json.
+set -eu
+
+root=${REPROOS_ROOT:-}
+state="$root/var/lib/reproos"
+receipt="$state/disk-growth.json"
+
+record() {
+  printf '{"result": "%s", "device": "%s", "partition": "%s", "start": %s, "old_end": %s, "new_end": %s}\n' \
+    "$1" "${disk:-}" "${partnum:-}" "${start:-0}" "${old_end:-0}" "${new_end:-0}" \
+    > "$receipt.new"
+  mv "$receipt.new" "$receipt"
+  echo "REPROOS_GROW_ROOT:$1"
+}
+
+[ -f "$state/cloud-instance.json" ] || { echo "REPROOS_GROW_ROOT:SKIP:not-a-cloud-instance"; exit 0; }
+
+source_dev=$(findmnt -n -o SOURCE /)
+name=$(basename "$source_dev")
+sys="/sys/class/block/$name"
+if [ ! -f "$sys/partition" ]; then
+  record "skip-root-not-a-partition"
+  exit 0
+fi
+partnum=$(cat "$sys/partition")
+parent=$(basename "$(readlink -f "$sys/..")")
+disk="/dev/$parent"
+start=$(cat "$sys/start")
+size=$(cat "$sys/size")
+old_end=$((start + size - 1))
+
+# Root must be the last partition by start sector.
+for other in /sys/class/block/"$parent"/"$parent"*; do
+  [ -f "$other/start" ] || continue
+  if [ "$(cat "$other/start")" -gt "$start" ]; then
+    record "skip-root-not-last"
+    exit 0
+  fi
+done
+
+# Move the backup GPT to the new end of the disk, then read the last usable
+# sector. A sub-MiB difference is alignment slack, not growth.
+sgdisk -e "$disk" >/dev/null
+last=$(sgdisk -E "$disk" | tail -n 1)
+new_end=$(( (last + 1) / 2048 * 2048 - 1 ))
+if [ "$new_end" -le $((old_end + 2048)) ]; then
+  record "already-spans"
+  exit 0
+fi
+
+info=$(sgdisk -i "$partnum" "$disk")
+type_guid=$(printf '%s\n' "$info" | awk -F': ' '/^Partition GUID code/ {split($2, a, " "); print a[1]}')
+unique_guid=$(printf '%s\n' "$info" | awk -F': ' '/^Partition unique GUID/ {print $2}')
+label=$(printf '%s\n' "$info" | awk -F": '" '/^Partition name/ {sub(/'"'"'$/, "", $2); print $2}')
+[ -n "$type_guid" ] && [ -n "$unique_guid" ] || { record "fail-unreadable-partition-entry"; exit 1; }
+
+sgdisk -d "$partnum" -n "$partnum:$start:$new_end" -t "$partnum:$type_guid" \
+  -u "$partnum:$unique_guid" -c "$partnum:$label" "$disk" >/dev/null
+resizepart "$disk" "$partnum" $((new_end - start + 1))
+resize2fs "$source_dev" >/dev/null
+record "grown"

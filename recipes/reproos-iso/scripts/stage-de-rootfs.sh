@@ -2236,6 +2236,29 @@ EOF
 ln -sfn /etc/systemd/system/reproos-cloud-enrollment.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-cloud-enrollment.service"
 
+# A cloud provider usually attaches a disk larger than the image. Grow root
+# into it on cloud-enrolled instances only (see the script for its limits).
+install -m 0755 "$REPO_ROOT/recipes/reproos-image/scripts/reproos-grow-root" \
+  "$STAGE_DIR/usr/local/sbin/reproos-grow-root"
+cat > "$STAGE_DIR/etc/systemd/system/reproos-grow-root.service" <<'EOF'
+[Unit]
+Description=Grow the root filesystem into a larger cloud disk
+After=local-fs.target reproos-cloud-enrollment.service
+Before=reproos-first-boot-enroll.service reproos-health-check.service
+ConditionPathExists=/var/lib/reproos/cloud-instance.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-grow-root
+RemainAfterExit=yes
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/reproos-grow-root.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-grow-root.service"
+
 # Azure keeps an agentless VM "provisioning" until the guest reports Ready to
 # the WireServer; the unit reports only on an instance enrolled from Azure
 # metadata and exits 0 everywhere else.

@@ -240,6 +240,7 @@ package reproosIso:
         "recipes/reproos-iso/scripts/build-base-rootfs.sh",
         "recipes/reproos-image/scripts/reproos-first-boot-enroll",
         "tools/reproos-cloud-metadata.py",
+        "recipes/reproos-image/scripts/reproos-grow-root",
         "recipes/reproos-image/scripts/reproos-installed-boot-evidence",
         "recipes/reproos-image/scripts/reproos-health-check",
         "recipes/reproos-image/scripts/reproos-sway.conf",

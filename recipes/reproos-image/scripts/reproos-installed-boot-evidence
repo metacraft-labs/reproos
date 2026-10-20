@@ -9,6 +9,11 @@ import re
 import sys
 import tomllib
 
+# Installers that write an installation receipt: the unattended ISO
+# installer, and ReproOS Anywhere converting an existing Linux machine.
+# A machine assembled directly as an image has no receipt and no install.
+INSTALL_SOURCES = ("unattended-installer", "anywhere")
+
 
 def unique_object(pairs):
     result = {}
@@ -27,7 +32,7 @@ def validate(state: Path, config: Path) -> str:
     } or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
         raise ValueError("unsupported installation receipt schema")
     source = (state / "install-source").read_text(encoding="ascii").strip()
-    if source != "unattended-installer" or receipt["install_source"] != source:
+    if source not in INSTALL_SOURCES or receipt["install_source"] != source:
         raise ValueError("installation source does not match the receipt")
     generation = (config / "generation").read_text(encoding="ascii").strip()
     if not re.fullmatch(r"[0-9a-f]{64}", generation):
@@ -42,7 +47,7 @@ def validate(state: Path, config: Path) -> str:
             len(target) <= len("/dev/") or ".." in target.split("/") or
             receipt["target_device"] != target):
         raise ValueError("installation target does not match the configuration")
-    return generation
+    return source, generation
 
 
 def main() -> int:
@@ -51,11 +56,11 @@ def main() -> int:
     parser.add_argument("--config-dir", type=Path, default=Path("/etc/repro"))
     args = parser.parse_args()
     try:
-        generation = validate(args.state_dir, args.config_dir)
+        source, generation = validate(args.state_dir, args.config_dir)
     except (OSError, ValueError) as error:
         print(f"REPROOS_INSTALLED_BOOT:FAIL: {error}", file=sys.stderr)
         return 1
-    print("=== REPROOS-INSTALLED-BOOT source=unattended-installer "
+    print(f"=== REPROOS-INSTALLED-BOOT source={source} "
           f"generation={generation} ===")
     return 0
 

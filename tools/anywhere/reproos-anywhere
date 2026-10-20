@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""ReproOS Anywhere: convert an existing Linux machine into ReproOS over SSH.
+
+    reproos-anywhere preflight --enrollment E --config C [--inspection]
+    reproos-anywhere plan      --name N --config C
+    reproos-anywhere apply     --name N --acknowledge PLAN_ID
+    reproos-anywhere resume    --name N --acknowledge PLAN_ID
+    reproos-anywhere status    --name N
+    reproos-anywhere verify    --name N
+
+Common: --state DIR (controller state, default ./anywhere-state),
+--payload DIR, --installer DIR, --kexec FILE, --layout-tool FILE.
+
+`preflight` never writes the machine. `plan` writes only controller
+state and prints the plan identity; nothing destructive happens until
+`apply` is given exactly that identity. Exit status: 0 success,
+2 refused (nothing changed), 3 blocked report, 1 failure.
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reproos_anywhere import canon  # noqa: E402
+from reproos_anywhere import controller as c  # noqa: E402
+
+
+def artifacts(args) -> c.Artifacts:
+    return c.Artifacts(Path(args.payload), Path(args.installer), Path(args.kexec))
+
+
+def print_report(report: dict) -> None:
+    for check in report["checks"]:
+        mark = {"pass": "ok  ", "fail": "FAIL", "requires": "REQ "}[check["verdict"]]
+        print(f"  {mark} {check['id']}: {check['detail']}")
+    print(f"verdict: {'BLOCKED' if report['blocked'] else 'compatible'}"
+          f"{' (inspection only)' if report.get('inspection_only') else ''}; "
+          f"conversion_qualified={str(report['conversion_qualified']).lower()}")
+    print(f"report: {report.get('id', '')}")
+
+
+def main() -> int:
+    def common(default) -> argparse.ArgumentParser:
+        # Accepted before or after the subcommand (`repro run anywhere-*`
+        # puts the subcommand first).
+        c = argparse.ArgumentParser(add_help=False)
+        c.add_argument("--state", default="anywhere-state" if default is None else default)
+        for opt in ("--payload", "--installer", "--kexec", "--layout-tool"):
+            c.add_argument(opt, default=default)
+        c.add_argument("--json", action="store_true", default=False if default is None else default,
+                       help="print the result record as JSON")
+        return c
+    p = argparse.ArgumentParser(prog="reproos-anywhere", description=__doc__, parents=[common(None)],
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    later = common(argparse.SUPPRESS)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    _add = sub.add_parser
+    sub.add_parser = lambda name, **kw: _add(name, parents=[later], **kw)
+    pf = sub.add_parser("preflight")
+    pf.add_argument("--enrollment", required=True)
+    pf.add_argument("--config", required=True)
+    pf.add_argument("--inspection", action="store_true")
+    pl = sub.add_parser("plan")
+    pl.add_argument("--name", required=True)
+    pl.add_argument("--config", required=True)
+    pl.add_argument("--takeover", choices=("auto", "kexec", "rescue-media"), default="auto",
+                    help="auto prefers kexec; rescue-media keeps the source kernel out of the takeover")
+    for name in ("apply", "resume"):
+        a = sub.add_parser(name)
+        a.add_argument("--name", required=True)
+        a.add_argument("--acknowledge", required=True, metavar="PLAN_ID")
+        a.add_argument("--max-rate", type=int, default=0, metavar="BYTES_PER_SECOND",
+                       help="bound the payload transfer bandwidth (default: unbounded)")
+    st = sub.add_parser("status")
+    st.add_argument("--name", required=True)
+    args = p.parse_args()
+    state = Path(args.state)
+    try:
+        if args.cmd == "preflight":
+            report = c.preflight(enrollment_path=Path(args.enrollment), config_path=Path(args.config),
+                                 artifacts=artifacts(args), layout_tool=Path(args.layout_tool),
+                                 state_root=state, inspection=args.inspection)
+            print(json.dumps(report, indent=2, sort_keys=True)) if args.json else print_report(report)
+            return 3 if report["blocked"] else 0
+        if args.cmd == "plan":
+            plan_id = c.make_plan(state_root=state, name=args.name, config_path=Path(args.config),
+                                  artifacts=artifacts(args), takeover=args.takeover)
+            plan = canon.read(state / args.name / "plan" / "plan.json")
+            print(f"plan for {args.name}: target {plan['target']['serial']} "
+                  f"({plan['storage']['device']}, {plan['target']['size_sectors']} sectors) "
+                  f"layout {plan['storage']['layout']}; takeover {plan['takeover']}; payload {plan['payload']['kind']} "
+                  f"qualified={str(plan['conversion_qualified']).lower()}")
+            from reproos_anywhere import plan as plan_mod
+            print(f"content identity {plan_mod.content_identity(plan)}")
+            print("THIS PLAN DESTROYS EVERYTHING ON THAT DISK. To apply it, pass:")
+            print(f"  --acknowledge {plan_id}")
+            return 0
+        if args.cmd in ("apply", "resume"):
+            run = c.Apply(state_root=state, name=args.name, acknowledge=args.acknowledge,
+                          artifacts=artifacts(args), resume=args.cmd == "resume",
+                          max_rate=args.max_rate)
+            proof = run.run()
+            print(json.dumps(proof, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "status":
+            from reproos_anywhere.journal import Journal
+            plan = canon.read(state / args.name / "plan" / "plan.json")
+            j = Journal(state / args.name / "journal.jsonl", canon.digest(plan))
+            print(json.dumps({"plan": canon.digest(plan), "completed": j.completed(),
+                              "open": j.open_stage(), "records": len(j.records)}, indent=2))
+            return 0
+    except FileNotFoundError as error:
+        print(f"REFUSED: {error.filename} does not exist (wrong --state or --name, or no plan yet)",
+              file=sys.stderr)
+        return 2
+    except c.Refused as error:
+        print(f"REFUSED: {error}", file=sys.stderr)
+        return 2
+    except (c.AnywhereError, c.RescueError) as error:
+        print(f"FAILED: {error}", file=sys.stderr)
+        return 1
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

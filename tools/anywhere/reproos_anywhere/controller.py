@@ -1094,6 +1094,10 @@ class Apply:
         repaired = {}
         if rematerialize:
             repaired["materialize"] = self.stage_materialize()
+            # The payload's /etc replaced the accounts first-boot enrollment
+            # created: the root is fresh again, so enrollment must run again.
+            for state_file in ("enrollment.complete", "identity.json", "ssh-host-key-fingerprint"):
+                self.gate("remove", f"{TARGET_ROOT}/var/lib/reproos/{state_file}")
         repaired["inject-secrets"] = self.stage_inject_secrets()
         repaired["bootloader"] = self.stage_bootloader()
         self.scan(stage)

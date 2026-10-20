@@ -214,6 +214,10 @@ package reproosWorkflows:
     # it is needed when, and only when, the guest kernel's TPM drivers
     # are compressed modules rather than built in.
     "qemu-system-x86_64"
+    # ReproOS Anywhere's VM gates also create and inspect qcow2 overlays
+    # and fetch digest-pinned distribution images.
+    "qemu-img"
+    "curl"
     "swtpm"
     "mkfs.vfat"
     "mmd"
@@ -1669,6 +1673,111 @@ package reproosWorkflows:
       ])
     discard target("test-optin-layers", testOptInLayers)
 
+    # ---------------------------------------------------------------
+    # ReproOS Anywhere: convert an existing Linux machine over SSH.
+    # docs/anywhere.md; plan and evidence in reprobuild-pm
+    # milestones/ReproOS-Anywhere.milestones.org.
+    # ---------------------------------------------------------------
+    let anywhereSources = @[
+      "tools/anywhere/reproos-anywhere",
+      "tools/anywhere/probe.sh",
+      "tools/anywhere/reproos_anywhere",
+      "tools/reproos-machine-config.py",
+    ]
+    let testAnywhereUnit = shell(
+      command = "python3 tests/anywhere/test_anywhere_unit.py",
+      actionId = "reproos.test-anywhere-unit",
+      extraInputs = anywhereSources & @[
+        "tests/anywhere/test_anywhere_unit.py",
+        "tests/anywhere/fixtures",
+      ],
+      cacheable = false).withToolIdentities(["python3", "ssh-keygen", "cpio"])
+    discard target("test-anywhere-unit", testAnywhereUnit)
+
+    let anywhereVmTools = @[
+      "bash", "python3", "nix", "ssh", "ssh-keygen", "xorriso", "cpio",
+      "qemu-system-x86_64", "qemu-img", "curl",
+    ]
+    let anywhereVmInputs = anywhereSources & @[
+      "tools/anywhere/anywhere_disk.nim",
+      "tools/anywhere/anywhere_layout.nim",
+      "repro/disk_layouts.nim",
+      "recipes/reproos-image/scripts",
+      "tests/fixtures/auto-config-minimal.toml",
+      "tests/anywhere",
+    ]
+    let testAnywhereE2e = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh e2e",
+      actionId = "reproos.e2e-anywhere-converts-linux-vm",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_converts_linux_vm", testAnywhereE2e)
+
+    let testAnywhereDiskIdentity = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh diskid",
+      actionId = "reproos.test-anywhere-disk-identity-mismatch",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("test_reproos_anywhere_disk_identity_mismatch",
+      testAnywhereDiskIdentity)
+
+    let testAnywhereNegatives = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh negatives",
+      actionId = "reproos.test-anywhere-negatives",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("test-anywhere-negatives", testAnywhereNegatives)
+
+    let testAnywhereResume = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh resume",
+      actionId = "reproos.e2e-anywhere-apply-resumes-after-disconnect",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_apply_resumes_after_disconnect",
+      testAnywhereResume)
+
+    # Operator commands. Each forwards its arguments; nothing here chooses
+    # a machine or a plan on the operator's behalf.
+    let anywherePreflightTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-preflight", "preflight"],
+      actionId = "reproos.anywhere-preflight",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-preflight", build = anywherePreflightTask.id, owningPackage = "reproosWorkflows")
+
+    let anywherePlanTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-plan", "plan"],
+      actionId = "reproos.anywhere-plan",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-plan", build = anywherePlanTask.id, owningPackage = "reproosWorkflows")
+
+    let anywhereApplyTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-apply", "apply"],
+      actionId = "reproos.anywhere-apply",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-apply", build = anywhereApplyTask.id, owningPackage = "reproosWorkflows")
+
+    let anywhereResumeTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-resume", "resume"],
+      actionId = "reproos.anywhere-resume",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-resume", build = anywhereResumeTask.id, owningPackage = "reproosWorkflows")
+
+    let anywhereStatusTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-status", "status"],
+      actionId = "reproos.anywhere-status",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-status", build = anywhereStatusTask.id, owningPackage = "reproosWorkflows")
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 
@@ -1712,6 +1821,11 @@ package reproosWorkflows:
       testInstalledDesktop,
       testInstalledSsh,
       testUnattendedInstall,
+      testAnywhereUnit,
+      testAnywhereE2e,
+      testAnywhereDiskIdentity,
+      testAnywhereNegatives,
+      testAnywhereResume,
     ])
 
     discard collect("incus-acceptance", actions = @[

@@ -1,0 +1,87 @@
+R	probe	version	1
+R	probe	uid	0
+R	kernel	release	6.18.22-0-virt
+R	kernel	machine	x86_64
+R	kernel	cmdline	BOOT_IMAGE=/boot/vmlinuz-virt root=UUID=53a898f0-60bb-4d47-83a6-8879781b3d34 ro modules=sd-mod,usb-storage,ext4 console=ttyS0,115200n8 console=ttyAMA0,115200n8
+R	kernel	kexec_load_disabled	1
+R	kernel	lockdown	[none] integrity confidentiality
+R	os	NAME	Alpine Linux
+R	os	ID	alpine
+R	os	VERSION_ID	3.23.4
+R	os	PRETTY_NAME	Alpine Linux v3.23
+R	virt	pid1	init
+R	virt	cpu_hypervisor_flag	2
+R	dmi	sys_vendor	QEMU
+R	dmi	product_name	Standard PC (Q35 + ICH9, 2009)
+R	dmi	product_uuid	dd9bac32-b7c8-4063-a344-e76226530e4d
+R	dmi	product_serial	
+R	dmi	board_serial	
+R	dmi	chassis_asset_tag	
+R	machine	machine_id	
+R	machine	hostname	src-alpine
+R	firmware	mode	uefi
+R	firmware	efi_bits	64
+R	firmware	secure_boot	absent
+R	memory	mem_total_kib	2019508
+R	memory	mem_available_kib	1798500
+R	cpu	count	2
+R	disk	vda.size_sectors	25165824
+R	disk	vda.logical_block	512
+R	disk	vda.removable	0
+R	disk	vda.ro	1
+R	disk	vda.devnum	253:0
+R	disk	vda.serial	AW-B6A7A159E58C
+R	disk	vda.wwid	
+R	disk	vda.model	
+R	disk	vda.dm_uuid	
+R	disk	vda.md_level	
+R	disk	vda.driver	virtio_blk
+R	disk	vda.syspath	../devices/pci0000:00/0000:00:06.0/0000:01:00.0/virtio1/block/vda
+R	disk	vda.slaves	
+R	disk	vda.holders	
+R	part	vda1.disk	vda
+R	part	vda1.number	1
+R	part	vda1.start	1024
+R	part	vda1.size_sectors	1024
+R	part	vda1.devnum	253:1
+R	part	vda1.holders	
+R	part	vda2.disk	vda
+R	part	vda2.number	2
+R	part	vda2.start	2048
+R	part	vda2.size_sectors	25163743
+R	part	vda2.devnum	253:2
+R	part	vda2.holders	
+R	byid	virtio-AW-B6A7A159E58C	vda
+R	byid	virtio-AW-B6A7A159E58C-part1	vda1
+R	byid	virtio-AW-B6A7A159E58C-part2	vda2
+R	raid	mdstat	
+R	mount	0	sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime
+R	mount	1	devtmpfs /dev devtmpfs rw,nosuid,noexec,relatime,size=10240k,nr_inodes=245866,mode=755,inode64
+R	mount	2	proc /proc proc rw,nosuid,nodev,noexec,relatime
+R	mount	3	devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000
+R	mount	4	shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,inode64
+R	mount	5	/dev/vda2 / ext4 ro,relatime
+R	mount	6	tmpfs /run tmpfs rw,nosuid,nodev,size=403904k,nr_inodes=819200,mode=755,inode64
+R	mount	7	mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime
+R	mount	8	securityfs /sys/kernel/security securityfs rw,nosuid,nodev,noexec,relatime
+R	mount	9	debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime
+R	mount	10	tracefs /sys/kernel/tracing tracefs rw,nosuid,nodev,noexec,relatime
+R	mount	11	none /sys/fs/pstore pstore rw,nosuid,nodev,noexec,relatime
+R	mount	12	efivarfs /sys/firmware/efi/efivars efivarfs rw,nosuid,nodev,noexec,relatime
+R	mount	13	bpf /sys/fs/bpf bpf rw,nosuid,nodev,noexec,relatime
+R	mount	14	/dev/vda1 /boot/efi vfat ro,noatime,fmask=0077,dmask=0077,codepage=437,iocharset=utf8,shortname=mixed,errors=remount-ro
+R	netif	eth0.mac	52:54:00:5b:c1:c8
+R	netif	eth0.operstate	up
+R	netif	eth0.mtu	1500
+R	netif	eth0.wireless	0
+R	netif	eth0.bridge	0
+R	netif	eth0.driver	virtio_net
+R	netif	eth0.physical	1
+R	addr4	0	lo 127.0.0.1/8 static
+R	addr4	1	eth0 10.0.2.15/24 dynamic
+R	route4	0	default via 10.0.2.2 dev eth0 proto dhcp src 10.0.2.15 metric 1002 
+R	route4	1	10.0.2.0/24 dev eth0 proto dhcp scope link src 10.0.2.15 metric 1002 
+R	dns	0	10.0.2.3
+R	netmgr	dhcpcd	running
+R	ssh	connection	10.0.2.2 55496 10.0.2.15 22
+R	probe	complete	1

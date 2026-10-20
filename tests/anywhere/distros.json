@@ -1,0 +1,44 @@
+{
+  "alpine": {
+    "algo": "sha512",
+    "digest": "849196e26640b33fb1f106d46cebdf341c715f7f49363564eacece8097464b6af7041618e94c4eb1a006394663252a86c0fb3158fee5d0ffb094899730679a71",
+    "file": "nocloud_alpine-3.23.4-x86_64-uefi-cloudinit-r0.qcow2",
+    "redistribution": "Alpine Linux cloud image",
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.4-x86_64-uefi-cloudinit-r0.qcow2"
+  },
+  "arch": {
+    "algo": "sha256",
+    "digest": "08754e28d91b1680086c6211ef4df13559e766fff7cdb4006489b14b5d281f08",
+    "file": "Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2",
+    "planning": "snapshot",
+    "redistribution": "arch-boxes cloud image (Arch Linux)",
+    "url": "https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2"
+  },
+  "debian": {
+    "algo": "sha512",
+    "digest": "ec584ccabfef7120b4c4f7482adf0e615894d9292cedec446b64194b951ebe5dd97c336b5dcbae458333764b0edd516334506017f33c4f2020ef8d38b569ffe3",
+    "file": "debian-13-genericcloud-amd64-20261017-2634.qcow2",
+    "redistribution": "Debian cloud images, DFSG-free components",
+    "url": "https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-amd64-20261017-2634.qcow2"
+  },
+  "fedora": {
+    "algo": "sha256",
+    "digest": "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f",
+    "file": "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+    "redistribution": "Fedora Cloud Base (Fedora Project)",
+    "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+  },
+  "nixos": {
+    "file": "nixos.qcow2",
+    "nix_build": "fixture/nixos-source.nix",
+    "planning": "snapshot",
+    "redistribution": "built from nixpkgs addf7cf5 (MIT-licensed expressions, upstream package licenses)"
+  },
+  "ubuntu": {
+    "algo": "sha256",
+    "digest": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+    "file": "ubuntu-24.04-server-cloudimg-amd64-20261017.img",
+    "redistribution": "Ubuntu cloud images (Canonical)",
+    "url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img"
+  }
+}

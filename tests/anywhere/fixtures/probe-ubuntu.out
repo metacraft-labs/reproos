@@ -1,0 +1,114 @@
+R	probe	version	1
+R	probe	uid	0
+R	kernel	release	6.8.0-147-generic
+R	kernel	machine	x86_64
+R	kernel	cmdline	BOOT_IMAGE=/vmlinuz-6.8.0-147-generic root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0
+R	kernel	kexec_load_disabled	0
+R	kernel	lockdown	[none] integrity confidentiality
+R	os	PRETTY_NAME	Ubuntu 24.04.5 LTS
+R	os	NAME	Ubuntu
+R	os	VERSION_ID	24.04
+R	os	ID	ubuntu
+R	os	ID_LIKE	debian
+R	virt	pid1	systemd
+R	virt	cpu_hypervisor_flag	2
+R	dmi	sys_vendor	QEMU
+R	dmi	product_name	Standard PC (Q35 + ICH9, 2009)
+R	dmi	product_uuid	01bad4e0-4610-4980-ba3f-efcd6c51c1cc
+R	dmi	product_serial	
+R	dmi	board_serial	
+R	dmi	chassis_asset_tag	
+R	machine	machine_id	01bad4e046104980ba3fefcd6c51c1cc
+R	machine	hostname	src-ubuntu
+R	firmware	mode	uefi
+R	firmware	efi_bits	64
+R	firmware	secure_boot	absent
+R	memory	mem_total_kib	2008716
+R	memory	mem_available_kib	1651700
+R	cpu	count	2
+R	disk	vda.size_sectors	25165824
+R	disk	vda.logical_block	512
+R	disk	vda.removable	0
+R	disk	vda.ro	1
+R	disk	vda.devnum	253:0
+R	disk	vda.serial	AW-30C145F29659
+R	disk	vda.wwid	
+R	disk	vda.model	
+R	disk	vda.dm_uuid	
+R	disk	vda.md_level	
+R	disk	vda.driver	virtio_blk
+R	disk	vda.syspath	../devices/pci0000:00/0000:00:06.0/0000:01:00.0/virtio1/block/vda
+R	disk	vda.slaves	
+R	disk	vda.holders	
+R	part	vda1.disk	vda
+R	part	vda1.number	1
+R	part	vda1.start	2099200
+R	part	vda1.size_sectors	23066591
+R	part	vda1.devnum	253:1
+R	part	vda1.holders	
+R	part	vda14.disk	vda
+R	part	vda14.number	14
+R	part	vda14.start	2048
+R	part	vda14.size_sectors	8192
+R	part	vda14.devnum	253:14
+R	part	vda14.holders	
+R	part	vda15.disk	vda
+R	part	vda15.number	15
+R	part	vda15.start	10240
+R	part	vda15.size_sectors	217088
+R	part	vda15.devnum	253:15
+R	part	vda15.holders	
+R	part	vda16.disk	vda
+R	part	vda16.number	16
+R	part	vda16.start	227328
+R	part	vda16.size_sectors	1869825
+R	part	vda16.devnum	259:0
+R	part	vda16.holders	
+R	byid	ata-QEMU_DVD-ROM_QM00005	sr0
+R	byid	virtio-AW-30C145F29659	vda
+R	byid	virtio-AW-30C145F29659-part1	vda1
+R	byid	virtio-AW-30C145F29659-part14	vda14
+R	byid	virtio-AW-30C145F29659-part15	vda15
+R	byid	virtio-AW-30C145F29659-part16	vda16
+R	raid	mdstat	
+R	mount	0	sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime
+R	mount	1	proc /proc proc rw,nosuid,nodev,noexec,relatime
+R	mount	2	udev /dev devtmpfs rw,nosuid,relatime,size=964368k,nr_inodes=241092,mode=755,inode64
+R	mount	3	devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000
+R	mount	4	tmpfs /run tmpfs rw,nosuid,nodev,noexec,relatime,size=200872k,mode=755,inode64
+R	mount	5	efivarfs /sys/firmware/efi/efivars efivarfs rw,nosuid,nodev,noexec,relatime
+R	mount	6	/dev/vda1 / ext4 ro,relatime
+R	mount	7	securityfs /sys/kernel/security securityfs rw,nosuid,nodev,noexec,relatime
+R	mount	8	tmpfs /dev/shm tmpfs rw,nosuid,nodev,inode64
+R	mount	9	tmpfs /run/lock tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k,inode64
+R	mount	10	cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot
+R	mount	11	pstore /sys/fs/pstore pstore rw,nosuid,nodev,noexec,relatime
+R	mount	12	bpf /sys/fs/bpf bpf rw,nosuid,nodev,noexec,relatime,mode=700
+R	mount	13	systemd-1 /proc/sys/fs/binfmt_misc autofs rw,relatime,fd=32,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=2209
+R	mount	14	hugetlbfs /dev/hugepages hugetlbfs rw,nosuid,nodev,relatime,pagesize=2M
+R	mount	15	mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime
+R	mount	16	debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime
+R	mount	17	tracefs /sys/kernel/tracing tracefs rw,nosuid,nodev,noexec,relatime
+R	mount	18	fusectl /sys/fs/fuse/connections fusectl rw,nosuid,nodev,noexec,relatime
+R	mount	19	configfs /sys/kernel/config configfs rw,nosuid,nodev,noexec,relatime
+R	mount	20	/dev/vda16 /boot ext4 ro,relatime
+R	mount	21	/dev/vda15 /boot/efi vfat ro,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro
+R	mount	22	binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc rw,nosuid,nodev,noexec,relatime
+R	mount	23	tmpfs /run/user/0 tmpfs rw,nosuid,nodev,relatime,size=200868k,nr_inodes=50217,mode=700,inode64
+R	netif	enp0s2.mac	52:54:00:d6:6e:a5
+R	netif	enp0s2.operstate	up
+R	netif	enp0s2.mtu	1500
+R	netif	enp0s2.wireless	0
+R	netif	enp0s2.bridge	0
+R	netif	enp0s2.driver	virtio_net
+R	netif	enp0s2.physical	1
+R	addr4	0	lo 127.0.0.1/8 static
+R	addr4	1	enp0s2 10.0.2.15/24 dynamic
+R	route4	0	default via 10.0.2.2 dev enp0s2 proto dhcp src 10.0.2.15 metric 100 
+R	route4	1	10.0.2.0/24 dev enp0s2 proto kernel scope link src 10.0.2.15 metric 100 
+R	route4	2	10.0.2.2 dev enp0s2 proto dhcp scope link src 10.0.2.15 metric 100 
+R	route4	3	10.0.2.3 dev enp0s2 proto dhcp scope link src 10.0.2.15 metric 100 
+R	dns	0	127.0.0.53
+R	netmgr	systemd-networkd	running
+R	ssh	connection	10.0.2.2 59992 10.0.2.15 22
+R	probe	complete	1

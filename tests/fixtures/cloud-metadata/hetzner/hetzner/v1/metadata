@@ -1,0 +1,5 @@
+hostname: reproos-cloud-hetzner
+instance-id: 41234567
+region: eu-central
+public-keys:
+- ssh-ed25519 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE= cloud-test

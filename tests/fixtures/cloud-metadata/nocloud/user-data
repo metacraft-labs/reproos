@@ -1,0 +1,5 @@
+#cloud-config
+users:
+  - name: repro
+    ssh_authorized_keys:
+      - ssh-ed25519 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE= cloud-test

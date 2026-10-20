@@ -399,6 +399,32 @@ package reproosWorkflows:
     discard target("test_instance_secrets_do_not_affect_public_image_cache_key",
       testInstanceSecretsCacheKey)
 
+    # Cloud Images M1: every provider metadata adapter produces the one
+    # first-boot enrollment contract, and spoofed or changed instance identity
+    # enrolls nothing.
+    let cloudMetadataInputs = @[
+      "tests/test_cloud_metadata.py",
+      "tools/reproos-cloud-metadata.py",
+      "tests/fixtures/auto-config-minimal.toml",
+      "tests/fixtures/cloud-metadata",
+      "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+    ]
+    let testCloudFirstBootContract = shell(
+      command = "python3 tests/test_cloud_metadata.py CloudFirstBootContract",
+      actionId = "reproos.test-cloud-first-boot-contract",
+      extraInputs = cloudMetadataInputs,
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test_cloud_first_boot_contract_across_metadata_adapters",
+      testCloudFirstBootContract)
+
+    let testCloudMetadataSpoofing = shell(
+      command = "python3 tests/test_cloud_metadata.py CloudMetadataSpoofing",
+      actionId = "reproos.test-cloud-metadata-spoofing",
+      extraInputs = cloudMetadataInputs,
+      cacheable = false).withToolIdentities(["python3"])
+    discard target("test_cloud_metadata_spoofing_fails_identity_checks",
+      testCloudMetadataSpoofing)
+
     let testReproosVmWorkflow = shell(
       command = "python3 tests/test_reproos_vm.py",
       actionId = "reproos.test-vm-install-workflow",
@@ -1640,6 +1666,8 @@ package reproosWorkflows:
       testInstallerArtifacts,
       testRemoteAccessConfiguration,
       testInstanceSecretsCacheKey,
+      testCloudFirstBootContract,
+      testCloudMetadataSpoofing,
       testReproosVmWorkflow,
       testCacheBackfill,
       testIncusProjection,

@@ -99,6 +99,12 @@ configured_hostname=$(awk '
     print value; exit
   }
 ' "$config")
+# Per-instance media may name the host (a cloud adapter takes it from the
+# provider's metadata); it then overrides the image's configured default and
+# passes the same validation below.
+if [ -f "$enrollment/hostname" ]; then
+  configured_hostname=$(tr -d '\r\n' < "$enrollment/hostname")
+fi
 groups=$(awk '
   BEGIN { section="" }
   /^\[/ { section=$0; gsub(/^\[|\]$/, "", section); next }

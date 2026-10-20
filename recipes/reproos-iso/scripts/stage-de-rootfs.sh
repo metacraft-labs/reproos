@@ -2206,10 +2206,40 @@ EOF
 ln -sfn /etc/systemd/system/reproos-installed-boot-evidence.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-installed-boot-evidence.service"
 
+# Cloud instances have no REPROOS_ENROLL medium: this unit derives the same
+# enrollment directory from a NoCloud / config-drive volume or the provider's
+# metadata service (tools/reproos-cloud-metadata.py). It does nothing when an
+# operator's enrollment medium is attached, and a failure leaves enrollment
+# without input, so the instance fails closed rather than booting unkeyed.
+install -m 0755 "$REPO_ROOT/tools/reproos-cloud-metadata.py" \
+  "$STAGE_DIR/usr/local/sbin/reproos-cloud-metadata"
+cat > "$STAGE_DIR/etc/systemd/system/reproos-cloud-enrollment.service" <<'EOF'
+[Unit]
+Description=Derive ReproOS enrollment from cloud instance metadata
+After=local-fs.target reproos-network.service
+Wants=reproos-network.service
+Before=reproos-first-boot-enroll.service
+ConditionPathExists=/var/lib/reproos/installation-receipt.json
+ConditionPathExists=!/var/lib/reproos/enrollment.complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reproos-cloud-metadata first-boot
+TimeoutStartSec=120
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sfn /etc/systemd/system/reproos-cloud-enrollment.service \
+  "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-cloud-enrollment.service"
+
 cat > "$STAGE_DIR/etc/systemd/system/reproos-first-boot-enroll.service" <<'EOF'
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys
-After=local-fs.target
+After=local-fs.target reproos-cloud-enrollment.service
 Before=sddm.service sshd.service reproos-health-check.service
 ConditionPathExists=/var/lib/reproos/installation-receipt.json
 ConditionPathExists=!/var/lib/reproos/enrollment.complete

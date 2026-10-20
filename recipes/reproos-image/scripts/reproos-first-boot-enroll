@@ -18,6 +18,13 @@ trap cleanup EXIT INT TERM
 [ -f "$complete" ] && exit 0
 mkdir -p "$state" "$mountpoint"
 
+# An operator's REPROOS_ENROLL medium wins; then the directory the cloud
+# metadata unit derived from provider metadata; then any optical drive.
+cloud_enrollment="$root/run/reproos/cloud-enrollment"
+if [ -z "$enrollment" ] && [ ! -e /dev/disk/by-label/REPROOS_ENROLL ] && \
+   [ -f "$cloud_enrollment/machine-id" ]; then
+  enrollment=$cloud_enrollment
+fi
 if [ -z "$enrollment" ]; then
   for device in /dev/disk/by-label/REPROOS_ENROLL /dev/sr1 /dev/sr0; do
     [ -e "$device" ] || continue

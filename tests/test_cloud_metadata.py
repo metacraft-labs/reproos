@@ -118,6 +118,34 @@ class CloudFirstBootContract(unittest.TestCase):
                 self.assertEqual(again["machine_id"], receipt["machine_id"])
         self.assertEqual(len(machine_ids), len(EXPECTED))
 
+    def test_boot_path_hands_the_cloud_directory_to_enrollment(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cloud-boot-") as raw:
+            base = Path(raw)
+            root = installed_root(base)
+            # An operator's enrollment medium wins: the cloud unit does nothing.
+            labels = root / "dev/disk/by-label"
+            labels.mkdir(parents=True)
+            (labels / "REPROOS_ENROLL").write_text("")
+            self.assertIsNone(MODULE.first_boot(root, attempts=1, delay=0))
+            self.assertFalse((root / "run/reproos/cloud-enrollment").exists())
+            (labels / "REPROOS_ENROLL").unlink()
+
+            # The unit's output directory is where enrollment looks next, with
+            # no REPROOS_ENROLLMENT_DIR override and no optical media.
+            MODULE.normalize("hetzner", FIXTURES / "hetzner",
+                             root / "run/reproos/cloud-enrollment",
+                             root / "var/lib/reproos")
+            env = dict(os.environ, REPROOS_ROOT=str(root),
+                       REPROOS_SSH_HOST_KEY_FINGERPRINT="SHA256:test-host-key",
+                       REPROOS_TEST_MODE="1")
+            env.pop("REPROOS_ENROLLMENT_DIR", None)
+            result = subprocess.run(["bash", str(ENROLL)], env=env, text=True,
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            identity = json.loads((root / "var/lib/reproos/identity.json").read_text())
+            self.assertEqual(identity["machine_id"],
+                             MODULE.machine_id_for("hetzner", "41234567"))
+
     def test_unsupported_keys_are_refused_by_name(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             receipt = MODULE.normalize("gce", FIXTURES / "gce",

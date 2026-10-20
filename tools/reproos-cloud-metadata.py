@@ -46,7 +46,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -470,6 +473,62 @@ def detect_order(hint: str) -> list[str]:
     return preferred + rest
 
 
+MEDIA_SOURCES = (("cidata", "nocloud"), ("CIDATA", "nocloud"),
+                 ("config-2", "configdrive"), ("CONFIG-2", "configdrive"))
+FAIL_OVER = {"provider-marker-missing"}
+
+
+def first_boot(root: Path, attempts: int, delay: float) -> dict | None:
+    """The boot-time path: produce ``<root>/run/reproos/cloud-enrollment``.
+
+    A ``REPROOS_ENROLL`` medium wins: it is an operator's explicit machine
+    enrollment, and this unit then does nothing. Otherwise a labelled
+    NoCloud / config-drive volume is used, else the metadata services are
+    probed in ``detect_order``. A service that does not answer, or answers
+    without its provider's marker, is skipped; any other refusal is final.
+    """
+    by_label = root / "dev/disk/by-label"
+    if (by_label / "REPROOS_ENROLL").exists():
+        print("REPROOS_CLOUD:SKIP:machine-enrollment-media-present")
+        return None
+    out = root / "run/reproos/cloud-enrollment"
+    state = root / "var/lib/reproos"
+    raw_base = root / "run/reproos/cloud-metadata"
+    for label, provider in MEDIA_SOURCES:
+        device = by_label / label
+        if not device.exists():
+            continue
+        mountpoint = root / "run/reproos/cloud-media"
+        mountpoint.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["mount", "-o", "ro", str(device), str(mountpoint)], check=True)
+        try:
+            raw = raw_base / provider
+            shutil.rmtree(raw, ignore_errors=True)
+            names = (["meta-data", "user-data"] if provider == "nocloud"
+                     else ["openstack/latest/meta_data.json"])
+            collect_media(raw, mountpoint, names)
+        finally:
+            subprocess.run(["umount", str(mountpoint)], check=False)
+        return normalize(provider, raw, out, state)
+    order = detect_order(dmi_vendor(root / "sys/class/dmi/id"))
+    for _ in range(max(1, attempts)):
+        for provider in order:
+            raw = raw_base / provider
+            shutil.rmtree(raw, ignore_errors=True)
+            try:
+                COLLECTORS[provider](raw)
+            except MetadataError as exc:
+                if exc.code in FAIL_OVER:
+                    continue
+                raise
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
+            return normalize(provider, raw, out, state)
+        time.sleep(delay)
+    raise MetadataError("no-metadata-source",
+                        f"no media and no metadata service answered ({' '.join(order)})")
+
+
 # --------------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
@@ -487,6 +546,10 @@ def main(argv: list[str]) -> int:
     c.add_argument("--media", type=Path,
                    help="mounted cidata / config-2 volume (nocloud, configdrive)")
     sub.add_parser("detect-order", help="print the probe order (DMI is a hint only)")
+    f = sub.add_parser("first-boot", help="boot-time: media or metadata -> enrollment dir")
+    f.add_argument("--root", type=Path, default=Path("/"))
+    f.add_argument("--attempts", type=int, default=30)
+    f.add_argument("--delay", type=float, default=2.0)
     args = parser.parse_args(argv)
     try:
         if args.command == "normalize":
@@ -503,6 +566,11 @@ def main(argv: list[str]) -> int:
             else:
                 COLLECTORS[args.provider](args.raw)
             print(f"REPROOS_CLOUD:COLLECTED:provider={args.provider}")
+        elif args.command == "first-boot":
+            receipt = first_boot(args.root, args.attempts, args.delay)
+            if receipt:
+                print(f"REPROOS_CLOUD:PASS:provider={receipt['provider']}"
+                      f":machine_id={receipt['machine_id']}")
         else:
             print(" ".join(detect_order(dmi_vendor())))
         return 0

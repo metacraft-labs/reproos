@@ -192,8 +192,10 @@ def false_positives(m: Machine) -> dict:
     results["installer"] = must_fail(
         lambda: c.installed_proof(run.installed(), plan, run.journal), HostKeyRejected,
         what="the takeover environment as the installed system")
+    # Through the gate the takeover environment does not even run the
+    # proof script (refused, exit 126); either way it cannot pass.
     results["installer-unpinned"] = must_fail(
-        lambda: c.installed_proof(run.installer(), plan, run.journal), c.AnywhereError,
+        lambda: c.installed_proof(run.installer(), plan, run.journal), c.AnywhereError, c.TransportError,
         what="the takeover environment's facts")
     return {"case": "false-positives", **results}
 

@@ -1,0 +1,20 @@
+audit: type=1300 audit(1792535706.657:3): arch=c000003e syscall=59 success=yes exit=0 a0=55da35ff2550 a1=55da35ff2508 a2=55da35ff2520 a3=0 items=2 ppid=460 pid=462 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="wc" exe="/nix/store/imad8dvhp77h0pjbckp6wvmnyhp8dpgg-coreutils-9.8/bin/coreutils" subj=kernel key="anywhere-exec"
+audit: type=1309 audit(1792535706.657:3): argc=2 a0="wc" a1="-l"
+audit: type=1307 audit(1792535706.657:3): cwd="/"
+audit: type=1302 audit(1792535706.657:3): item=0 name="/nix/store/ch6avb1rzrnlk1bq15vnnhi022n6mgcm-reproos-anywhere-installer-tools/bin/wc" inode=2642 dev=00:02 mode=0100555 ouid=0 ogid=0 rdev=00:00 obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1302 audit(1792535706.657:3): item=1 name="/nix/store/xx7cm72qy2c0643cm1ipngd87aqwkcdp-glibc-2.40-66/lib/ld-linux-x86-64.so.2" inode=4125 dev=00:02 mode=0100555 ouid=0 ogid=0 rdev=00:00 obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1327 audit(1792535706.657:3): proctitle=7763002D6C
+audit: type=1300 audit(1792535730.886:289): arch=c000003e syscall=59 success=yes exit=0 a0=55e7998e9630 a1=55e7998e9658 a2=55e7998e9668 a3=0 items=2 ppid=709 pid=710 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="true" exe="/run/true" subj=kernel key="anywhere-exec"
+audit: type=1309 audit(1792535730.886:289): argc=1 a0="/run/true"
+audit: type=1307 audit(1792535730.886:289): cwd="/root"
+audit: type=1302 audit(1792535730.886:289): item=0 name="/run/true" inode=20 dev=00:19 mode=0100555 ouid=0 ogid=0 rdev=00:00 obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1302 audit(1792535730.886:289): item=1 name="/nix/store/xx7cm72qy2c0643cm1ipngd87aqwkcdp-glibc-2.40-66/lib/ld-linux-x86-64.so.2" inode=4125 dev=00:02 mode=0100555 ouid=0 ogid=0 rdev=00:00 obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1327 audit(1792535730.886:289): proctitle=7368002D63006370202428726561646C696E6B202D66202428636F6D6D616E64202D762062757379626F782929202F72756E2F74727565202626202F72756E2F74727565
+audit: type=1300 audit(1792535716.772:59): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7fff49842e4a a2=802 a3=0 items=1 ppid=515 pid=516 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="wipefs" exe="/nix/store/3c6r8gh8zrqw8xmncmlj9vivz9rz6r30-util-linux-2.41.2-bin/bin/wipefs" subj=kernel key="anywhere-disk-write"
+audit: type=1307 audit(1792535716.772:59): cwd="/root"
+audit: type=1302 audit(1792535716.772:59): item=0 name="/dev/vda15" inode=100 dev=00:06 mode=060600 ouid=0 ogid=0 rdev=fe:0f obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1327 audit(1792535716.772:59): proctitle=2F62696E2F7368002D6300776970656673202D6166202F6465762F7664613135
+audit: type=1300 audit(1792535737.359:422): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=7ffca08a2e14 a2=42 a3=1b6 items=1 ppid=852 pid=853 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="dd" exe="/nix/store/imad8dvhp77h0pjbckp6wvmnyhp8dpgg-coreutils-9.8/bin/coreutils" subj=kernel key="anywhere-disk-write"
+audit: type=1307 audit(1792535737.359:422): cwd="/root"
+audit: type=1302 audit(1792535737.359:422): item=0 name="/dev/vda" inode=97 dev=00:06 mode=060600 ouid=0 ogid=0 rdev=fe:00 obj=unlabeled nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+audit: type=1327 audit(1792535737.359:422): proctitle=7368002D630064642069663D2F6465762F766461206F663D2F6465762F7664612062733D35313220636F756E743D31207365656B3D3230343720736B69703D3230343720636F6E763D6E6F7472756E63207374617475733D6E6F6E65

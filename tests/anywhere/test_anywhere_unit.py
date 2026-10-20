@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -404,6 +405,146 @@ class SessionArchive(unittest.TestCase):
         self.assertIn("etc/anywhere/authorized_keys", listing)
         full = cpio.append_to_initrd(b"x" * 1001, data)
         self.assertEqual(full.index(data), 1024)
+
+
+class Detection(unittest.TestCase):
+    """Classification of REAL audit records captured from the installer
+    console (tests/anywhere/fixtures/audit-sample.log)."""
+
+    STORES = {"/nix/store/imad8dvhp77h0pjbckp6wvmnyhp8dpgg-coreutils-9.8",
+              "/nix/store/3c6r8gh8zrqw8xmncmlj9vivz9rz6r30-util-linux-2.41.2-bin"}
+
+    def test_classification_by_window(self):
+        from reproos_anywhere.detect import Detector
+        text = (FIXTURES / "audit-sample.log").read_text()
+        # In a stage allowed to write disks, only the foreign exec is flagged.
+        events = Detector(self.STORES).scan(text, "format")
+        self.assertEqual([(e.kind, e.detail["exe"]) for e in events],
+                         [("unexpected-execution", "/run/true")])
+        # Outside those stages both disk write-opens are flagged too.
+        kinds = sorted(e.kind for e in Detector(self.STORES).scan(text, "materialize"))
+        self.assertEqual(kinds, ["unexpected-execution", "unexpected-write", "unexpected-write"])
+        # An exec from a store path that was not in the verified closure.
+        events = Detector({"/nix/store/3c6r8gh8zrqw8xmncmlj9vivz9rz6r30-util-linux-2.41.2-bin"}).scan(text, "format")
+        self.assertIn("/nix/store/imad8dvhp77h0pjbckp6wvmnyhp8dpgg-coreutils-9.8/bin/coreutils",
+                      [e.detail["exe"] for e in events])
+
+    def test_each_record_counted_once_and_loss_fails_closed(self):
+        from reproos_anywhere.detect import Detector
+        text = (FIXTURES / "audit-sample.log").read_text()
+        d = Detector(self.STORES)
+        self.assertTrue(d.scan(text, "materialize"))
+        self.assertEqual(d.scan(text, "materialize"), [])          # already attributed
+        lost = d.scan("audit: audit_lost=3 audit_rate_limit=0 audit_backlog_limit=64\n", "mount")
+        self.assertEqual([e.kind for e in lost], ["audit-loss"])
+        change = d.scan('audit: type=1305 audit(1.0:9999): op=set audit_enabled=0 old=2 res=0\n', "mount")
+        self.assertEqual([e.kind for e in change], ["audit-loss"])
+
+
+class InstallerGate(unittest.TestCase):
+    """The gate's refusals, run locally: validation happens before any
+    action, so no installer is needed to see a request refused."""
+
+    GATE = REPO / "tools" / "anywhere" / "installer-gate.sh"
+
+    def run_gate(self, request: str) -> subprocess.CompletedProcess:
+        env = {"PATH": os.environ.get("PATH", ""), "SSH_ORIGINAL_COMMAND": request}
+        return subprocess.run(["sh", str(self.GATE)], env=env, capture_output=True, text=True)
+
+    def test_refusals(self):
+        refused = [
+            "id", "anywhere-gate id", "anywhere-gate read /etc/shadow", "anywhere-gate read /mnt/../etc/shadow",
+            "anywhere-gate put /etc/passwd 0644", "anywhere-gate put /mnt/x 4755", "anywhere-gate remove /",
+            "anywhere-gate barrier xyz", "anywhere-gate sysblock ../../x", "anywhere-gate identity extra",
+            "anywhere-gate op-start 00ff rm -rf /", "anywhere-gate disk destroy --device /dev/vda",
+            "anywhere-gate read /mnt/a;id", "anywhere-gate read $(id)", "anywhere-gate read /mnt/`id`",
+            "anywhere-gate op-forget 00ff",
+        ]
+        for request in refused:
+            with self.subTest(request=request):
+                p = self.run_gate(request)
+                self.assertEqual(p.returncode, 126, (request, p.stdout, p.stderr))
+                self.assertIn("refused", p.stderr)
+
+    def test_allowed_shapes_pass_validation(self):
+        # Reaching the action (which then fails here: no installer) proves
+        # the request passed validation; refusal would be exit 126.
+        for request in ("anywhere-gate size /mnt/.anywhere/rootfs.tar.zst", "anywhere-gate barrier 0a1b2c",
+                        "anywhere-gate exists /mnt/.anywhere"):
+            with self.subTest(request=request):
+                self.assertNotEqual(self.run_gate(request).returncode, 126)
+
+
+class EvidenceSink(unittest.TestCase):
+    def setUp(self):
+        import tempfile as tf
+        import threading
+        from reproos_anywhere.evidence import Client, Sink
+        self.dir = Path(tf.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.sock = str(Path(tf.mkdtemp(dir="/tmp")) / "s")
+        self.sink = Sink(self.dir / "sink", self.sock, heartbeat_window=1.5)
+        threading.Thread(target=self.sink.serve_forever, daemon=True).start()
+        self.addCleanup(self.sink.stop.set)
+        for _ in range(50):
+            if Path(self.sock).exists():
+                break
+            import time
+            time.sleep(0.05)
+        self.plan = "a" * 64
+        self.client = Client(self.sock, self.plan)
+
+    def alerts(self) -> list[str]:
+        p = self.dir / "sink" / "alerts.jsonl"
+        return [json.loads(x)["kind"] for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_append_only_chain_and_denials(self):
+        import time
+        j = Journal(self.dir / "journal.jsonl", self.plan, sinks=[self.client.append])
+        j.start("destroy", {})
+        j.complete("destroy", {"erased": True})
+        # A forked history (the same seq again) is refused and alerted.
+        forged = dict(j.records[-1], evidence={"erased": False})
+        with self.assertRaises(Exception):
+            self.client.append(canon.encode(forged))
+        for op in ("read", "list", "delete"):
+            self.assertFalse(self.client.request({"op": op, "stream": self.plan})["ok"])
+        j.note("after", {"append": "still works"})
+        kinds = self.alerts()
+        self.assertIn("chain-fork", kinds)
+        self.assertEqual(kinds.count("denied-operation"), 3)
+        # Heartbeat loss on an open stream; a closed stream is silent.
+        time.sleep(3.5)
+        self.assertIn("heartbeat-lost", self.alerts())
+        self.client.close()
+        n = len(self.alerts())
+        time.sleep(2.5)
+        self.assertEqual(len(self.alerts()), n)
+
+
+class FailureBundle(unittest.TestCase):
+    def test_bundle_carries_evidence_and_no_credentials(self):
+        import tarfile
+        from reproos_anywhere import recovery
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / "plan").mkdir()
+        rec = {"schema": plan.SCHEMA, "machine": {"name": "m"}}
+        canon.write(d / "plan" / "plan.json", rec)
+        canon.write(d / "enrollment.json", {"rescue": {"console_log": str(d / "console.log")}})
+        (d / "console.log").write_text("console")
+        Journal(d / "journal.jsonl", canon.digest(rec)).note("x", {})
+        (d / "keys").mkdir()
+        (d / "keys" / "session_x").write_text("-----BEGIN OPENSSH PRIVATE KEY-----")
+        out = d / "b.tar.gz"
+        recovery.bundle(d, out)
+        with tarfile.open(out) as t:
+            names = t.getnames()
+        self.assertIn("journal.jsonl", names)
+        self.assertNotIn("keys/session_x", names)
+        (d / "console.log").write_text("leaked -----BEGIN OPENSSH PRIVATE KEY-----")
+        with self.assertRaises(recovery.RecoveryError):
+            recovery.bundle(d, out)
 
 
 if __name__ == "__main__":

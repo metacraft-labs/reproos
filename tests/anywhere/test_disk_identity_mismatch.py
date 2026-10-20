@@ -180,11 +180,10 @@ def reorder(artifacts: Path) -> dict:
         run = c.Apply(state_root=f.state, name=f.name, acknowledge=plan_id, artifacts=f.art,
                       log=lambda m: print("   ", m), resume=True)
         run.check_target_path = lambda: None
-        live = run.installer().run("cat /sys/block/vda/serial").stdout.decode().strip()
+        live_serial, live_size = run.gate("serial", "vda").split()[:2]
         original = run.target_flags
-        run.target_flags = lambda: original().replace(f"'{run.target['serial']}'", f"'{live}'").replace(
-            f"--size-sectors {run.target['size_sectors']}", "--size-sectors "
-            + run.installer().run("cat /sys/block/vda/size").stdout.decode().strip())
+        run.target_flags = lambda: original().replace(f"--serial {run.target['serial']}", f"--serial {live_serial}") \
+            .replace(f"--size-sectors {run.target['size_sectors']}", f"--size-sectors {live_size}")
         run.verify_erased = lambda: {"erased": "mutation"}
         mutated_destroyed = False
         try:
@@ -223,12 +222,12 @@ def replace(artifacts: Path) -> dict:
         reason = expect_refused(run, "installer, before destroy")
         recs = f.journal(plan_id).records
         assert [r["stage"] for r in recs if r["event"] == "complete"] == ["stage-payload", "takeover"], recs
-        inst = c.Apply(state_root=f.state, name=f.name, acknowledge=plan_id, artifacts=f.art,
-                       log=lambda m: None, resume=True).installer()
-        node = inst.run(f"for d in /sys/block/*; do [ \"$(cat $d/serial 2>/dev/null)\" = "
-                        f"'{swapped['new_serial']}' ] && echo ${{d##*/}}; done").stdout.decode().strip()
+        probe_run = c.Apply(state_root=f.state, name=f.name, acknowledge=plan_id, artifacts=f.art,
+                            log=lambda m: None, resume=True)
+        node = next((n for n in ("vda", "vdb", "vdc")
+                     if probe_run.gate("serial", n, check=False).split()[:1] == [swapped["new_serial"]]), "")
         assert node, "the replacement disk is not visible in the installer"
-        table = inst.run(f"blkid -p /dev/{node}; echo rc=$?", check=False).stdout.decode()
+        table = probe_run.gate("probe", node)
         assert "rc=2" in table, f"replacement disk was written: {table}"
         return {"case": "replace", "plan": plan_id, "swap": swapped,
                 "refusal": reason, "replacement_untouched": True}

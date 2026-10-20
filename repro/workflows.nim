@@ -1680,6 +1680,8 @@ package reproosWorkflows:
     # ---------------------------------------------------------------
     let anywhereSources = @[
       "tools/anywhere/reproos-anywhere",
+      "tools/anywhere/reproos-anywhere-sink",
+      "tools/anywhere/installer-gate.sh",
       "tools/anywhere/probe.sh",
       "tools/anywhere/reproos_anywhere",
       "tools/reproos-machine-config.py",
@@ -1691,7 +1693,7 @@ package reproosWorkflows:
         "tests/anywhere/test_anywhere_unit.py",
         "tests/anywhere/fixtures",
       ],
-      cacheable = false).withToolIdentities(["python3", "ssh-keygen", "cpio"])
+      cacheable = false).withToolIdentities(["python3", "ssh-keygen", "cpio", "sh"])
     discard target("test-anywhere-unit", testAnywhereUnit)
 
     let anywhereVmTools = @[
@@ -1735,6 +1737,29 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(anywhereVmTools)
     discard target("e2e_reproos_anywhere_apply_resumes_after_disconnect",
       testAnywhereResume)
+
+    let testAnywhereDetection = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh detection",
+      actionId = "reproos.test-anywhere-detection-and-capture",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("test_reproos_anywhere_detection_and_append_only_capture",
+      testAnywhereDetection)
+
+    let testAnywhereConfinement = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh confinement",
+      actionId = "reproos.test-anywhere-installer-confinement",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("test_reproos_anywhere_installer_confinement_and_isolation",
+      testAnywhereConfinement)
+
+    let testAnywhereRecovery = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh recovery",
+      actionId = "reproos.e2e-anywhere-failure-recovery-matrix",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_failure_recovery_matrix", testAnywhereRecovery)
 
     # Operator commands. Each forwards its arguments; nothing here chooses
     # a machine or a plan on the operator's behalf.
@@ -1826,6 +1851,9 @@ package reproosWorkflows:
       testAnywhereDiskIdentity,
       testAnywhereNegatives,
       testAnywhereResume,
+      testAnywhereDetection,
+      testAnywhereConfinement,
+      testAnywhereRecovery,
     ])
 
     discard collect("incus-acceptance", actions = @[

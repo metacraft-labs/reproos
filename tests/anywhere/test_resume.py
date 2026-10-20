@@ -110,13 +110,15 @@ def main() -> int:
         print("    controller killed with format open", flush=True)
         run = c.Apply(state_root=state, name=name, acknowledge=plan_id, artifacts=art, resume=True,
                       log=lambda m: print("   ", m, flush=True), max_rate=RATE)
-        inst = run.installer()
         # The broker may still be finishing the format it was asked for.
         for _ in range(60):
             if run.layout_state() == "formatted":
                 break
             time.sleep(2)
-        uuid_before = inst.run(f"blkid -s UUID -o value {plan['storage']['device']}2").stdout.decode().strip()
+        exported = run.gate("labels", plan["target"]["kernel_name"])
+        root_block = exported.split("\n\n")[-1] if "\n\n" in exported else exported
+        uuid_before = next((line.split("=", 1)[1] for line in root_block.splitlines()
+                            if line.startswith("UUID=")), "")
         assert uuid_before, "no root filesystem after the interrupted format"
 
         # -- interruption 2: cut the link halfway through the payload --------
@@ -128,9 +130,8 @@ def main() -> int:
         def cutter():
             while True:
                 try:
-                    have = int(inst.run(f"stat -c %s {remote} 2>/dev/null || echo 0",
-                                        timeout=10).stdout.decode().strip() or 0)
-                except c.TransportError:
+                    have = int(run.gate("size", remote, timeout=10).strip() or 0)
+                except (c.TransportError, c.AnywhereError, ValueError):
                     have = 0
                 if have > size // 2:
                     sup.monitor(vm, "set_link n0 off")

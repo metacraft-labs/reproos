@@ -5,13 +5,16 @@
 #   tests/anywhere/run-vm-gates.sh diskid     test_reproos_anywhere_disk_identity_mismatch
 #   tests/anywhere/run-vm-gates.sh negatives  takeover tamper + old-system false positive
 #   tests/anywhere/run-vm-gates.sh resume     e2e_reproos_anywhere_apply_resumes_after_disconnect
+#   tests/anywhere/run-vm-gates.sh detection  test_reproos_anywhere_detection_and_append_only_capture
+#   tests/anywhere/run-vm-gates.sh confinement test_reproos_anywhere_installer_confinement_and_isolation
+#   tests/anywhere/run-vm-gates.sh recovery   e2e_reproos_anywhere_failure_recovery_matrix
 #
 # Every VM is an unprivileged QEMU/KVM guest under build/anywhere/run that
 # the gate destroys; images are digest-pinned (tests/anywhere/distros.json)
 # and cached under build/anywhere/images. A missing tool or /dev/kvm is a
 # failure with a remedy, never a skip.
 set -euo pipefail
-gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume [distro...]}
+gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement|recovery [distro...]}
 shift
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -29,5 +32,8 @@ case "$gate" in
   diskid) exec python3 "$here/test_disk_identity_mismatch.py" --artifacts "$art" "$@" ;;
   negatives) exec python3 "$here/test_negatives.py" --artifacts "$art" "$@" ;;
   resume) exec python3 "$here/test_resume.py" --artifacts "$art" ;;
+  detection) exec python3 "$here/test_detection.py" --artifacts "$art" ;;
+  confinement) exec python3 "$here/test_confinement.py" --artifacts "$art" ;;
+  recovery) exec python3 "$here/test_recovery.py" --artifacts "$art" ;;
   *) echo "run-vm-gates: unknown gate $gate" >&2; exit 64 ;;
 esac

@@ -375,9 +375,15 @@ class MachineConfigurationTests(unittest.TestCase):
                 "systemd's transient /etc/machine-id bind mount"
             )
         try:
+            # Probe unshare(2) alone: it is the one call a kernel that
+            # forbids unprivileged user namespaces refuses. The rest of the
+            # setup runs unguarded below, so a defect in it fails the test
+            # instead of turning into a skip.
             subprocess.run(
                 [sys.executable, "-c", "pass"],
-                preexec_fn=enter_user_mount_namespace,
+                preexec_fn=lambda: os.unshare(
+                    os.CLONE_NEWUSER | os.CLONE_NEWNS
+                ),
                 check=True,
             )
         except subprocess.SubprocessError as error:

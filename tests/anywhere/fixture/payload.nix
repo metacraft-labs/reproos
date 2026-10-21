@@ -174,7 +174,7 @@ pkgs.runCommand "reproos-anywhere-fixture-payload" {
   cat > $R/etc/systemd/system/reproos-first-boot-enroll.service <<'EOF'
   [Unit]
   Description=Enroll ReproOS instance identity and SSH keys
-  After=local-fs.target
+  After=local-fs.target systemd-machine-id-commit.service
   Before=sddm.service sshd.service reproos-health-check.service
   ConditionPathExists=!/var/lib/reproos/enrollment.complete
 

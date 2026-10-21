@@ -914,9 +914,12 @@ class Apply:
         access = (self.state.keys / "access_ed25519.pub").read_text()
         return [
             (f"{enroll}/machine-id", (self.plan["machine"]["machine_id"] + "\n").encode(), "0644"),
-            # The machine's identity is set before its first boot: an empty
-            # /etc/machine-id makes systemd bind-mount a transient one
-            # read-only, and first-boot enrollment then races it.
+            # The machine's identity is set before its first boot, so PID 1
+            # and the journal run under the enrolled id from the start: an
+            # empty /etc/machine-id would make systemd bind-mount a random
+            # transient one read-only, which first-boot enrollment then
+            # detaches and replaces, leaving the first boot under that
+            # random id.
             (f"{TARGET_ROOT}/etc/machine-id", (self.plan["machine"]["machine_id"] + "\n").encode(), "0444"),
             (f"{enroll}/authorized_keys", access.encode(), "0644"),
             (f"{TARGET_ROOT}/etc/systemd/system/reproos-first-boot-enroll.service.d/anywhere.conf",

@@ -25,6 +25,9 @@ import repro_dsl_stdlib/packages/git
 # `mkdir` (and the rest of the coreutils command names) live here, and so
 # do `mkfs.vfat` and `xz`.
 import repro_dsl_stdlib/packages/host_system_tools
+# `install-file` is coreutils' `install`, which the first-boot enrollment
+# script runs; it lives in its own module.
+import repro_dsl_stdlib/packages/coreutils_install
 # The system emulator, the software TPM and the two FAT applets the opt-in
 # measured-boot edge runs. Registered for the same reason as the modules
 # above: `toInterfaceToolUse` only sees packages whose module was imported
@@ -38,6 +41,18 @@ import "../apps/reproos-installer/package" as installerPackage
 import "../recipes/reproos-iso/package" as isoPackage
 import "../recipes/reproos-image/package" as imagePackage
 import "../recipes/reproos-container/package" as containerPackage
+
+const enrollmentScriptTools = [
+  # Every gate that runs the shipped `reproos-first-boot-enroll` script
+  # names these identities: its interpreter (`bash`, as the tests invoke
+  # it) and every command it runs on a root-prefixed tree in test mode. A
+  # build action's PATH holds only the identities it declares, so a gate
+  # that names `python3` alone dies on the script's first `mkdir` with
+  # exit 127. `umount` detaches systemd's transient read-only
+  # /etc/machine-id; `mount` and `ssh-keygen` are absent because test mode
+  # supplies the enrollment directory and host-key fingerprint.
+  "python3", "bash", "awk", "grep", "tr", "cat", "mkdir", "chmod", "touch",
+  "mv", "install-file", "umount"]
 
 proc withToolIdentities(action: BuildActionDef;
                         tools: openArray[string]): BuildActionDef =
@@ -181,6 +196,14 @@ package reproosWorkflows:
     "ssh"
     "ssh-keygen"
     "xorriso"
+    # The rest of the first-boot enrollment script's tool set; see
+    # `enrollmentScriptTools`.
+    "awk"
+    "grep"
+    "tr"
+    "cat"
+    "install-file"
+    "umount"
     # The Nim-gate tool set. `nim` compiles every tests/test_*.nim gate and
     # `mkdir` creates its build directory. `clang` is the compiler those
     # gates compile WITH -- `nim c` lowers Nim to C and shells out to a C
@@ -385,9 +408,33 @@ package reproosWorkflows:
         "tests/fixtures/auto-config-minimal.toml",
         "recipes/reproos-image/scripts/reproos-first-boot-enroll",
       ],
-      cacheable = false).withToolIdentities(["python3"])
+      cacheable = false).withToolIdentities(enrollmentScriptTools)
     discard target("test_remote_access_configuration_validation",
       testRemoteAccessConfiguration)
+
+    # First-boot enrollment under systemd's transient read-only
+    # /etc/machine-id: runs the shipped script inside an unprivileged user +
+    # mount namespace with that mount reproduced, and checks that every
+    # copy of the enrollment unit is ordered after the machine-id commit.
+    let testEnrollmentTransientMachineId = shell(
+      command = "python3 tests/test_machine_config.py " &
+        "MachineConfigurationTests." &
+        "test_enrollment_commits_machine_id_under_transient_mount " &
+        "MachineConfigurationTests." &
+        "test_enrollment_units_order_after_machine_id_commit",
+      actionId = "reproos.test-enrollment-transient-machine-id",
+      extraInputs = @[
+        "tests/test_machine_config.py",
+        "tools/reproos-machine-config.py",
+        "tests/fixtures/auto-config-minimal.toml",
+        "recipes/reproos-image/scripts/reproos-first-boot-enroll",
+        "recipes/reproos-image/scripts/configure-installed-root.sh",
+        "recipes/reproos-iso/scripts/stage-de-rootfs.sh",
+        "tests/anywhere/fixture/payload.nix",
+      ],
+      cacheable = false).withToolIdentities(enrollmentScriptTools)
+    discard target("test_enrollment_commits_machine_id_under_transient_mount",
+      testEnrollmentTransientMachineId)
 
     let testInstanceSecretsCacheKey = shell(
       command = "python3 tests/test_machine_config.py " &
@@ -418,7 +465,7 @@ package reproosWorkflows:
       command = "python3 tests/test_cloud_metadata.py CloudFirstBootContract",
       actionId = "reproos.test-cloud-first-boot-contract",
       extraInputs = cloudMetadataInputs,
-      cacheable = false).withToolIdentities(["python3"])
+      cacheable = false).withToolIdentities(enrollmentScriptTools)
     discard target("test_cloud_first_boot_contract_across_metadata_adapters",
       testCloudFirstBootContract)
 
@@ -426,7 +473,7 @@ package reproosWorkflows:
       command = "python3 tests/test_cloud_metadata.py CloudMetadataSpoofing",
       actionId = "reproos.test-cloud-metadata-spoofing",
       extraInputs = cloudMetadataInputs,
-      cacheable = false).withToolIdentities(["python3"])
+      cacheable = false).withToolIdentities(enrollmentScriptTools)
     discard target("test_cloud_metadata_spoofing_fails_identity_checks",
       testCloudMetadataSpoofing)
 
@@ -1857,6 +1904,7 @@ package reproosWorkflows:
       testInstallerVisuals,
       testInstallerArtifacts,
       testRemoteAccessConfiguration,
+      testEnrollmentTransientMachineId,
       testInstanceSecretsCacheKey,
       testCloudFirstBootContract,
       testCloudMetadataSpoofing,

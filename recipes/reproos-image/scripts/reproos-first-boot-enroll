@@ -241,8 +241,38 @@ ssh_dir="$home/.ssh"
 mkdir -p "$ssh_dir" "$root/etc/ssh"
 chmod 0750 "$home"
 install -m 0600 "$enrollment/authorized_keys" "$ssh_dir/authorized_keys"
-printf '%s\n' "$machine_id" > "$root/etc/machine-id"
-chmod 0644 "$root/etc/machine-id"
+
+# On first boot of a root whose /etc/machine-id is empty, systemd generates a
+# transient id and bind-mounts it read-only over /etc/machine-id until
+# systemd-machine-id-commit.service writes it to disk and detaches the mount
+# (https://www.freedesktop.org/software/systemd/man/latest/machine-id.html,
+# https://www.freedesktop.org/software/systemd/man/latest/systemd-machine-id-commit.service.html).
+# The unit is ordered after the commit service, but when that service is
+# absent or skipped the mount is still here and the write below would fail
+# with "Read-only file system". Detach it the same way the commit service does
+# (umount2 with MNT_DETACH, i.e. `umount -l`) so the write lands in the
+# persistent file underneath. The transient id is deliberately discarded:
+# the instance's identity is the *enrolled* id, which identity.json and the
+# operator's records name, so committing the random transient one would only
+# be overwritten here anyway. Processes that already read the transient id
+# (PID 1, the journal) keep it until the next boot.
+machine_id_path="$root/etc/machine-id"
+machine_id_is_mounted() {
+  # Field 5 of mountinfo is the mount point (proc(5)). The paths compared here
+  # contain no whitespace, so mountinfo's octal escaping does not apply.
+  awk -v path="$machine_id_path" '
+    $5 == path { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' /proc/self/mountinfo
+}
+if machine_id_is_mounted; then
+  if ! umount -l "$machine_id_path" || machine_id_is_mounted; then
+    echo "REPROOS_ENROLLMENT:FAIL:machine-id-mount" >&2
+    exit 1
+  fi
+fi
+printf '%s\n' "$machine_id" > "$machine_id_path"
+chmod 0644 "$machine_id_path"
 if [ "${REPROOS_TEST_MODE:-0}" != 1 ]; then
   chown -R "$user:$user" "$home"
 fi

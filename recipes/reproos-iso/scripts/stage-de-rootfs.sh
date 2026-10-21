@@ -2257,10 +2257,15 @@ EOF
 ln -sfn /etc/systemd/system/reproos-azure-ready.service \
   "$STAGE_DIR/etc/systemd/system/multi-user.target.wants/reproos-azure-ready.service"
 
+# Order enrollment after systemd-machine-id-commit.service so the two never
+# both try to detach systemd's transient read-only /etc/machine-id mount at
+# once. After= does not pull the commit service in: when it is absent or
+# skipped, reproos-first-boot-enroll detaches the mount itself before writing
+# the enrolled id.
 cat > "$STAGE_DIR/etc/systemd/system/reproos-first-boot-enroll.service" <<'EOF'
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys
-After=local-fs.target reproos-cloud-enrollment.service
+After=local-fs.target reproos-cloud-enrollment.service systemd-machine-id-commit.service
 Before=sddm.service sshd.service reproos-health-check.service
 ConditionPathExists=/var/lib/reproos/installation-receipt.json
 ConditionPathExists=!/var/lib/reproos/enrollment.complete

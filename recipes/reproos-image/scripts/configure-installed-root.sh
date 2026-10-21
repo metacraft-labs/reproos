@@ -383,10 +383,15 @@ SSHD_UNIT_EOF
 
 "$SUDO" install -m 0755 "$SCRIPT_DIR_SELF/reproos-first-boot-enroll" \
   "$ROOT_TREE/usr/local/sbin/reproos-first-boot-enroll"
+# Order enrollment after systemd-machine-id-commit.service so the two never
+# both try to detach systemd's transient read-only /etc/machine-id mount at
+# once. After= does not pull the commit service in: when it is absent or
+# skipped, reproos-first-boot-enroll detaches the mount itself before writing
+# the enrolled id.
 "$SUDO" bash -c "cat > '$ROOT_TREE/etc/systemd/system/reproos-first-boot-enroll.service'" <<'ENROLL_UNIT_EOF'
 [Unit]
 Description=Enroll ReproOS instance identity and SSH keys
-After=local-fs.target
+After=local-fs.target systemd-machine-id-commit.service
 Before=sddm.service sshd.service reproos-health-check.service
 ConditionPathExists=!/var/lib/reproos/enrollment.complete
 

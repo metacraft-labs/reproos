@@ -88,6 +88,12 @@ def main() -> int:
                            help="unpack the payload again over the installed root before repairing")
     st = sub.add_parser("status")
     st.add_argument("--name", required=True)
+    lg = sub.add_parser("logs", help="the journal, and the tail of the rescue console")
+    lg.add_argument("--name", required=True)
+    lg.add_argument("--lines", type=int, default=60)
+    sh_ = sub.add_parser("ssh", help="a shell on the INSTALLED system, with its pinned host key")
+    sh_.add_argument("--name", required=True)
+    sh_.add_argument("command", nargs="*")
     ab = sub.add_parser("abort", help="roll back to the source system (only before destroy)")
     ab.add_argument("--name", required=True)
     bu = sub.add_parser("bundle", help="write a failure bundle without credentials")
@@ -124,6 +130,32 @@ def main() -> int:
             proof = run.recover(args.rematerialize) if args.cmd == "recover" else run.run()
             print(json.dumps(proof, indent=2, sort_keys=True))
             return 0
+        if args.cmd == "logs":
+            from reproos_anywhere.journal import Journal
+            sdir = state / args.name
+            plan = canon.read(sdir / "plan" / "plan.json")
+            for r in Journal(sdir / "journal.jsonl", canon.digest(plan)).records:
+                print(f"{r['time']} {r['seq']:4} {r['stage']:20} {r['event']:9} "
+                      f"{json.dumps(r['evidence'], sort_keys=True)[:160]}")
+            enr = canon.read(sdir / "enrollment.json")
+            from reproos_anywhere.rescue import adapter
+            console = adapter(enr["rescue"]).console_since(0).splitlines()
+            print(f"--- rescue console ({enr['rescue']['console_log']}), last {args.lines} lines ---")
+            print("\n".join(console[-args.lines:]))
+            return 0
+        if args.cmd == "ssh":
+            import os
+            plan = canon.read(state / args.name / "plan" / "plan.json")
+            enr = canon.read(state / args.name / "enrollment.json")
+            st = c.State(state, args.name)
+            session = c.Session(c.Endpoint(enr["ssh"]["address"], enr["ssh"]["port"],
+                                           plan["configuration"]["user"],
+                                           plan["identities"]["installed_host_key"],
+                                           st.keys / "access_ed25519"), st.work)
+            argv = session.argv(" ".join(args.command) if args.command else None)
+            if not args.command:
+                argv.remove("-T")
+            os.execvp(argv[0], argv)
         if args.cmd == "abort":
             from reproos_anywhere import recovery
             enr = canon.read(state / args.name / "enrollment.json")

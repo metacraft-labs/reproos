@@ -27,7 +27,14 @@ reproos-anywhere plan      --name <machine> --config auto-config.toml [--takeove
 reproos-anywhere apply     --name <machine> --acknowledge <plan-id>
 reproos-anywhere resume    --name <machine> --acknowledge <plan-id>
 reproos-anywhere status    --name <machine>
+reproos-anywhere logs      --name <machine>             # journal + rescue console tail
+reproos-anywhere ssh       --name <machine> [COMMAND]   # the INSTALLED system, pinned key
+reproos-anywhere abort     --name <machine>             # roll back; only before destroy
+reproos-anywhere recover   --name <machine> --acknowledge <plan-id> [--rematerialize]
+reproos-anywhere bundle    --name <machine> --output FILE.tar.gz
 ```
+
+Each is also `repro run anywhere-<command> -- ...`.
 
 Common options: `--state DIR` (controller state, one directory per
 machine), `--payload DIR`, `--installer DIR`, `--kexec FILE`,

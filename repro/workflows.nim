@@ -1810,6 +1810,43 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
     run("anywhere-status", build = anywhereStatusTask.id, owningPackage = "reproosWorkflows")
 
+    let anywhereLogsTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-logs", "logs"],
+      actionId = "reproos.anywhere-logs",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-logs", build = anywhereLogsTask.id, owningPackage = "reproosWorkflows")
+
+    let anywhereSshTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-ssh", "ssh"],
+      actionId = "reproos.anywhere-ssh",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-ssh", build = anywhereSshTask.id, owningPackage = "reproosWorkflows")
+    let anywhereRecoverTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-recover", "recover"],
+      actionId = "reproos.anywhere-recover",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-recover", build = anywhereRecoverTask.id, owningPackage = "reproosWorkflows")
+    let anywhereAbortTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-abort", "abort"],
+      actionId = "reproos.anywhere-abort",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-abort", build = anywhereAbortTask.id, owningPackage = "reproosWorkflows")
+    let anywhereBundleTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-bundle", "bundle"],
+      actionId = "reproos.anywhere-bundle",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-bundle", build = anywhereBundleTask.id, owningPackage = "reproosWorkflows")
+
     discard target("test-source-composition", sourceComposition)
     discard collect("lint", actions = @[sourceComposition])
 

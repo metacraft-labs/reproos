@@ -109,7 +109,16 @@ class Installer:
                 raise AssertionError("installer sshd never answered after its announcement")
             time.sleep(1)
 
-    def ssh(self, key: Path, command: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    def ssh(self, key: Path, command: str, timeout: float = 60) -> subprocess.CompletedProcess:
+        # The installer's serial console is synchronous at 115200 baud and
+        # carries every audit record; right after boot a request can wait
+        # behind that backlog, so one slow first answer is retried.
+        try:
+            return self._ssh(key, command, timeout)
+        except subprocess.TimeoutExpired:
+            return self._ssh(key, command, timeout)
+
+    def _ssh(self, key: Path, command: str, timeout: float) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["ssh", "-F", "/dev/null", "-o", f"UserKnownHostsFile={self.work / 'known_hosts'}",
              "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",

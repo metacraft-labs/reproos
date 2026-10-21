@@ -104,6 +104,93 @@ def abort(state_dir: Path, source_session_factory, log=print) -> dict:
     return evidence
 
 
+def revoked(journal: Journal) -> bool:
+    return any(r["stage"] == "plan" and r["event"] == "note" and r["evidence"].get("revoked")
+               for r in journal.records)
+
+
+def contain(state_dir: Path, evidence_dir: Path, log=print) -> dict:
+    """Containment (MS-1 drill): freeze the machine through the rescue plane,
+    capture its memory to evidence, power it off, revoke the plan and every
+    credential it issued. Nothing is written to the machine."""
+    plan, plan_id, journal, enr = _load(state_dir)
+    rescue = rescue_adapter(enr["rescue"])
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    capture = evidence_dir / f"memory-{plan_id[:16]}.elf"
+    rescue.hmp("stop")
+    # Synchronous (no -d): the monitor answers when the dump is complete.
+    rescue.hmp(f"dump-guest-memory -z {capture}", timeout=600)
+    if not capture.exists() or capture.stat().st_size == 0:
+        raise RecoveryError("memory capture did not complete")
+    digest = hashlib.sha256(capture.read_bytes()).hexdigest()
+    rescue.hmp("quit")
+    revoked_keys = []
+    for key in sorted((state_dir / "keys").glob("*")):
+        if key.name.startswith(("session_", "access_ed25519", "installed_host_ed25519")):
+            revoked_keys.append(key.name)
+            key.unlink()
+    if journal.open_stage():
+        journal.abort(journal.open_stage(), "contained")
+    record = {"revoked": True, "memory_capture": str(capture), "memory_sha256": digest,
+              "revoked_credentials": revoked_keys, "machine": "frozen, captured, powered off"}
+    journal.note("plan", record)
+    log(f"contained: memory captured ({capture.stat().st_size} bytes, sha256 {digest[:16]}), "
+        f"machine powered off, {len(revoked_keys)} credential file(s) revoked")
+    return record
+
+
+def investigate(state_dir: Path) -> dict:
+    """A read-only report from the controller's evidence alone."""
+    plan, plan_id, journal, enr = _load(state_dir)
+    halts = [r["evidence"] for r in journal.records if r["stage"] == "detector" and "halt" in r["evidence"]]
+    completed = journal.completed()
+    return {
+        "plan": plan_id, "machine": plan["machine"]["name"],
+        "detections": [e for h in halts for e in h.get("events", [])],
+        "completed_stages": completed,
+        "storage_destroyed": "destroy" in {r["stage"] for r in journal.records if r["event"] == "start"},
+        "revoked": revoked(journal),
+        "journal_records": len(journal.records),
+    }
+
+
+def replan(state_dir: Path, controller_key: Path, controller_pub: str, log=print) -> str:
+    """After containment: a new signed plan for the same machine, target and
+    payload, with fresh session, host and access credentials, rescue-media
+    takeover (the source is gone) and a link to the plan it recovers."""
+    import secrets
+    import shutil
+    from . import keys, plan as plan_mod
+    old, old_id, journal, enr = _load(state_dir)
+    if not revoked(journal):
+        raise RecoveryError("replan is for a contained (revoked) plan")
+    archive = state_dir / "history" / old_id
+    archive.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(state_dir / "plan", archive / "plan", dirs_exist_ok=True)
+    shutil.move(state_dir / "journal.jsonl", archive / "journal.jsonl")
+    for f in ("detect.json",):
+        if (state_dir / f).exists():
+            shutil.move(state_dir / f, archive / f)
+    access_pub = keys.ensure_keypair(state_dir / "keys" / "access_ed25519", f"reproos-anywhere-access-{old['machine']['name']}")
+    installed_pub = keys.ensure_keypair(state_dir / "keys" / "installed_host_ed25519",
+                                        f"root@{old['configuration']['hostname']}")
+    new = json.loads(json.dumps(old))
+    now = time.time()
+    new["created"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+    new["expires"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 6 * 3600))
+    new["session"] = {"id": secrets.token_hex(8), "nonce": secrets.token_hex(16)}
+    new["takeover"] = "rescue-media"
+    new["recovery_of"] = old_id
+    new["identities"]["installed_host_key"] = installed_pub
+    new["identities"]["installed_access_key"] = access_pub
+    new["secrets"][0]["public"] = installed_pub
+    plan_dir = state_dir / "plan"
+    shutil.rmtree(plan_dir)
+    new_id = plan_mod.save(new, plan_dir, controller_key)
+    log(f"replanned {old_id[:16]} -> {new_id}: rescue-media takeover, fresh credentials")
+    return new_id
+
+
 def bundle(state_dir: Path, out: Path) -> dict:
     """A failure bundle: everything to investigate, nothing that authenticates."""
     plan, plan_id, journal, enr = _load(state_dir)

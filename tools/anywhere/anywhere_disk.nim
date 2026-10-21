@@ -120,6 +120,12 @@ proc resolveDisk(serial: string; sizeSectors: string):
       continue
     var s = readFirst(p / "serial")
     if s.len == 0: s = readFirst(p / "device" / "serial")
+    if s.len == 0:
+      # SCSI/SATA: the unit serial number VPD page (4-byte header).
+      try:
+        let vpd = readFile(p / "device" / "vpd_pg80")
+        if vpd.len > 4: s = vpd[4 .. ^1].replace("\0", "").strip()
+      except IOError, OSError: discard
     if s == serial: hits.add n
   if hits.len == 0:
     return ("", "", "no disk reports serial " & serial)

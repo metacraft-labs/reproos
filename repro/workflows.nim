@@ -1815,6 +1815,20 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(anywhereVmTools)
     discard target("e2e_reproos_anywhere_preflight_refusals", testAnywhereRefusals)
 
+    let testAnywhereDrill = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh drill",
+      actionId = "reproos.e2e-anywhere-compromise-drill",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_compromise_drill", testAnywhereDrill)
+
+    let testAnywhereControllers = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh controllers",
+      actionId = "reproos.e2e-anywhere-storage-controllers",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_storage_controllers", testAnywhereControllers)
+
     # Operator commands. Each forwards its arguments; nothing here chooses
     # a machine or a plan on the operator's behalf.
     let anywherePreflightTask = shell(
@@ -1947,6 +1961,8 @@ package reproosWorkflows:
       testAnywhereConfinement,
       testAnywhereRecovery,
       testAnywhereRefusals,
+      testAnywhereDrill,
+      testAnywhereControllers,
     ])
 
     discard collect("incus-acceptance", actions = @[

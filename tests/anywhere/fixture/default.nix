@@ -20,6 +20,9 @@
   # The takeover environment's hardening controls. Tests build variants
   # with one removed to prove each control is what its gate depends on.
 , controls ? [ "gate" "ro-store" "egress" ]
+  # The configuration baked into the payload (its install.target_device
+  # must name the disk being converted).
+, autoConfig ? reproosSrc + "/tests/fixtures/auto-config-minimal.toml"
 , nixpkgs ? builtins.fetchTarball {
     # Same revision as the workspace flake lock (nixpkgs addf7cf5).
     url = "https://github.com/NixOS/nixpkgs/archive/addf7cf5f383a3101ecfba091b98d0a1263dc9b8.tar.gz";
@@ -148,7 +151,7 @@ let
   '';
 
   payload = import ./payload.nix {
-    inherit pkgs lib kernel modulesFor reproosSrc;
+    inherit pkgs lib kernel modulesFor reproosSrc autoConfig;
   };
 in
 {

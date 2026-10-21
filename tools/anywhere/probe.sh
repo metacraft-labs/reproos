@@ -91,13 +91,19 @@ for b in /sys/block/*; do
   emit disk "$n.removable" "$(rd "$b/removable")"
   emit disk "$n.ro" "$(rd "$b/ro")"
   emit disk "$n.devnum" "$(rd "$b/dev")"
+  # virtio-blk: serial; NVMe: the controller's serial; SCSI/SATA: VPD 0x80.
   serial=$(rd "$b/serial"); [ -n "$serial" ] || serial=$(rd "$b/device/serial")
-  emit disk "$n.serial" "$serial"
+  if [ -z "$serial" ] && [ -r "$b/device/vpd_pg80" ]; then
+    serial=$(tail -c +5 "$b/device/vpd_pg80" 2>/dev/null | tr -d '\000')
+  fi
+  emit disk "$n.serial" "$(printf '%s' "$serial" | sed 's/^ *//; s/ *$//')"
   emit disk "$n.wwid" "$(rd "$b/wwid")$(rd "$b/device/wwid")"
   emit disk "$n.model" "$(rd "$b/device/model")"
   emit disk "$n.dm_uuid" "$(rd "$b/dm/uuid")"
   emit disk "$n.md_level" "$(rd "$b/md/level")"
-  drv=$(readlink "$b/device/driver" 2>/dev/null); emit disk "$n.driver" "${drv##*/}"
+  drv=$(readlink "$b/device/driver" 2>/dev/null)
+  [ -n "$drv" ] || drv=$(readlink "$b/device/device/driver" 2>/dev/null)   # NVMe namespace -> controller
+  emit disk "$n.driver" "${drv##*/}"
   path=$(readlink "$b" 2>/dev/null); emit disk "$n.syspath" "$path"
   s=""; for x in "$b"/slaves/*; do [ -e "$x" ] && s="$s ${x##*/}"; done
   emit disk "$n.slaves" "$s"

@@ -147,7 +147,7 @@ PermitTunnel no
 PermitUserEnvironment no
 MaxSessions 8
 PidFile /run/sshd.pid
-LogLevel VERBOSE
+LogLevel INFO
 SetEnv PATH=@toolPath@:/bin
 EOF
 chmod 0600 /etc/anywhere/authorized_keys
@@ -163,16 +163,35 @@ auditctl -b 16384 >/dev/null
 auditctl -f 1 >/dev/null
 auditctl -a always,exit -F arch=b64 -S execve -k anywhere-exec >/dev/null || fatal audit-exec
 auditctl -a always,exit -F arch=b32 -S execve -k anywhere-exec >/dev/null || fatal audit-exec32
-for base in vda vdb vdc vdd sda sdb sdc sdd; do
-  for n in "" 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    auditctl -w "/dev/$base$n" -p w -k anywhere-disk-write >/dev/null 2>&1
+# Watch the disks that EXIST (whole disk and current partitions), plus the
+# partition names the plan's target is about to get. Every audit record is
+# printed synchronously on a 115200-baud console, so watching every
+# conceivable disk node (150 rules) stalled a fresh installer.
+serial_of() {
+  s=$(cat "/sys/block/$1/serial" 2>/dev/null || cat "/sys/block/$1/device/serial" 2>/dev/null)
+  [ -n "$s" ] || s=$(tail -c +5 "/sys/block/$1/device/vpd_pg80" 2>/dev/null | tr -d '\000')
+  printf '%s' "$s" | sed 's/^ *//; s/ *$//'
+}
+want=$(sed -n 's/.*"target_serial":"\([^"]*\)".*/\1/p' /etc/anywhere/handoff.json 2>/dev/null)
+i=0
+while [ "$i" -lt 20 ] && ! ls /sys/block | grep -q -E '^(vd|sd|nvme)'; do sleep 0.5; i=$((i + 1)); done
+target=""
+for d in /sys/block/*; do
+  name=${d##*/}
+  case "$name" in loop*|ram*|zram*|sr*|fd*|nbd*) continue ;; esac
+  auditctl -w "/dev/$name" -p w -k anywhere-disk-write >/dev/null 2>&1
+  for p in "$d"/"$name"*; do
+    [ -r "$p/partition" ] && auditctl -w "/dev/${p##*/}" -p w -k anywhere-disk-write >/dev/null 2>&1
   done
+  [ -n "$want" ] && [ "$(serial_of "$name")" = "$want" ] && target=$name
 done
-for base in nvme0n1 nvme1n1; do
-  for n in "" p1 p2 p3 p4 p5 p6 p7 p8 p9; do
-    auditctl -w "/dev/$base$n" -p w -k anywhere-disk-write >/dev/null 2>&1
+[ -n "$want" ] && [ -z "$target" ] && fatal "target-serial-not-found"
+if [ -n "$target" ]; then
+  case "$target" in *[0-9]) sep=p ;; *) sep= ;; esac
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    auditctl -w "/dev/$target$sep$n" -p w -k anywhere-disk-write >/dev/null 2>&1
   done
-done
+fi
 auditctl -e 2 >/dev/null || fatal audit-lock
 console "REPROOS_ANYWHERE_INSTALLER:AUDIT locked rules=$(auditctl -l | wc -l)"
 

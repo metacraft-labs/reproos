@@ -106,7 +106,8 @@ def short_socket_path() -> str:
 
 def create(distro: str, run: Path, port: int | None, *, firmware: str = "uefi",
            extra_disks: tuple[int, ...] = (), runcmd: tuple[str, ...] = (),
-           network_config: str | None = None, target: str = "boot", mac: str | None = None) -> dict:
+           network_config: str | None = None, target: str = "boot", mac: str | None = None,
+           controller: str = "virtio-blk") -> dict:
     """``firmware`` uefi|bios; ``extra_disks`` sizes (GiB) attached behind
     the target before first boot; ``runcmd`` extra first-boot commands;
     ``network_config`` a cloud-init v2 network document; ``target`` "boot"
@@ -132,6 +133,7 @@ def create(distro: str, run: Path, port: int | None, *, firmware: str = "uefi",
         # deep in a worktree exceeds; the monitor lives in a short one.
         "monitor": short_socket_path(),
         "firmware": firmware,
+        "controller": controller,
         "target": target,
     }
     extra_runcmd = "".join(f"  - [sh, -c, {json.dumps(cmd)}]\n" for cmd in runcmd)
@@ -193,9 +195,17 @@ PLANNING_KINDS = {
 }
 
 
+def planning_kind(m: dict) -> str:
+    """The strongest planning environment both the distribution and the
+    disk controller can boot from."""
+    kinds = {DISTROS[m["distro"]].get("planning", "readonly"),
+             CONTROLLERS[m.get("controller", "virtio-blk")][1]}
+    return "snapshot" if "snapshot" in kinds else "readonly"
+
+
 def qemu_argv(run: Path, readonly: bool) -> list[str]:
     m = json.loads((run / "machine.json").read_text())
-    ro = PLANNING_KINDS[DISTROS[m["distro"]].get("planning", "readonly")][1] if readonly else ""
+    ro = PLANNING_KINDS[planning_kind(m)][1] if readonly else ""
     return [
         "qemu-system-x86_64", "-name", f"anywhere-{m['distro']}",
         "-machine", "q35,accel=kvm", "-cpu", "host", "-smp", str(CPUS), "-m", str(MEMORY_MIB),
@@ -207,7 +217,7 @@ def qemu_argv(run: Path, readonly: bool) -> list[str]:
         # The target sits behind a hot-plug capable root port so a test can
         # replace the drive under a running machine (pcie.0 itself is not).
         "-device", "pcie-root-port,id=rp6,bus=pcie.0,addr=0x6,chassis=6",
-        "-device", f"virtio-blk-pci,drive=d0,id=target,serial={m['serial']},bootindex=1,bus=rp6",
+        *target_device_args(m),
         *extra_disk_args(run, m, ro),
         # The cloud-init seed rides on the chipset's AHCI controller, so it
         # is /dev/sr0 and never takes a /dev/vd* name from a real disk.
@@ -254,6 +264,29 @@ def normal_boot(run: Path) -> None:
     (run / "machine.json").write_text(json.dumps(m, indent=2))
     stop(run, graceful_timeout=5)
     start(run, readonly=False)
+
+
+CONTROLLERS = {
+    # name -> (kernel name of the target, planning environment it supports)
+    "virtio-blk": ("vda", "readonly"),
+    "virtio-scsi": ("sda", "snapshot"),   # the source fscks its ESP and fails read-only
+    "ahci": ("sda", "snapshot"),       # ide-hd cannot be attached read-only
+    "nvme": ("nvme0n1", "snapshot"),
+}
+
+
+def target_device_args(m: dict) -> list[str]:
+    serial, ctl = m["serial"], m.get("controller", "virtio-blk")
+    if ctl == "virtio-blk":
+        return ["-device", f"virtio-blk-pci,drive=d0,id=target,serial={serial},bootindex=1,bus=rp6"]
+    if ctl == "virtio-scsi":
+        return ["-device", "virtio-scsi-pci,id=scsi0,bus=rp6",
+                "-device", f"scsi-hd,drive=d0,id=target,serial={serial},bootindex=1,bus=scsi0.0"]
+    if ctl == "ahci":
+        return ["-device", f"ide-hd,drive=d0,id=target,serial={serial},bootindex=1,bus=ide.0"]
+    if ctl == "nvme":
+        return ["-device", f"nvme,drive=d0,id=target,serial={serial},bootindex=1,bus=rp6"]
+    raise SystemExit(f"unknown controller {ctl}")
 
 
 def firmware_args(run: Path, m: dict) -> list[str]:
@@ -431,7 +464,7 @@ boot_command = ["{sys.executable}", "{Path(__file__).resolve()}", "rescue-boot",
 restore_command = ["{sys.executable}", "{Path(__file__).resolve()}", "normal-boot", "{run}"]
 '''
     if readonly:
-        kind = PLANNING_KINDS[DISTROS[m["distro"]].get("planning", "readonly")][0]
+        kind = PLANNING_KINDS[planning_kind(m)][0]
         text += f'\n[readonly]\nkind = "{kind}"\nissued_by = "anywhere-test-supervisor"\n'
     path = run / ("enrollment-readonly.toml" if readonly else "enrollment.toml")
     path.write_text(text)
@@ -446,6 +479,7 @@ def main() -> int:
     c.add_argument("distro", choices=sorted(DISTROS))
     c.add_argument("dir")
     c.add_argument("--port", type=int)
+    c.add_argument("--controller", default="virtio-blk", choices=sorted(CONTROLLERS))
     s = sub.add_parser("start")
     s.add_argument("dir")
     s.add_argument("--readonly", action="store_true")
@@ -458,7 +492,8 @@ def main() -> int:
     if args.cmd == "image":
         print(fetch_image(args.distro))
     elif args.cmd == "create":
-        print(json.dumps(create(args.distro, Path(args.dir).resolve(), args.port), indent=2))
+        print(json.dumps(create(args.distro, Path(args.dir).resolve(), args.port,
+                                controller=args.controller), indent=2))
     elif args.cmd == "start":
         run = Path(args.dir).resolve()
         start(run, args.readonly)

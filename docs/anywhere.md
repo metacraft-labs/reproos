@@ -32,6 +32,9 @@ reproos-anywhere ssh       --name <machine> [COMMAND]   # the INSTALLED system, 
 reproos-anywhere abort     --name <machine>             # roll back; only before destroy
 reproos-anywhere recover   --name <machine> --acknowledge <plan-id> [--rematerialize]
 reproos-anywhere bundle    --name <machine> --output FILE.tar.gz
+reproos-anywhere contain   --name <machine> --evidence DIR  # compromise: freeze, capture memory, power off, revoke
+reproos-anywhere investigate --name <machine>           # read-only report from the evidence
+reproos-anywhere replan    --name <machine>             # after containment: new plan, fresh keys, rescue-media
 ```
 
 Each is also `repro run anywhere-<command> -- ...`.
@@ -159,6 +162,24 @@ is-system-running` = `running`, a default route, and ReproOS's own
 (`source=anywhere`). The old system and the installer cannot produce those
 answers: they hold different host keys.
 
+### Compromise
+
+`contain` is the response to a detection that looks like compromise: the
+rescue plane freezes the machine, its memory is captured into the evidence
+directory, it is powered off, and the plan and every credential it issued
+(session, installed host and access keys) are revoked. `investigate`
+reports from the controller's evidence alone. `replan` then issues a new
+signed plan for the same target and payload with fresh credentials and
+rescue-media takeover (the source system no longer exists); applying it
+restores the machine under a new installed identity, and the revoked one
+is refused.
+
+### Supported systems
+
+[anywhere-compatibility.md](anywhere-compatibility.md) is generated from
+gate evidence by `tests/anywhere/compat_matrix.py`; a combination is
+listed only if a gate converted it.
+
 ## Tests
 
 ```console
@@ -170,9 +191,14 @@ python3 tests/anywhere/test_negatives.py --artifacts DIR
 python3 tests/anywhere/test_resume.py --artifacts DIR
 python3 tests/anywhere/test_detection.py --artifacts DIR
 python3 tests/anywhere/test_confinement.py --artifacts DIR
+python3 tests/anywhere/test_recovery.py --artifacts DIR
+python3 tests/anywhere/test_preflight_refusals.py --artifacts DIR
+python3 tests/anywhere/test_compromise_drill.py --artifacts DIR
+python3 tests/anywhere/e2e_convert.py --artifacts DIR --controller nvme debian
 ```
 
-`tests/anywhere/run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement` builds the
+`tests/anywhere/run-vm-gates.sh <gate>` (e2e, controllers, diskid, negatives, resume, detection,
+confinement, recovery, refusals, drill) builds the
 fixtures and runs one gate; the same gates are registered as `repro build`
 targets and in the `test` collection.
 

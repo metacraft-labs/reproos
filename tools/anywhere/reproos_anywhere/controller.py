@@ -258,9 +258,11 @@ class Apply:
                 artifacts.installer_id != self.plan["installer"]["id"]:
             raise Refused("payload or installer artifacts are not the ones the plan names")
         self.enr = canon.read(self.state.dir / "enrollment.json")
-        from .recovery import aborted
+        from .recovery import aborted, revoked
         if journal_path.exists() and aborted(Journal(journal_path, self.plan_id)):
             raise Refused("this plan was aborted and its machine rolled back; make a new plan")
+        if journal_path.exists() and revoked(Journal(journal_path, self.plan_id)):
+            raise Refused("this plan was revoked by containment; recover with `replan`")
         self.sink = SinkClient(evidence_sink, self.plan_id) if evidence_sink else None
         all_sinks = list(sinks) + ([self.sink.append] if self.sink else [])
         self.journal = Journal(journal_path, self.plan_id, all_sinks)
@@ -458,7 +460,7 @@ class Apply:
 
     def _run(self) -> dict:
         stages = [s["stage"] for s in self.plan["stages"]]
-        if not self.resume:
+        if not self.resume and not self.plan.get("recovery_of"):
             self.recheck_source()
         done = set(self.journal.completed())
         if self.rerun_from:
@@ -594,7 +596,11 @@ class Apply:
 
     # -- stage: takeover -------------------------------------------------
     def stage_takeover(self) -> dict:
-        src = self.source()
+        if self.plan.get("recovery_of"):
+            # A plan that recovers a contained machine: its source system was
+            # destroyed under the plan it replaces; only rescue media remain.
+            self.source_boot_id = "destroyed-under-" + self.plan["recovery_of"][:16]
+        src = None if self.plan.get("recovery_of") else self.source()
         if not hasattr(self, "source_boot_id"):
             self.source_boot_id = src.run("cat /proc/sys/kernel/random/boot_id").stdout.decode().strip()
         session, nonce = self.plan["session"]["id"], self.plan["session"]["nonce"]
@@ -777,6 +783,10 @@ class Apply:
         self.broker("resolve " + f"--serial {self.target['serial']} "
                     f"--size-sectors {self.target['size_sectors']}")
 
+    def part(self, n: int) -> str:
+        """The kernel's name for partition ``n`` of the target (sda1, nvme0n1p1)."""
+        return f"{self.device}p{n}" if self.device[-1].isdigit() else f"{self.device}{n}"
+
     def target_flags(self) -> str:
         return (f"--device {self.device} --serial {self.target['serial']} "
                 f"--size-sectors {self.target['size_sectors']} --confirm-plan {self.hash}")
@@ -839,7 +849,7 @@ class Apply:
     # -- stage: mount -----------------------------------------------------
     def mounted(self) -> bool:
         out = self.gate("mounts")
-        return f"{self.device}2 {TARGET_ROOT} " in out and f"{self.device}1 {TARGET_ROOT}/boot " in out
+        return f"{self.part(2)} {TARGET_ROOT} " in out and f"{self.part(1)} {TARGET_ROOT}/boot " in out
 
     def stage_mount(self) -> dict:
         path = self.put_disko()
@@ -847,7 +857,7 @@ class Apply:
             self.broker(f"mount {path} --target {TARGET_ROOT}")
         if not self.mounted():
             raise AnywhereError("target layout is not mounted as planned")
-        return {"root": f"{self.device}2", "esp": f"{self.device}1", "prefix": TARGET_ROOT}
+        return {"root": self.part(2), "esp": self.part(1), "prefix": TARGET_ROOT}
 
     def reconcile_mount(self) -> dict:
         return {"state": "redo", "detail": "mount is idempotent", "evidence": {}}
@@ -971,7 +981,7 @@ class Apply:
         if "efi" not in out or files["vmlinuz"]["sha256"] not in out or files["initrd.img"]["sha256"] not in out:
             raise AnywhereError(f"boot path incomplete:\n{out}")
         return {"efi_loader": "EFI/BOOT/BOOTX64.EFI", "kernel": files["vmlinuz"]["sha256"],
-                "initrd": files["initrd.img"]["sha256"], "root": f"{self.device}2"}
+                "initrd": files["initrd.img"]["sha256"], "root": self.part(2)}
 
     def reconcile_bootloader(self) -> dict:
         return {"state": "redo", "detail": "install-root is a bounded, repeatable operation", "evidence": {}}
@@ -1157,7 +1167,9 @@ echo "identity=$(tr -d '\n' < /var/lib/reproos/identity.json)"
 echo "receipt=$(cat /var/lib/reproos/anywhere-receipt.json)"
 src=$(findmnt -n -o SOURCE /); echo "root_source=$src"
 part=${src#/dev/}; disk=$(basename "$(readlink -f /sys/class/block/$part/..)")
-echo "root_disk_serial=$(cat /sys/block/$disk/serial 2>/dev/null || cat /sys/block/$disk/device/serial)"
+s=$(cat /sys/block/$disk/serial 2>/dev/null || cat /sys/block/$disk/device/serial 2>/dev/null)
+[ -n "$s" ] || s=$(tail -c +5 /sys/block/$disk/device/vpd_pg80 2>/dev/null | tr -d '\000')
+echo "root_disk_serial=$(printf '%s' "$s" | sed 's/^ *//; s/ *$//')"
 echo "cmdline=$(cat /proc/cmdline)"
 echo "system_state=$(systemctl is-system-running 2>/dev/null)"
 echo "failed_units=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
@@ -1202,7 +1214,8 @@ def installed_proof(session: Session, plan: dict, journal: Journal) -> dict:
     if facts.get("root_disk_serial") != plan["target"]["serial"]:
         problems.append(f"/ is on a disk with serial {facts.get('root_disk_serial')!r}, "
                         f"not the planned {plan['target']['serial']!r}")
-    if facts.get("root_source") != f"{plan['storage']['device']}2":
+    device = plan["storage"]["device"]
+    if facts.get("root_source") != (f"{device}p2" if device[-1].isdigit() else f"{device}2"):
         problems.append(f"/ is {facts.get('root_source')!r}")
     if facts.get("system_state") != "running":
         problems.append(f"systemd is {facts.get('system_state')!r}; failed: {facts.get('failed_units', '').strip()}")

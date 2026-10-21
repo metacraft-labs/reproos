@@ -37,7 +37,22 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 CLI = REPO / "tools" / "anywhere" / "reproos-anywhere"
 SUPERVISOR = HERE / "supervisor.py"
+sys.path.insert(0, str(HERE))
+import supervisor as sup  # noqa: E402
 CONFIG = REPO / "tests" / "fixtures" / "auto-config-minimal.toml"
+DEVICE_CONFIGS = {"vda": CONFIG,
+                  "sda": HERE / "fixtures" / "auto-config-sda.toml",
+                  "nvme0n1": HERE / "fixtures" / "auto-config-nvme0n1.toml"}
+
+
+def payload_for(config: Path) -> Path:
+    """The fixture payload built for ``config`` (its target device differs)."""
+    reprobuild = Path(os.environ.get("REPROBUILD_SOURCE_ROOT", REPO.parent / "reprobuild")).resolve()
+    out = subprocess.run(["nix-build", "--no-out-link", str(HERE / "fixture"), "-A", "payload",
+                          "--arg", "reproosSrc", str(REPO), "--arg", "reprobuildSrc", str(reprobuild),
+                          "--arg", "autoConfig", str(config)],
+                         check=True, capture_output=True, text=True).stdout.strip().splitlines()[-1]
+    return Path(out)
 
 
 def sh(*argv, check=True, **kw) -> subprocess.CompletedProcess:
@@ -53,15 +68,19 @@ def sha(path: Path) -> str:
 
 
 class Run:
-    def __init__(self, artifacts: Path, distro: str):
+    def __init__(self, artifacts: Path, distro: str, controller: str = "virtio-blk"):
         self.a = artifacts
         self.distro = distro
-        self.vm = artifacts / "run" / f"{distro}-{int(time.time())}"
+        self.controller = controller
+        device = sup.CONTROLLERS[controller][0]
+        self.config = DEVICE_CONFIGS[device]
+        self.payload = artifacts / "out-payload" if device == "vda" else payload_for(self.config)
+        self.vm = artifacts / "run" / f"{distro}-{controller}-{int(time.time())}"
         self.state = artifacts / "state"
         self.evidence = artifacts / "evidence" / self.vm.name
 
     def cli(self, *args, check=True) -> subprocess.CompletedProcess:
-        return sh(sys.executable, CLI, "--state", self.state, "--payload", self.a / "out-payload",
+        return sh(sys.executable, CLI, "--state", self.state, "--payload", self.payload,
                   "--installer", self.a / "out-installer", "--kexec", self.a / "out-kexec" / "bin" / "kexec",
                   "--layout-tool", self.a / "bin" / "anywhere_layout", *args,
                   check=check, capture_output=True)
@@ -82,8 +101,8 @@ class Run:
         print(f"[{self.distro}] {what}", flush=True)
 
     def run(self) -> dict:
-        self.step("create source VM from the pinned image")
-        self.sup("create", self.distro, self.vm)
+        self.step(f"create source VM from the pinned image ({self.controller})")
+        self.sup("create", self.distro, self.vm, "--controller", self.controller)
         name = self.name()
         self.sup("stop", self.vm)
 
@@ -91,7 +110,7 @@ class Run:
         before = sha(self.vm / "disk.qcow2")
         self.sup("start", self.vm, "--readonly")
         pf = self.cli("--json", "preflight", "--enrollment", self.vm / "enrollment-readonly.toml",
-                      "--config", CONFIG, check=False)
+                      "--config", self.config, check=False)
         self.sup("stop", self.vm)
         after = sha(self.vm / "disk.qcow2")
         if pf.returncode != 0:
@@ -102,7 +121,7 @@ class Run:
 
         self.step("plan")
         self.sup("start", self.vm)
-        pl = self.cli("plan", "--name", name, "--config", CONFIG)
+        pl = self.cli("plan", "--name", name, "--config", self.config)
         ack = pl.stdout.strip().splitlines()[-1].split()[-1]
 
         self.step(f"apply {ack[:16]}...")
@@ -116,7 +135,13 @@ class Run:
             raise AssertionError(f"no installed verdict: {proof}")
         self.step(f"installed in {elapsed:.0f}s: {proof['root']} on {proof['root_disk_serial']}, "
                   f"generation {proof['generation'][:12]}, host key {proof['host_key_fingerprint']}")
-        return {"distro": self.distro, "plan": ack, "planning_disk_sha256": before,
+        plan = json.loads((self.state / name / "plan" / "plan.json").read_text())
+        machine = json.loads((self.vm / "machine.json").read_text())
+        return {"distro": self.distro, "controller": self.controller, "plan": ack,
+                "takeover": plan["takeover"], "firmware": machine.get("firmware", "uefi"),
+                "architecture": "x86_64", "network": "dhcp",
+                "planning_environment": (report.get("planning_environment") or {}).get("kind"),
+                "image": sup.DISTROS[self.distro].get("file"), "planning_disk_sha256": before,
                 "planning_disk_unchanged": True, "report": report.get("id"),
                 "apply_seconds": int(elapsed), "proof": proof}
 
@@ -147,13 +172,14 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--artifacts", required=True)
     p.add_argument("--keep", action="store_true", help="keep the VM after the test")
+    p.add_argument("--controller", default="virtio-blk", choices=sorted(sup.CONTROLLERS))
     p.add_argument("distros", nargs="+")
     args = p.parse_args()
     artifacts = Path(args.artifacts).resolve()
     os.environ.setdefault("ANYWHERE_IMAGE_CACHE", str(artifacts / "images"))
     results, failed = [], []
     for distro in args.distros:
-        r = Run(artifacts, distro)
+        r = Run(artifacts, distro, args.controller)
         try:
             results.append(r.run())
         except Exception as error:  # noqa: BLE001 -- report every distro

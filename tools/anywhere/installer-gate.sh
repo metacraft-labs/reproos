@@ -65,6 +65,13 @@ readable() {
   done
 }
 argc() { [ "$#" -eq "$want" ] || refuse "$verb: wants $want argument(s)"; }
+# The kernel's partition naming: sda -> sda1, nvme0n1 -> nvme0n1p1.
+part() { case "$1" in *[0-9]) echo "/dev/${1}p$2" ;; *) echo "/dev/$1$2" ;; esac; }
+disk_serial() {
+  s=$(cat "/sys/block/$1/serial" 2>/dev/null || cat "/sys/block/$1/device/serial" 2>/dev/null)
+  [ -n "$s" ] || s=$(tail -c +5 "/sys/block/$1/device/vpd_pg80" 2>/dev/null | tr -d '\000')
+  printf '%s' "$s" | sed 's/^ *//; s/ *$//'
+}
 
 case "$verb" in
   identity)  want=0; argc "$@"; exec cat /run/anywhere/identity ;;
@@ -85,12 +92,11 @@ case "$verb" in
              mkdir -p -- "$(dirname -- "$1")" && exec cat >> "$1" ;;
   sysblock)  want=1; argc "$@"; name "$1"; exec readlink "/sys/block/$1" ;;
   serial)    want=1; argc "$@"; name "$1"
-             s=$(cat "/sys/block/$1/serial" 2>/dev/null || cat "/sys/block/$1/device/serial" 2>/dev/null)
-             printf '%s\n%s\n' "$s" "$(cat "/sys/block/$1/size")"; exit 0 ;;
+             printf '%s\n%s\n' "$(disk_serial "$1")" "$(cat "/sys/block/$1/size")"; exit 0 ;;
   partitions) want=1; argc "$@"; name "$1"; exec ls "/sys/block/$1" ;;
   probe)     want=1; argc "$@"; name "$1"; blkid -p "/dev/$1"; echo "rc=$?"; exit 0 ;;
   labels)    want=1; argc "$@"; name "$1"
-             exec blkid -o export "/dev/${1}1" "/dev/${1}2" ;;
+             exec blkid -o export "$(part "$1" 1)" "$(part "$1" 2)" ;;
   unpack)    want=0; argc "$@"
              cd /mnt && zstd -dc .anywhere/rootfs.tar.zst | tar -xpf - --numeric-owner \
                && rm -rf /mnt/.anywhere && sync; exit $? ;;
@@ -99,7 +105,7 @@ case "$verb" in
              echo "os_id=$( (. /mnt/etc/os-release && echo "$ID") 2>/dev/null)"; exit 0 ;;
   boot-facts) want=1; argc "$@"; name "$1"
              [ -s /mnt/boot/EFI/BOOT/BOOTX64.EFI ] && echo efi
-             grep -c "root=/dev/${1}2" /mnt/boot/grub/grub.cfg
+             grep -c "root=$(part "$1" 2)" /mnt/boot/grub/grub.cfg
              sha256sum /mnt/boot/vmlinuz /mnt/boot/initrd.img; exit 0 ;;
   disk)      # the storage broker's idempotent verbs, inline
              case "${1:-}" in resolve|mount|unmount) ;; *) refuse "disk: ${1:-} does not run inline" ;; esac

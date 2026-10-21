@@ -94,6 +94,13 @@ def main() -> int:
     sh_ = sub.add_parser("ssh", help="a shell on the INSTALLED system, with its pinned host key")
     sh_.add_argument("--name", required=True)
     sh_.add_argument("command", nargs="*")
+    ct = sub.add_parser("contain", help="freeze, capture memory, power off and revoke (compromise)")
+    ct.add_argument("--name", required=True)
+    ct.add_argument("--evidence", required=True, metavar="DIR")
+    iv = sub.add_parser("investigate", help="read-only report from the controller's evidence")
+    iv.add_argument("--name", required=True)
+    rp = sub.add_parser("replan", help="a new plan for a contained machine (rescue-media, fresh keys)")
+    rp.add_argument("--name", required=True)
     ab = sub.add_parser("abort", help="roll back to the source system (only before destroy)")
     ab.add_argument("--name", required=True)
     bu = sub.add_parser("bundle", help="write a failure bundle without credentials")
@@ -156,6 +163,18 @@ def main() -> int:
             if not args.command:
                 argv.remove("-T")
             os.execvp(argv[0], argv)
+        if args.cmd in ("contain", "investigate", "replan"):
+            from reproos_anywhere import recovery
+            sdir = state / args.name
+            if args.cmd == "contain":
+                print(json.dumps(recovery.contain(sdir, Path(args.evidence)), indent=2, sort_keys=True))
+            elif args.cmd == "investigate":
+                print(json.dumps(recovery.investigate(sdir), indent=2, sort_keys=True))
+            else:
+                st = c.State(state, args.name)
+                plan_id = recovery.replan(sdir, st.controller_key, st.controller_pub)
+                print(f"  --acknowledge {plan_id}")
+            return 0
         if args.cmd == "abort":
             from reproos_anywhere import recovery
             enr = canon.read(state / args.name / "enrollment.json")

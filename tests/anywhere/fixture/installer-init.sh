@@ -182,6 +182,9 @@ console "REPROOS_ANYWHERE_INSTALLER:AUDIT locked rules=$(auditctl -l | wc -l)"
 # preceded by an exec record).
 sleep 2
 console "REPROOS_ANYWHERE_INSTALLER:READY session=$session nonce=$nonce boot_id=$boot_id hostkey=$hostkey"
+# The line reaches the UART after echo returns; starting sshd now would
+# put its audit records in the middle of it. Let it drain first.
+sleep 1
 
 while :; do
   if [ "$debug" = 1 ]; then dflag=-d; else dflag=; fi

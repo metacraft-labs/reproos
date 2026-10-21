@@ -1092,6 +1092,14 @@ class Apply:
         if not self.mounted():
             self.broker(f"mount {path} --target {TARGET_ROOT}")
         repaired = {}
+        if not rematerialize:
+            # A recovery session is a fresh RAM-resident installer: the kernel
+            # and initrd install-root copies onto the ESP are not in its work
+            # area unless they are sent (and verified) again.
+            files = self.plan["payload"]["files"]
+            for name in ("vmlinuz", "initrd.img"):
+                self.upload_resumable(self.artifacts.payload_dir / name, f"{INSTALLER_WORK}/{name}",
+                                      files[name]["sha256"])
         if rematerialize:
             repaired["materialize"] = self.stage_materialize()
             # The payload's /etc replaced the accounts first-boot enrollment

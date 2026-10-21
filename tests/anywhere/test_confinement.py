@@ -95,6 +95,19 @@ class Installer:
         else:
             raise AssertionError(f"installer did not announce itself:\n{text[-2000:]}")
         (work / "known_hosts").write_text(f"[127.0.0.1]:{self.port} {self.hostkey}\n")
+        # The installer starts sshd only after its announcement has drained
+        # to the console: wait for the SSH banner, as the controller does.
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=5) as conn:
+                    if conn.recv(64).startswith(b"SSH-"):
+                        break
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise AssertionError("installer sshd never answered after its announcement")
+            time.sleep(1)
 
     def ssh(self, key: Path, command: str, timeout: float = 30) -> subprocess.CompletedProcess:
         return subprocess.run(

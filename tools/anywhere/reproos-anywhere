@@ -79,6 +79,8 @@ def main() -> int:
                             "record must be acknowledged there before the stage proceeds")
         a.add_argument("--clear-detection", action="store_true",
                        help="resume after an investigated detection halt")
+        a.add_argument("--events", metavar="FILE",
+                       help="append machine-readable progress events (JSON lines) and the verdict")
         if name == "resume":
             a.add_argument("--reformat", action="store_true",
                            help="after destroy only: format the failed install again and redo every "
@@ -133,7 +135,8 @@ def main() -> int:
                           artifacts=artifacts(args), resume=args.cmd != "apply",
                           max_rate=args.max_rate, evidence_sink=args.evidence_sink,
                           clear_detection=args.clear_detection,
-                          reformat=getattr(args, "reformat", False))
+                          reformat=getattr(args, "reformat", False),
+                          events=Path(args.events) if args.events else None)
             proof = run.recover(args.rematerialize) if args.cmd == "recover" else run.run()
             print(json.dumps(proof, indent=2, sort_keys=True))
             return 0

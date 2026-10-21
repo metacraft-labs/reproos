@@ -126,11 +126,17 @@ class Run:
 
         self.step(f"apply {ack[:16]}...")
         started = time.monotonic()
-        ap = self.cli("apply", "--name", name, "--acknowledge", ack, check=False)
+        events = self.vm / "events.jsonl"
+        ap = self.cli("apply", "--name", name, "--acknowledge", ack, "--events", events, check=False)
         elapsed = time.monotonic() - started
         if ap.returncode != 0:
             raise AssertionError(f"apply failed ({ap.returncode}):\n{ap.stdout}\n{ap.stderr}")
         proof = json.loads(ap.stdout[ap.stdout.index("{"):])
+        stream = [json.loads(line) for line in events.read_text().splitlines()]
+        stages = [e["stage"] for e in stream if e.get("event") == "complete"]
+        if stream[-1].get("verdict") != "installed" or "final-verification" not in stages \
+                or not Path(stream[-1]["evidence"]["journal"]).exists():
+            raise AssertionError(f"progress events do not end in an installed verdict: {stream[-3:]}")
         if proof.get("verdict") != "installed":
             raise AssertionError(f"no installed verdict: {proof}")
         self.step(f"installed in {elapsed:.0f}s: {proof['root']} on {proof['root_disk_serial']}, "
@@ -147,7 +153,7 @@ class Run:
 
     def collect(self) -> None:
         self.evidence.mkdir(parents=True, exist_ok=True)
-        for f in ("console.log", "machine.json", "enrollment.toml"):
+        for f in ("console.log", "machine.json", "enrollment.toml", "events.jsonl"):
             if (self.vm / f).exists():
                 shutil.copy(self.vm / f, self.evidence / f)
         try:

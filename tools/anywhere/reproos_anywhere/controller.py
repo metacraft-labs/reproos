@@ -237,7 +237,8 @@ class Apply:
     def __init__(self, *, state_root: Path, name: str, acknowledge: str, artifacts: Artifacts,
                  log: Callable[[str], None] = print, sinks=(), resume: bool = False,
                  max_rate: int = 0, evidence_sink: str | None = None,
-                 clear_detection: bool = False, reformat: bool = False):
+                 clear_detection: bool = False, reformat: bool = False,
+                 events: Path | None = None):
         self.state = State(state_root, name)
         self.log = log
         self.max_rate = max_rate        # bytes/s for payload transfer; 0 = unbounded
@@ -267,6 +268,9 @@ class Apply:
         all_sinks = list(sinks) + ([self.sink.append] if self.sink else [])
         self.journal = Journal(journal_path, self.plan_id, all_sinks)
         self.journal.mirrors.append(self.mirror_to_host)
+        self.events = events
+        if events is not None:
+            self.journal.mirrors.append(self.emit_event)
         self.detect_state = self.state.dir / "detect.json"
         self.detector: Detector | None = None
         halt = self.unresolved_detection()
@@ -360,6 +364,25 @@ class Apply:
             except SinkError:
                 pass
 
+    # -- progress events (M7) ----------------------------------------------
+    def event(self, record: dict) -> None:
+        if self.events is None:
+            return
+        line = json.dumps({"plan": self.plan_id, "session": self.plan["session"]["id"],
+                           "machine": self.plan["machine"]["name"], **record}, sort_keys=True)
+        with open(self.events, "a") as handle:
+            handle.write(line + "\n")
+
+    def emit_event(self, data: bytes) -> None:
+        r = canon.decode(data)
+        self.event({"time": r["time"], "seq": r["seq"], "stage": r["stage"], "event": r["event"]})
+
+    def verdict(self, verdict: str, detail: str) -> None:
+        self.event({"event": "verdict", "verdict": verdict, "detail": detail[:2000],
+                    "evidence": {"journal": str(self.state.dir / "journal.jsonl"),
+                                 "plan": str(self.state.dir / "plan" / "plan.json"),
+                                 "rescue_console": self.enr["rescue"]["console_log"]}})
+
     # -- host mirror -----------------------------------------------------
     HOST_JOURNAL = "/run/anywhere/work/journal.jsonl"
     DISK_JOURNAL = f"{TARGET_ROOT}/var/log/reproos-anywhere/journal.jsonl"
@@ -443,8 +466,16 @@ class Apply:
             threading.Thread(target=beat, daemon=True).start()
         try:
             proof = self._run()
+            self.verdict("installed", proof["host_key_fingerprint"])
         except HostKeyRejected as error:
             self.alert("identity-drift", str(error))
+            self.verdict("failed", str(error))
+            raise
+        except Refused as error:
+            self.verdict("refused", str(error))
+            raise
+        except Exception as error:
+            self.verdict("failed", str(error))
             raise
         finally:
             stop.set()

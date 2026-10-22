@@ -1119,6 +1119,24 @@ void InstallerState::install() {
             return;
         }
 
+        // The live medium logs root in without a password on tty1 and on the
+        // serial console. install-root mirrors those drop-ins onto the
+        // target; an installed system (and a cloud image, whose serial
+        // console a provider exposes) must not keep them.
+        for (const char *dropIn : {
+                 "/etc/systemd/system/getty@tty1.service.d/autologin.conf",
+                 "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf"}) {
+            QFile file(target + QString::fromLatin1(dropIn));
+            if (file.exists() && !file.remove()) {
+                appendLog("could not remove live root autologin " +
+                          file.fileName() + ": " + file.errorString());
+                runReproDiskUnmount(target);
+                setInstallRunning(false);
+                emit installFailed("live root autologin removal failed");
+                return;
+            }
+        }
+
         QJsonObject receipt;
         receipt.insert("schema_version", 1);
         receipt.insert("configuration_generation",

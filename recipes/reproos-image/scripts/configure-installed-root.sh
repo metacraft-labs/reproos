@@ -519,6 +519,8 @@ SDDM_EOF
   # with sddm.service both trying to own vt1 depending on which
   # gets ahead in unit ordering.
   rm -rf '$ROOT_TREE/etc/systemd/system/getty@tty1.service.d' 2>/dev/null || true
+  # Nor on the serial console, which a cloud provider exposes.
+  rm -f '$ROOT_TREE/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf' 2>/dev/null || true
 " || { echo "[configure-installed-root] display-manager wiring failed" >&2; exit 71; }
 
 # ---------------------------------------------------------------

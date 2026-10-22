@@ -206,6 +206,15 @@ else
   pass "accounts:installed-identity-only"
 fi
 
+# The live medium logs root in on tty1 and the serial console; an installed
+# system must not, least of all on a provider's serial console.
+if grep -rqs -- '--autologin root' /etc/systemd/system/getty@*.service.d \
+     /etc/systemd/system/serial-getty@*.service.d; then
+  fail "console:root-autologin"
+else
+  pass "console:no-root-autologin"
+fi
+
 duplicate_group_ids="$(awk -F: '
   $3 ~ /^[0-9]+$/ { count[$3]++; names[$3]=(names[$3] ? names[$3] "," $1 : $1) }
   END { for (gid in count) if (count[gid] > 1) print gid ":" names[gid] }

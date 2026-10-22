@@ -495,11 +495,14 @@ class Apply:
         if self.rerun_from:
             done -= set(stages[stages.index(self.rerun_from):])
         if any(s not in done for s in stages):
-            mode = self.rescue.target_mode(self.plan["target"]["serial"])
-            if mode != "writable":
-                raise Refused(f"the management plane has the target disk attached {mode}: the machine "
-                              "is still in its planning environment, and a conversion applied there would "
-                              "not survive a power cycle. Boot it normally, then apply")
+            try:
+                self.require_writable_target()
+            except RescueError:
+                # A powered-off machine (after containment, say) has no
+                # attachment to ask about yet; rescue-media takeover powers
+                # it on, and destroy asks again before the first write.
+                if self.plan["takeover"] != "rescue-media":
+                    raise
         if not self.resume and not self.plan.get("recovery_of"):
             self.recheck_source()
         open_stage = self.journal.open_stage()
@@ -550,6 +553,16 @@ class Apply:
             self.journal.complete(stage, evidence)
             self.log(f"[{stage}] complete")
         return self.journal.evidence("final-verification")
+
+    def require_writable_target(self) -> None:
+        """Refuse unless the management plane has the target disk attached
+        writable: in a read-only or snapshot planning environment a
+        conversion would report success and vanish at the next power cycle."""
+        mode = self.rescue.target_mode(self.plan["target"]["serial"])
+        if mode != "writable":
+            raise Refused(f"the management plane has the target disk attached {mode}: the machine "
+                          "is still in its planning environment, and a conversion applied there would "
+                          "not survive a power cycle. Boot it normally, then apply")
 
     # -- the fresh pre-write inventory -----------------------------------
     def recheck_source(self) -> None:
@@ -830,6 +843,7 @@ class Apply:
 
     # -- stage: destroy ---------------------------------------------------
     def stage_destroy(self) -> dict:
+        self.require_writable_target()
         self.prove_target()
         result = self.broker("destroy " + self.target_flags())
         return {"broker": result, **self.verify_erased()}
@@ -842,6 +856,7 @@ class Apply:
         return {"erased": True}
 
     def reconcile_destroy(self) -> dict:
+        self.require_writable_target()
         self.prove_target()
         if self.layout_state() == "formatted":
             return {"state": "done", "detail": "layout already present (format had also run)",

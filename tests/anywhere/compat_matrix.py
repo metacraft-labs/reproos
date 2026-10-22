@@ -38,12 +38,14 @@ def main() -> int:
            "**Every conversion below installed the FIXTURE payload** (`conversion_qualified: false`): this "
            "matrix qualifies the conversion PROTOCOL on these source systems, not a ReproOS release.", "",
            "## Converted end to end", "",
-           "| Source | Image | Arch | Firmware | Disk controller | Network | Takeover | Planning environment | Apply (s) | Evidence |",
-           "|---|---|---|---|---|---|---|---|---|---|"]
-    for r, src in sorted(converted, key=lambda x: (x[0]["distro"], x[0].get("controller", ""))):
+           "| Source | Image | Arch | Firmware | Disk controller | Network | Takeover | Planning environment | Invocation | Apply (s) | Evidence |",
+           "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r, src in sorted(converted, key=lambda x: (x[0]["distro"], x[0].get("controller", ""),
+                                                    x[0].get("invocation", ""))):
         out.append(f"| {r['distro']} | `{r.get('image') or '?'}` | {r.get('architecture', 'x86_64')} | "
                    f"{r.get('firmware', 'uefi')} | {r.get('controller', 'virtio-blk')} | {r.get('network', 'dhcp')} | "
-                   f"{r.get('takeover', '?')} | {r.get('planning_environment') or '?'} | {r['apply_seconds']} | `{src}` |")
+                   f"{r.get('takeover', '?')} | {r.get('planning_environment') or '?'} | "
+                   f"{r.get('invocation', 'preflight/plan/apply')} | {r['apply_seconds']} | `{src}` |")
     out += ["", "## Refused before any write", "",
             "| Shape | Blocking check | Reason | Evidence |", "|---|---|---|---|"]
     for case, r, src in sorted(refused):

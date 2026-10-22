@@ -70,6 +70,7 @@ HOSTNAME_RE = re.compile(
 )
 INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 IMDS = "http://169.254.169.254"
+MAX_DOCUMENT_BYTES = 1 << 20  # a metadata document is kilobytes; refuse floods
 
 
 class MetadataError(Exception):
@@ -376,7 +377,10 @@ def http(url: str, headers: dict | None = None, method: str = "GET",
     with OPENER.open(request, timeout=timeout) as response:
         if marker and response.headers.get(marker[0]) != marker[1]:
             raise MetadataError("provider-marker-missing", f"{url}: {marker}")
-        return response.read()
+        body = response.read(MAX_DOCUMENT_BYTES + 1)
+        if len(body) > MAX_DOCUMENT_BYTES:
+            raise MetadataError("oversized-document", f"{url}: over {MAX_DOCUMENT_BYTES} bytes")
+        return body
 
 
 def save(raw: Path, name: str, data: bytes) -> None:
@@ -557,6 +561,14 @@ def first_boot(root: Path, attempts: int, delay: float) -> dict | None:
         return None
     out = root / "run/reproos/cloud-enrollment"
     state = root / "var/lib/reproos"
+    # After enrollment this runs on every boot as an identity check: a disk
+    # copied to another instance must not quietly keep this one's keys and
+    # machine-id. normalize() refuses metadata naming another instance; the
+    # directory it writes is not consumed again once enrollment is complete.
+    if (state / "enrollment.complete").exists() and \
+            not (state / "cloud-instance.json").exists():
+        print("REPROOS_CLOUD:SKIP:enrolled-without-cloud-metadata")
+        return None
     raw_base = root / "run/reproos/cloud-metadata"
     for label, provider in MEDIA_SOURCES:
         device = by_label / label

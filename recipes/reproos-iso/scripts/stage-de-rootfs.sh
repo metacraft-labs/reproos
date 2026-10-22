@@ -2220,7 +2220,6 @@ After=local-fs.target reproos-network.service
 Wants=reproos-network.service
 Before=reproos-first-boot-enroll.service
 ConditionPathExists=/var/lib/reproos/installation-receipt.json
-ConditionPathExists=!/var/lib/reproos/enrollment.complete
 
 [Service]
 Type=oneshot

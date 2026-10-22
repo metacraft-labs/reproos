@@ -281,16 +281,34 @@ class CloudMetadataSpoofing(unittest.TestCase):
         _Plain.marker = True
         self.assertEqual(MODULE.http(url, marker=("Metadata-Flavor", "Google")), b"42")
 
+        # 7. A metadata service that floods is refused, not buffered.
+        _Plain.body = b"x" * (MODULE.MAX_DOCUMENT_BYTES + 1)
+        with self.assertRaises(MODULE.MetadataError) as caught:
+            MODULE.http(url)
+        self.assertEqual(caught.exception.code, "oversized-document")
+        _Plain.body = b"42"
+
+    def test_enrolled_machine_without_cloud_metadata_is_left_alone(self) -> None:
+        # The unit now runs on every boot as an identity check; a workstation
+        # or VM enrolled from REPROOS_ENROLL media must not be probed.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "var/lib/reproos").mkdir(parents=True)
+            (root / "var/lib/reproos/enrollment.complete").write_text("")
+            self.assertIsNone(MODULE.first_boot(root, attempts=1, delay=0))
+            self.assertFalse((root / "run/reproos/cloud-enrollment").exists())
+
 
 class _Plain(http.server.BaseHTTPRequestHandler):
     marker = False
+    body = b"42"
 
     def do_GET(self) -> None:  # noqa: N802
         self.send_response(200)
         if self.marker:
             self.send_header("Metadata-Flavor", "Google")
         self.end_headers()
-        self.wfile.write(b"42")
+        self.wfile.write(self.body)
 
     def log_message(self, *args) -> None:
         pass

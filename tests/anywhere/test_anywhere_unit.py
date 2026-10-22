@@ -227,6 +227,72 @@ class Enrollment(unittest.TestCase):
                 enrolled_for(inv, **override)
 
 
+def load_cli():
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader("reproos_anywhere_cli", str(REPO / "tools" / "anywhere" / "reproos-anywhere")).load_module()
+
+
+class ConvertSelection(unittest.TestCase):
+    """`convert DEST MACHINE`: the destination selects one enrollment, never a trust anchor."""
+
+    def enrollment_toml(self, name: str, port: int, user: str = "root", expires: str | None = None) -> str:
+        expires = expires or (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        return f'''schema = "{enrollment.SCHEMA}"
+name = "{name}"
+expires = "{expires}"
+[ssh]
+address = "192.0.2.10"
+port = {port}
+user = "{user}"
+privilege = "{'root' if user == 'root' else 'sudo'}"
+host_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGpZbmnZss8EKxDnHchD2GAUi9y8GBU4mVsxqnqHKzoP"
+identity_file = "/dev/null"
+[machine]
+product_uuid = "0123456789abcdef0123"
+[[disks]]
+serial = "S1"
+size_sectors = 1
+role = "target"
+[network]
+mac = "52:54:00:00:00:01"
+[rescue]
+kind = "qemu-serial"
+console_log = "console.log"
+monitor = "monitor.sock"
+'''
+
+    def test_destination_and_machine_selection(self):
+        cli = load_cli()
+        self.assertEqual(cli.parse_destination("root@192.0.2.10:2222"), ("root", "192.0.2.10", 2222))
+        self.assertEqual(cli.parse_destination("host.example"), (None, "host.example", None))
+        self.assertEqual(cli.parse_destination("ops@[2001:db8::1]:22"), ("ops", "2001:db8::1", 22))
+        self.assertEqual(cli.parse_destination("2001:db8::1"), (None, "2001:db8::1", None))
+        for bad in ("root@", "host:port", "@:22"):
+            with self.subTest(destination=bad), self.assertRaises(cli.c.Refused):
+                cli.parse_destination(bad)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "machines").mkdir()
+            (d / "machines" / "web-1.toml").write_text("x")
+            self.assertEqual(cli.select_machine("web-1", d / "machines"), d / "machines" / "web-1.toml")
+            for bad in ("web-2", "../web-1", "Web 1"):
+                with self.subTest(selector=bad), self.assertRaises(cli.c.Refused):
+                    cli.select_machine(bad, d / "machines")
+            e = d / "enrollments"
+            e.mkdir()
+            (e / "a.toml").write_text(self.enrollment_toml("a", 22))
+            (e / "b.toml").write_text(self.enrollment_toml("b", 2222))
+            (e / "old.toml").write_text(self.enrollment_toml("old", 2200, expires="2001-01-01T00:00:00Z"))
+            self.assertEqual(cli.select_enrollment("root@192.0.2.10:2222", e), e / "b.toml")
+            self.assertEqual(cli.select_enrollment("192.0.2.10:22", e), e / "a.toml")
+            refusals = {"ambiguous": "192.0.2.10", "unknown host": "192.0.2.11:22",
+                        "other user": "admin@192.0.2.10:22", "expired only": "192.0.2.10:2200"}
+            for what, destination in refusals.items():
+                with self.subTest(what=what), self.assertRaises(cli.c.Refused):
+                    cli.select_enrollment(destination, e)
+
+
 class JournalOrdering(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

@@ -21,6 +21,29 @@ status, the evidence behind every claim below and the open gaps are in
 
 ## The commands
 
+The short form, for one enrolled machine and one machine configuration:
+
+```console
+reproos-anywhere convert root@203.0.113.7:22 web-1                 # preflight + plan; prints the plan
+reproos-anywhere convert root@203.0.113.7:22 web-1 --acknowledge <plan-id>   # apply that plan
+```
+
+`web-1` selects `machines/web-1.toml` (`--machines DIR`; a path to a
+`.toml` file also works). The destination selects the one enrollment in
+`enrollments/` (`--enrollments DIR`) whose `[ssh]` address, port and user
+match it, and is refused if none or more than one does; it is never a
+trust anchor, so the host key, the disks and the rescue route still come
+from that enrollment. The first command needs the machine in its
+read-only planning environment (see Preflight) and ends by printing the
+plan and its identity; nothing destructive has happened. Boot the machine
+normally through its management plane, read the plan, and run the same
+command with `--acknowledge`. That refuses a plan that was not made with
+the same machine configuration, and resumes a plan that was already
+started. `--takeover`, `--max-rate`, `--evidence-sink` and `--events` mean
+what they mean for `plan` and `apply`.
+
+The long form, one step at a time:
+
 ```console
 reproos-anywhere preflight --enrollment machine.toml --config auto-config.toml
 reproos-anywhere plan      --name <machine> --config auto-config.toml [--takeover auto|kexec|rescue-media]
@@ -37,7 +60,10 @@ reproos-anywhere investigate --name <machine>           # read-only report from 
 reproos-anywhere replan    --name <machine>             # after containment: new plan, fresh keys, rescue-media
 ```
 
-Each is also `repro run anywhere-<command> -- ...`.
+`convert`, `preflight`, `plan`, `apply`, `resume`, `recover`, `status`,
+`logs`, `ssh`, `abort` and `bundle` are also `repro run anywhere-<command> -- ...`;
+`contain`, `investigate` and `replan` are not registered as run tasks;
+run them from `tools/anywhere/reproos-anywhere`.
 
 Common options: `--state DIR` (controller state, one directory per
 machine), `--payload DIR`, `--installer DIR`, `--kexec FILE`,

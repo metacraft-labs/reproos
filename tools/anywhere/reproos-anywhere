@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ReproOS Anywhere: convert an existing Linux machine into ReproOS over SSH.
 
+    reproos-anywhere convert   [USER@]HOST[:PORT] MACHINE [--acknowledge PLAN_ID]
     reproos-anywhere preflight --enrollment E --config C [--inspection]
     reproos-anywhere plan      --name N --config C
     reproos-anywhere apply     --name N --acknowledge PLAN_ID
@@ -11,6 +12,14 @@
 Common: --state DIR (controller state, default ./anywhere-state),
 --payload DIR, --installer DIR, --kexec FILE, --layout-tool FILE.
 
+`convert` is the short form. Without --acknowledge it runs strict
+preflight and plan for the enrolled machine at that SSH destination with
+the machine configuration MACHINE (MACHINE.toml under --machines, or a
+path to a .toml file), and prints the plan. Run again with that plan's
+identity in --acknowledge, it applies the plan (or resumes it, if it was
+started). Nothing destructive happens before the operator has read the
+plan and passed its identity back.
+
 `preflight` never writes the machine. `plan` writes only controller
 state and prints the plan identity; nothing destructive happens until
 `apply` is given exactly that identity. Exit status: 0 success,
@@ -19,6 +28,7 @@ state and prints the plan identity; nothing destructive happens until
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -42,6 +52,98 @@ def print_report(report: dict) -> None:
     print(f"report: {report.get('id', '')}")
 
 
+def parse_destination(text: str) -> tuple[str | None, str, int | None]:
+    user, _, hostport = text.rpartition("@")
+    host, port = hostport, None
+    if hostport.startswith("["):                    # [v6]:port
+        host, _, rest = hostport[1:].partition("]")
+        port = rest.removeprefix(":") or None
+    elif hostport.count(":") == 1:
+        host, port = hostport.split(":")
+    if not host or (port is not None and not port.isdigit()):
+        raise c.Refused(f"destination {text!r} is not [USER@]HOST[:PORT]")
+    return user or None, host, int(port) if port is not None else None
+
+
+def select_machine(selector: str, machines: Path) -> Path:
+    if "/" in selector or selector.endswith(".toml"):
+        path = Path(selector)
+    elif re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", selector):
+        path = machines / f"{selector}.toml"
+    else:
+        raise c.Refused(f"machine configuration selector {selector!r} is neither a name nor a path")
+    if not path.is_file():
+        raise c.Refused(f"no machine configuration {path}")
+    return path
+
+
+def select_enrollment(destination: str, enrollments: Path) -> Path:
+    """The one enrollment whose management-plane SSH endpoint is ``destination``.
+
+    The destination only selects; the host key, the disks and the rescue
+    route still come from the enrollment, never from the destination.
+    """
+    from reproos_anywhere import enrollment as enrollment_mod
+    user, host, port = parse_destination(destination)
+    matches, skipped = [], []
+    for path in sorted(enrollments.glob("*.toml")):
+        try:
+            ssh = enrollment_mod.load(path)["ssh"]
+        except Exception as error:  # noqa: BLE001 -- expired or malformed: report it, never match it
+            skipped.append(f"{path.name}: {error}")
+            continue
+        if ssh["address"] == host and port in (None, ssh["port"]) and user in (None, ssh["user"]):
+            matches.append(path)
+    if len(matches) != 1:
+        found = "no" if not matches else f"{len(matches)} ({', '.join(m.name for m in matches)})"
+        rest = f"; skipped {'; '.join(skipped)}" if skipped else ""
+        raise c.Refused(f"{found} enrollment in {enrollments} matches {destination}; the destination "
+                        f"must select exactly one enrolled machine{rest}")
+    return matches[0]
+
+
+def print_plan(state: Path, name: str, plan_id: str, again: str) -> None:
+    from reproos_anywhere import plan as plan_mod
+    plan = canon.read(state / name / "plan" / "plan.json")
+    print(f"plan for {name}: target {plan['target']['serial']} "
+          f"({plan['storage']['device']}, {plan['target']['size_sectors']} sectors) "
+          f"layout {plan['storage']['layout']}; takeover {plan['takeover']}; payload {plan['payload']['kind']} "
+          f"qualified={str(plan['conversion_qualified']).lower()}")
+    print(f"content identity {plan_mod.content_identity(plan)}")
+    print(f"THIS PLAN DESTROYS EVERYTHING ON THAT DISK. To apply it, {again}:")
+    print(f"  --acknowledge {plan_id}")
+
+
+def convert(args, state: Path) -> int:
+    from reproos_anywhere import enrollment as enrollment_mod
+    config = select_machine(args.machine, Path(args.machines))
+    enrollment = select_enrollment(args.destination, Path(args.enrollments))
+    name = enrollment_mod.load(enrollment)["name"]
+    if args.acknowledge is None:
+        report = c.preflight(enrollment_path=enrollment, config_path=config, artifacts=artifacts(args),
+                             layout_tool=Path(args.layout_tool), state_root=state, inspection=False)
+        print(f"preflight of {name} at {args.destination} with {config}:")
+        print_report(report)
+        if report["blocked"]:
+            return 3
+        plan_id = c.make_plan(state_root=state, name=name, config_path=config,
+                              artifacts=artifacts(args), takeover=args.takeover)
+        print_plan(state, name, plan_id, "run the same command again with")
+        return 0
+    # The plan on record must have been made for this machine configuration,
+    # not merely carry the acknowledged identity.
+    recorded = state / name / "auto-config.toml"
+    if not recorded.exists() or recorded.read_bytes() != config.read_bytes():
+        raise c.Refused(f"the plan on record for {name} was not made with {config}; "
+                        "run convert without --acknowledge to plan again")
+    journal = state / name / "journal.jsonl"
+    run = c.Apply(state_root=state, name=name, acknowledge=args.acknowledge, artifacts=artifacts(args),
+                  resume=journal.exists() and journal.stat().st_size > 0, max_rate=args.max_rate,
+                  evidence_sink=args.evidence_sink, events=Path(args.events) if args.events else None)
+    print(json.dumps(run.run(), indent=2, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     def common(default) -> argparse.ArgumentParser:
         # Accepted before or after the subcommand (`repro run anywhere-*`
@@ -59,6 +161,18 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     _add = sub.add_parser
     sub.add_parser = lambda name, **kw: _add(name, parents=[later], **kw)
+    cv = sub.add_parser("convert", help="preflight and plan; given the plan's identity, apply it")
+    cv.add_argument("destination", metavar="[USER@]HOST[:PORT]")
+    cv.add_argument("machine", metavar="MACHINE")
+    cv.add_argument("--machines", default="machines", metavar="DIR",
+                    help="machine configurations, one MACHINE.toml each (default ./machines)")
+    cv.add_argument("--enrollments", default="enrollments", metavar="DIR",
+                    help="management-plane enrollments, one per machine (default ./enrollments)")
+    cv.add_argument("--acknowledge", metavar="PLAN_ID")
+    cv.add_argument("--takeover", choices=("auto", "kexec", "rescue-media"), default="auto")
+    cv.add_argument("--max-rate", type=int, default=0, metavar="BYTES_PER_SECOND")
+    cv.add_argument("--evidence-sink", metavar="SOCKET")
+    cv.add_argument("--events", metavar="FILE")
     pf = sub.add_parser("preflight")
     pf.add_argument("--enrollment", required=True)
     pf.add_argument("--config", required=True)
@@ -111,6 +225,8 @@ def main() -> int:
     args = p.parse_args()
     state = Path(args.state)
     try:
+        if args.cmd == "convert":
+            return convert(args, state)
         if args.cmd == "preflight":
             report = c.preflight(enrollment_path=Path(args.enrollment), config_path=Path(args.config),
                                  artifacts=artifacts(args), layout_tool=Path(args.layout_tool),
@@ -120,15 +236,7 @@ def main() -> int:
         if args.cmd == "plan":
             plan_id = c.make_plan(state_root=state, name=args.name, config_path=Path(args.config),
                                   artifacts=artifacts(args), takeover=args.takeover)
-            plan = canon.read(state / args.name / "plan" / "plan.json")
-            print(f"plan for {args.name}: target {plan['target']['serial']} "
-                  f"({plan['storage']['device']}, {plan['target']['size_sectors']} sectors) "
-                  f"layout {plan['storage']['layout']}; takeover {plan['takeover']}; payload {plan['payload']['kind']} "
-                  f"qualified={str(plan['conversion_qualified']).lower()}")
-            from reproos_anywhere import plan as plan_mod
-            print(f"content identity {plan_mod.content_identity(plan)}")
-            print("THIS PLAN DESTROYS EVERYTHING ON THAT DISK. To apply it, pass:")
-            print(f"  --acknowledge {plan_id}")
+            print_plan(state, args.name, plan_id, "pass")
             return 0
         if args.cmd in ("apply", "resume", "recover"):
             run = c.Apply(state_root=state, name=args.name, acknowledge=args.acknowledge,

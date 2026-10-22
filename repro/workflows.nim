@@ -1829,8 +1829,23 @@ package reproosWorkflows:
       cacheable = false).withToolIdentities(anywhereVmTools)
     discard target("e2e_reproos_anywhere_storage_controllers", testAnywhereControllers)
 
+    let testAnywhereConvert = shell(
+      command = "bash tests/anywhere/run-vm-gates.sh convert",
+      actionId = "reproos.e2e-anywhere-convert-invocation",
+      extraInputs = anywhereVmInputs,
+      cacheable = false).withToolIdentities(anywhereVmTools)
+    discard target("e2e_reproos_anywhere_convert_invocation", testAnywhereConvert)
+
     # Operator commands. Each forwards its arguments; nothing here chooses
     # a machine or a plan on the operator's behalf.
+    let anywhereConvertTask = shell(
+      command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
+      args = @["reproos-anywhere-convert", "convert"],
+      actionId = "reproos.anywhere-convert",
+      extraInputs = anywhereSources,
+      cacheable = false).withToolIdentities(["python3", "ssh", "ssh-keygen"])
+    run("anywhere-convert", build = anywhereConvertTask.id, owningPackage = "reproosWorkflows")
+
     let anywherePreflightTask = shell(
       command = "python3 tools/anywhere/reproos-anywhere \"$@\"",
       args = @["reproos-anywhere-preflight", "preflight"],
@@ -1963,6 +1978,7 @@ package reproosWorkflows:
       testAnywhereRefusals,
       testAnywhereDrill,
       testAnywhereControllers,
+      testAnywhereConvert,
     ])
 
     discard collect("incus-acceptance", actions = @[

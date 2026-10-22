@@ -13,7 +13,12 @@ For each requested distribution, end to end, unattended:
   5. the installed system must pass the installed-only proof;
   6. the VM and its controller state are destroyed.
 
-    e2e_convert.py --artifacts DIR [--keep] debian [ubuntu ...]
+    e2e_convert.py --artifacts DIR [--keep] [--convert] debian [ubuntu ...]
+
+--convert drives steps 3-4 through the short form an operator types,
+`reproos-anywhere convert root@HOST:PORT MACHINE` and then the same with
+`--acknowledge`, against a directory of enrollments and one of machine
+configurations, instead of preflight, plan and apply.
 
 DIR holds out-payload/, out-installer/, out-kexec/ and bin/anywhere_layout
 (see tests/anywhere/run-fixture-build.sh). Exit 0 only if every distro
@@ -45,6 +50,12 @@ DEVICE_CONFIGS = {"vda": CONFIG,
                   "nvme0n1": HERE / "fixtures" / "auto-config-nvme0n1.toml"}
 
 
+def canon_read(path: Path) -> dict:
+    """A canonical controller record, with its identity (the digest of its bytes)."""
+    data = path.read_bytes()
+    return {**json.loads(data), "id": hashlib.sha256(data).hexdigest()}
+
+
 def payload_for(config: Path) -> Path:
     """The fixture payload built for ``config`` (its target device differs)."""
     reprobuild = Path(os.environ.get("REPROBUILD_SOURCE_ROOT", REPO.parent / "reprobuild")).resolve()
@@ -68,8 +79,9 @@ def sha(path: Path) -> str:
 
 
 class Run:
-    def __init__(self, artifacts: Path, distro: str, controller: str = "virtio-blk"):
+    def __init__(self, artifacts: Path, distro: str, controller: str = "virtio-blk", convert: bool = False):
         self.a = artifacts
+        self.convert = convert
         self.distro = distro
         self.controller = controller
         device = sup.CONTROLLERS[controller][0]
@@ -109,25 +121,34 @@ class Run:
         self.step("strict preflight in the read-only planning environment")
         before = sha(self.vm / "disk.qcow2")
         self.sup("start", self.vm, "--readonly")
-        pf = self.cli("--json", "preflight", "--enrollment", self.vm / "enrollment-readonly.toml",
-                      "--config", self.config, check=False)
+        if self.convert:
+            pf, destination, short = self.convert_plan(name)
+        else:
+            pf = self.cli("--json", "preflight", "--enrollment", self.vm / "enrollment-readonly.toml",
+                          "--config", self.config, check=False)
         self.sup("stop", self.vm)
         after = sha(self.vm / "disk.qcow2")
         if pf.returncode != 0:
             raise AssertionError(f"strict preflight did not pass ({pf.returncode}):\n{pf.stdout}\n{pf.stderr}")
-        report = json.loads(pf.stdout)
+        report = canon_read(self.state / name / "compatibility.json")
         if before != after:
             raise AssertionError(f"planning changed the source disk: {before} -> {after}")
 
         self.step("plan")
         self.sup("start", self.vm)
-        pl = self.cli("plan", "--name", name, "--config", self.config)
-        ack = pl.stdout.strip().splitlines()[-1].split()[-1]
+        if self.convert:
+            ack = pf.stdout.strip().splitlines()[-1].split()[-1]
+        else:
+            pl = self.cli("plan", "--name", name, "--config", self.config)
+            ack = pl.stdout.strip().splitlines()[-1].split()[-1]
 
         self.step(f"apply {ack[:16]}...")
         started = time.monotonic()
         events = self.vm / "events.jsonl"
-        ap = self.cli("apply", "--name", name, "--acknowledge", ack, "--events", events, check=False)
+        if self.convert:
+            ap = self.cli("convert", destination, *short, "--acknowledge", ack, "--events", events, check=False)
+        else:
+            ap = self.cli("apply", "--name", name, "--acknowledge", ack, "--events", events, check=False)
         elapsed = time.monotonic() - started
         if ap.returncode != 0:
             raise AssertionError(f"apply failed ({ap.returncode}):\n{ap.stdout}\n{ap.stderr}")
@@ -144,12 +165,33 @@ class Run:
         plan = json.loads((self.state / name / "plan" / "plan.json").read_text())
         machine = json.loads((self.vm / "machine.json").read_text())
         return {"distro": self.distro, "controller": self.controller, "plan": ack,
+                "invocation": "convert" if self.convert else "preflight/plan/apply",
                 "takeover": plan["takeover"], "firmware": machine.get("firmware", "uefi"),
                 "architecture": "x86_64", "network": "dhcp",
                 "planning_environment": (report.get("planning_environment") or {}).get("kind"),
                 "image": sup.DISTROS[self.distro].get("file"), "planning_disk_sha256": before,
                 "planning_disk_unchanged": True, "report": report.get("id"),
                 "apply_seconds": int(elapsed), "proof": proof}
+
+    def convert_plan(self, name: str) -> tuple[subprocess.CompletedProcess, str, list]:
+        """Lay out what an operator has (one enrollment per machine, one
+        configuration per machine) and run the short form's first step."""
+        enrollments, machines = self.vm / "enrollments", self.vm / "machines"
+        enrollments.mkdir()
+        machines.mkdir()
+        text = (self.vm / "enrollment-readonly.toml").read_text()
+        for rel in ("console.log", "keys/operator_ed25519"):
+            text = text.replace(f'"{rel}"', f'"{self.vm / rel}"')
+        (enrollments / f"{name}.toml").write_text(text)
+        shutil.copy(self.config, machines / "rehearsal.toml")
+        port = json.loads((self.vm / "machine.json").read_text())["port"]
+        destination = f"root@127.0.0.1:{port}"
+        short = ["rehearsal", "--machines", machines, "--enrollments", enrollments]
+        pf = self.cli("convert", destination, *short, check=False)
+        print(pf.stdout, end="", flush=True)
+        if pf.returncode == 0 and "--acknowledge" not in pf.stdout:
+            raise AssertionError(f"convert printed no plan identity:\n{pf.stdout}")
+        return pf, destination, short
 
     def collect(self) -> None:
         self.evidence.mkdir(parents=True, exist_ok=True)
@@ -179,13 +221,14 @@ def main() -> int:
     p.add_argument("--artifacts", required=True)
     p.add_argument("--keep", action="store_true", help="keep the VM after the test")
     p.add_argument("--controller", default="virtio-blk", choices=sorted(sup.CONTROLLERS))
+    p.add_argument("--convert", action="store_true", help="drive the conversion through `convert`")
     p.add_argument("distros", nargs="+")
     args = p.parse_args()
     artifacts = Path(args.artifacts).resolve()
     os.environ.setdefault("ANYWHERE_IMAGE_CACHE", str(artifacts / "images"))
     results, failed = [], []
     for distro in args.distros:
-        r = Run(artifacts, distro, args.controller)
+        r = Run(artifacts, distro, args.controller, args.convert)
         try:
             results.append(r.run())
         except Exception as error:  # noqa: BLE001 -- report every distro

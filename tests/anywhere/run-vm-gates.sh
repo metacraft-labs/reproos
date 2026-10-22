@@ -11,13 +11,14 @@
 #   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS sources
 #   tests/anywhere/run-vm-gates.sh drill      e2e_reproos_anywhere_compromise_drill
 #   tests/anywhere/run-vm-gates.sh controllers the conversion over virtio-scsi, AHCI and NVMe targets
+#   tests/anywhere/run-vm-gates.sh convert    the conversion through `reproos-anywhere convert DEST MACHINE`
 #
 # Every VM is an unprivileged QEMU/KVM guest under build/anywhere/run that
 # the gate destroys; images are digest-pinned (tests/anywhere/distros.json)
 # and cached under build/anywhere/images. A missing tool or /dev/kvm is a
 # failure with a remedy, never a skip.
 set -euo pipefail
-gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement|recovery|refusals|drill|controllers [distro...]}
+gate=${1:?usage: run-vm-gates.sh e2e|diskid|negatives|resume|detection|confinement|recovery|refusals|drill|controllers|convert [distro...]}
 shift
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -43,5 +44,7 @@ case "$gate" in
   controllers) for ctl in virtio-scsi ahci nvme; do
                  python3 "$here/e2e_convert.py" --artifacts "$art" --controller "$ctl" debian || exit 1
                done ;;
+  convert) [ "$#" -gt 0 ] || set -- debian alpine
+           exec python3 "$here/e2e_convert.py" --artifacts "$art" --convert "$@" ;;
   *) echo "run-vm-gates: unknown gate $gate" >&2; exit 64 ;;
 esac

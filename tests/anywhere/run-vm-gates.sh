@@ -44,7 +44,7 @@ case "$gate" in
   controllers) for ctl in virtio-scsi ahci nvme; do
                  python3 "$here/e2e_convert.py" --artifacts "$art" --controller "$ctl" debian || exit 1
                done ;;
-  convert) [ "$#" -gt 0 ] || set -- debian alpine
+  convert) [ "$#" -gt 0 ] || set -- debian alpine nixos
            exec python3 "$here/e2e_convert.py" --artifacts "$art" --convert "$@" ;;
   *) echo "run-vm-gates: unknown gate $gate" >&2; exit 64 ;;
 esac

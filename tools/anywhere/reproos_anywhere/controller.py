@@ -491,11 +491,17 @@ class Apply:
 
     def _run(self) -> dict:
         stages = [s["stage"] for s in self.plan["stages"]]
-        if not self.resume and not self.plan.get("recovery_of"):
-            self.recheck_source()
         done = set(self.journal.completed())
         if self.rerun_from:
             done -= set(stages[stages.index(self.rerun_from):])
+        if any(s not in done for s in stages):
+            mode = self.rescue.target_mode(self.plan["target"]["serial"])
+            if mode != "writable":
+                raise Refused(f"the management plane has the target disk attached {mode}: the machine "
+                              "is still in its planning environment, and a conversion applied there would "
+                              "not survive a power cycle. Boot it normally, then apply")
+        if not self.resume and not self.plan.get("recovery_of"):
+            self.recheck_source()
         open_stage = self.journal.open_stage()
         if open_stage:
             # Records printed after the last scan -- by a controller that died,

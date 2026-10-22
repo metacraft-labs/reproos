@@ -191,6 +191,16 @@ class Run:
         print(pf.stdout, end="", flush=True)
         if pf.returncode == 0 and "--acknowledge" not in pf.stdout:
             raise AssertionError(f"convert printed no plan identity:\n{pf.stdout}")
+        if pf.returncode == 0:
+            # Acknowledging before the machine has left its planning
+            # environment must be refused by the management plane's view of
+            # the disk, before anything is written.
+            ack = pf.stdout.strip().splitlines()[-1].split()[-1]
+            early = self.cli("convert", destination, *short, "--acknowledge", ack, check=False)
+            if early.returncode != 2 or "planning environment" not in early.stderr:
+                raise AssertionError(f"apply in the planning environment was not refused "
+                                     f"({early.returncode}):\n{early.stdout}\n{early.stderr}")
+            self.step(f"apply in the planning environment refused: {early.stderr.strip()[:110]}")
         return pf, destination, short
 
     def collect(self) -> None:

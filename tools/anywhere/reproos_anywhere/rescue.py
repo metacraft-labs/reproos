@@ -115,6 +115,31 @@ class QemuRescue:
         except RescueError:
             return False
 
+    def target_mode(self, serial: str) -> str:
+        """How the management plane has the disk with ``serial`` attached:
+        "writable", "read-only", or "snapshot" (writes land in an overlay
+        QEMU discards when it exits). The machine cannot influence this
+        answer, which is the point: a conversion applied while the machine
+        is still in its planning environment would report success and then
+        vanish at the next power cycle."""
+        qtree = self.hmp("info qtree", timeout=30)
+        drive = None
+        for block in qtree.split("dev: "):
+            if f'serial = "{serial}"' in block:
+                m = re.search(r'drive = "([^"]+)"', block)
+                drive = m.group(1) if m else None
+        if not drive:
+            raise RescueError(f"the management plane shows no drive with serial {serial}")
+        info = self.hmp(f"info block {drive}")
+        header = next((line for line in info.splitlines() if line.startswith(f"{drive} ")), "")
+        if not header:
+            raise RescueError(f"the management plane does not describe drive {drive}: {info.strip()[:300]}")
+        if "read-only" in header:
+            return "read-only"
+        if re.search(r'/vl\.\w+"', header) or "ignore flushes" in info:
+            return "snapshot"
+        return "writable"
+
     def power_cycle(self) -> None:
         self.hmp("system_reset")
 

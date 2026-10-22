@@ -21,6 +21,15 @@
     "redistribution": "Debian cloud images, DFSG-free components",
     "url": "https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-amd64-20261017-2634.qcow2"
   },
+  "debian-arm64": {
+    "algo": "sha512",
+    "arch": "aarch64",
+    "digest": "0199ea72dd82e84264fda5068c5756412c778f395fca6748a186f2d0a34f524fe406e87339bda0b7f71aa9bab066b9850cde44cd1650116f389dc3f786cb232b",
+    "file": "debian-13-genericcloud-arm64-20261017-2634.qcow2",
+    "first_boot_timeout": 1200,
+    "redistribution": "Debian cloud images, DFSG-free components",
+    "url": "https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-arm64-20261017-2634.qcow2"
+  },
   "fedora": {
     "algo": "sha256",
     "digest": "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f",

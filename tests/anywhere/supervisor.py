@@ -133,6 +133,7 @@ def create(distro: str, run: Path, port: int | None, *, firmware: str = "uefi",
         # deep in a worktree exceeds; the monitor lives in a short one.
         "monitor": short_socket_path(),
         "firmware": firmware,
+        "arch": spec.get("arch", "x86_64"),
         "controller": controller,
         "target": target,
     }
@@ -174,7 +175,8 @@ runcmd:
     subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", spec.get("format", "qcow2"),
                     "-b", str(base), str(run / "disk.qcow2"), f"{DISK_GIB}G"], check=True)
     vars_fd = run / "OVMF_VARS.fd"
-    shutil.copyfile(FIRMWARE / "edk2-i386-vars.fd", vars_fd)
+    shutil.copyfile(FIRMWARE / ("edk2-arm-vars.fd" if machine["arch"] == "aarch64" else "edk2-i386-vars.fd"),
+                    vars_fd)
     vars_fd.chmod(0o600)
     (run / "machine.json").write_text(json.dumps(machine, indent=2))
     for gib in extra_disks:
@@ -206,6 +208,8 @@ def planning_kind(m: dict) -> str:
 def qemu_argv(run: Path, readonly: bool) -> list[str]:
     m = json.loads((run / "machine.json").read_text())
     ro = PLANNING_KINDS[planning_kind(m)][1] if readonly else ""
+    if m.get("arch", "x86_64") == "aarch64":
+        return aarch64_argv(run, m, ro)
     return [
         "qemu-system-x86_64", "-name", f"anywhere-{m['distro']}",
         "-machine", "q35,accel=kvm", "-cpu", "host", "-smp", str(CPUS), "-m", str(MEMORY_MIB),
@@ -233,6 +237,36 @@ def qemu_argv(run: Path, readonly: bool) -> list[str]:
         "-monitor", f"unix:{m['monitor']},server,nowait",
         "-pidfile", str(run / "qemu.pid"), "-daemonize",
         *rescue_args(m),
+    ]
+
+
+def aarch64_argv(run: Path, m: dict, ro: str) -> list[str]:
+    """An emulated arm64 source machine (TCG: this host has no arm64 KVM).
+
+    It exists to show what Anywhere does with a source it cannot convert,
+    so it carries only the target disk on virtio-blk, the seed on a
+    virtio-scsi CD-ROM and the PL011 console; it is slow and never a
+    conversion target."""
+    if m.get("controller", "virtio-blk") != "virtio-blk" or m.get("extra_disks") or m.get("rescue_boot"):
+        raise SystemExit("aarch64 sources support only the plain virtio-blk shape")
+    return [
+        "qemu-system-aarch64", "-name", f"anywhere-{m['distro']}",
+        "-machine", "virt,accel=tcg", "-cpu", "max", "-smp", str(CPUS), "-m", str(MEMORY_MIB),
+        "-uuid", m["uuid"],
+        "-drive", f"if=pflash,format=raw,readonly=on,file={FIRMWARE / 'edk2-aarch64-code.fd'}",
+        "-drive", f"if=pflash,format=raw,file={run / 'OVMF_VARS.fd'}",
+        "-drive", f"file={run / m.get('disk_file', 'disk.qcow2')},if=none,id=d0,format=qcow2{ro}",
+        "-device", f"virtio-blk-pci,drive=d0,id=target,serial={m['serial']},bootindex=1",
+        "-device", "virtio-scsi-pci,id=scsi0",
+        "-drive", f"file={run / 'seed.img'},if=none,id=seed,format=raw,readonly=on",
+        "-device", "scsi-cd,drive=seed,bus=scsi0.0",
+        "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{m['port']}-:22",
+        "-device", f"virtio-net-pci,netdev=n0,mac={m['mac']}",
+        "-display", "none",
+        "-chardev", f"file,id=console,path={run / 'console.log'},append=on",
+        "-serial", "chardev:console",
+        "-monitor", f"unix:{m['monitor']},server,nowait",
+        "-pidfile", str(run / "qemu.pid"), "-daemonize",
     ]
 
 

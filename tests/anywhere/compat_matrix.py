@@ -48,10 +48,11 @@ def main() -> int:
             "| Shape | Blocking check | Reason | Evidence |", "|---|---|---|---|"]
     for case, r, src in sorted(refused):
         out.append(f"| {case} | `{r['check']}` | {r['detail']} | `{src}` |")
-    out += ["", "## Not covered by any gate (not supported)", "",
-            "aarch64; legacy-BIOS installation; static management networks; Secure Boot; LVM, RAID or "
-            "encrypted targets; provider rescue planes other than the QEMU test supervisor; any "
-            "combination not listed above.", ""]
+    out += ["", "## Not supported", "",
+            "Converting to aarch64 (ReproOS is built for x86_64 only); legacy-BIOS installation; static "
+            "management networks; Secure Boot; LVM, RAID or encrypted targets; provider rescue planes "
+            "other than the QEMU test supervisor; any combination not listed above. A shape in the "
+            "refusal table is refused by a gate-proven check; the rest are not covered by any gate.", ""]
     sys.stdout.write("\n".join(out))
     return 0
 

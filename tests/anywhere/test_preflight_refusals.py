@@ -12,6 +12,9 @@ must block the report on exactly the predicate that guards it:
   raid    the target is a member of an active md RAID1
   static  the management interface is statically addressed
   bios    the machine boots with legacy BIOS (SeaBIOS)
+  arm64   the machine is an arm64 Debian (emulated: this host has no arm64
+          KVM); the read-only probe must run there and the report must
+          block on architecture
 
 Preflight runs in --inspection mode here: the report is blocked
 regardless, and the source keeps writing these disks itself (an md RAID1
@@ -140,7 +143,24 @@ def bios(a: Path) -> dict:
         sup.destroy(vm)
 
 
-CASES = {"stacked": stacked, "static": static, "bios": bios}
+def arm64(a: Path) -> dict:
+    vm = a / "run" / f"refusals-arm64-{int(time.time())}"
+    sup.create("debian-arm64", vm, None)
+    try:
+        report = preflight(a, vm / "enrollment.toml")
+        probe = json.loads((a / "state" / report_name(vm) / "inventory.json").read_text())
+        assert probe["kernel"]["machine"] == "aarch64", probe["kernel"]
+        return {"arm64": expect(report, "architecture", "aarch64")}
+    finally:
+        sup.destroy(vm)
+
+
+def report_name(vm: Path) -> str:
+    return next(line.split('"')[1] for line in (vm / "enrollment.toml").read_text().splitlines()
+                if line.startswith("name"))
+
+
+CASES = {"stacked": stacked, "static": static, "bios": bios, "arm64": arm64}
 
 
 def main() -> int:

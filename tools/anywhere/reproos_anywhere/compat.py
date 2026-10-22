@@ -54,7 +54,10 @@ def evaluate(inv: dict[str, Any], enrollment: dict[str, Any], config: dict[str, 
     r.add("not-a-container", "fail" if marker else "pass",
           f"container marker {marker}" if marker else "no container marker")
     arch = inv["kernel"]["machine"]
-    r.add("architecture", "pass" if arch in SUPPORTED_ARCH else "fail", arch)
+    r.add("architecture", "pass" if arch in SUPPORTED_ARCH else "fail",
+          arch if arch in SUPPORTED_ARCH else
+          f"{arch}: ReproOS is built for {', '.join(sorted(SUPPORTED_ARCH))} only, so there is no "
+          f"{arch} system to install")
 
     fw = inv["firmware"]
     if fw["mode"] != "uefi":

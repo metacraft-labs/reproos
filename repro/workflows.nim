@@ -237,9 +237,11 @@ package reproosWorkflows:
     # it is needed when, and only when, the guest kernel's TPM drivers
     # are compressed modules rather than built in.
     "qemu-system-x86_64"
-    # ReproOS Anywhere's VM gates also create and inspect qcow2 overlays
-    # and fetch digest-pinned distribution images.
+    # ReproOS Anywhere's VM gates also create and inspect qcow2 overlays,
+    # fetch digest-pinned distribution images, and boot one emulated arm64
+    # source to prove it is refused.
     "qemu-img"
+    "qemu-system-aarch64"
     "curl"
     "swtpm"
     "mkfs.vfat"
@@ -1745,7 +1747,7 @@ package reproosWorkflows:
 
     let anywhereVmTools = @[
       "bash", "python3", "nix", "ssh", "ssh-keygen", "xorriso", "cpio",
-      "qemu-system-x86_64", "qemu-img", "curl",
+      "qemu-system-x86_64", "qemu-system-aarch64", "qemu-img", "curl",
     ]
     let anywhereVmInputs = anywhereSources & @[
       "tools/anywhere/anywhere_disk.nim",

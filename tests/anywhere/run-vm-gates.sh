@@ -8,7 +8,7 @@
 #   tests/anywhere/run-vm-gates.sh detection  test_reproos_anywhere_detection_and_append_only_capture
 #   tests/anywhere/run-vm-gates.sh confinement test_reproos_anywhere_installer_confinement_and_isolation
 #   tests/anywhere/run-vm-gates.sh recovery   e2e_reproos_anywhere_failure_recovery_matrix
-#   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS sources
+#   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS/arm64 sources
 #   tests/anywhere/run-vm-gates.sh drill      e2e_reproos_anywhere_compromise_drill
 #   tests/anywhere/run-vm-gates.sh controllers the conversion over virtio-scsi, AHCI and NVMe targets
 #   tests/anywhere/run-vm-gates.sh convert    the conversion through `reproos-anywhere convert DEST MACHINE`
@@ -23,7 +23,7 @@ shift
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 repo=$(cd "$here/../.." && pwd)
 art=${ANYWHERE_ARTIFACTS:-$repo/build/anywhere}
-for tool in nix-build qemu-system-x86_64 qemu-img ssh ssh-keygen xorriso cpio curl python3; do
+for tool in nix-build qemu-system-x86_64 qemu-system-aarch64 qemu-img ssh ssh-keygen xorriso cpio curl python3; do
   command -v "$tool" >/dev/null || { echo "run-vm-gates: missing $tool; run from a shell that provides it" >&2; exit 2; }
 done
 [ -w /dev/kvm ] || { echo "run-vm-gates: /dev/kvm is not writable; the Anywhere VM gates need KVM" >&2; exit 2; }

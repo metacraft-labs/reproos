@@ -5,12 +5,17 @@
     reproos-anywhere preflight --enrollment E --config C [--inspection]
     reproos-anywhere plan      --name N --config C
     reproos-anywhere apply     --name N --acknowledge PLAN_ID
-    reproos-anywhere resume    --name N --acknowledge PLAN_ID
-    reproos-anywhere status    --name N
-    reproos-anywhere verify    --name N
+    reproos-anywhere resume    --name N --acknowledge PLAN_ID [--reformat] [--clear-detection]
+    reproos-anywhere recover   --name N --acknowledge PLAN_ID [--rematerialize]
+    reproos-anywhere status | logs | abort | investigate | replan --name N
+    reproos-anywhere ssh       --name N [COMMAND...]
+    reproos-anywhere bundle    --name N --output FILE.tar.gz
+    reproos-anywhere contain   --name N --evidence DIR
 
-Common: --state DIR (controller state, default ./anywhere-state),
---payload DIR, --installer DIR, --kexec FILE, --layout-tool FILE.
+N is the enrollment's `name`. Common, before or after the command, and
+needed by every command that runs or plans a conversion: --state DIR
+(controller state, default ./anywhere-state), --payload DIR,
+--installer DIR, --kexec FILE, --layout-tool FILE.
 
 `convert` is the short form. Without --acknowledge it runs strict
 preflight and plan for the enrolled machine at that SSH destination with
@@ -23,7 +28,7 @@ plan and passed its identity back.
 `preflight` never writes the machine. `plan` writes only controller
 state and prints the plan identity; nothing destructive happens until
 `apply` is given exactly that identity. Exit status: 0 success,
-2 refused (nothing changed), 3 blocked report, 1 failure.
+2 refused (nothing changed), 3 blocked report, 1 failure, 64 usage.
 """
 
 import argparse
@@ -50,6 +55,14 @@ def print_report(report: dict) -> None:
           f"{' (inspection only)' if report.get('inspection_only') else ''}; "
           f"conversion_qualified={str(report['conversion_qualified']).lower()}")
     print(f"report: {report.get('id', '')}")
+
+
+class Parser(argparse.ArgumentParser):
+    """A usage error exits 64, never 2: 2 means "refused, nothing changed"."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(64, f"{self.prog}: error: {message}\n")
 
 
 def parse_destination(text: str) -> tuple[str | None, str, int | None]:
@@ -103,13 +116,14 @@ def select_enrollment(destination: str, enrollments: Path) -> Path:
 
 
 def print_plan(state: Path, name: str, plan_id: str, again: str) -> None:
-    from reproos_anywhere import plan as plan_mod
-    plan = canon.read(state / name / "plan" / "plan.json")
-    print(f"plan for {name}: target {plan['target']['serial']} "
-          f"({plan['storage']['device']}, {plan['target']['size_sectors']} sectors) "
-          f"layout {plan['storage']['layout']}; takeover {plan['takeover']}; payload {plan['payload']['kind']} "
-          f"qualified={str(plan['conversion_qualified']).lower()}")
-    print(f"content identity {plan_mod.content_identity(plan)}")
+    plan_file = state / name / "plan" / "plan.json"
+    plan = canon.read(plan_file)
+    print(f"plan for {name} (the full plan: {plan_file}):")
+    print(f"  target disk  {plan['target']['serial']} = {plan['storage']['device']}, "
+          f"{plan['target']['size_sectors']} sectors, layout {plan['storage']['layout']}")
+    print(f"  installs     hostname {plan['configuration']['hostname']}, user {plan['configuration']['user']}, "
+          f"payload {plan['payload']['kind']} (qualified={str(plan['conversion_qualified']).lower()})")
+    print(f"  takeover     {plan['takeover']}; plan expires {plan['expires']}")
     print(f"THIS PLAN DESTROYS EVERYTHING ON THAT DISK. To apply it, {again}:")
     print(f"  --acknowledge {plan_id}")
 
@@ -128,7 +142,8 @@ def convert(args, state: Path) -> int:
             return 3
         plan_id = c.make_plan(state_root=state, name=name, config_path=config,
                               artifacts=artifacts(args), takeover=args.takeover)
-        print_plan(state, name, plan_id, "run the same command again with")
+        print_plan(state, name, plan_id, "boot the machine normally through its management plane, "
+                                         "then run the same command again with")
         return 0
     # The plan on record must have been made for this machine configuration,
     # not merely carry the acknowledged identity.
@@ -140,7 +155,11 @@ def convert(args, state: Path) -> int:
     run = c.Apply(state_root=state, name=name, acknowledge=args.acknowledge, artifacts=artifacts(args),
                   resume=journal.exists() and journal.stat().st_size > 0, max_rate=args.max_rate,
                   evidence_sink=args.evidence_sink, events=Path(args.events) if args.events else None)
+    if "final-verification" in run.journal.completed():
+        print(f"{name}: this plan already completed; the result below is the one recorded then. "
+              f"`ssh --name {name}` reaches the installed system now.", file=sys.stderr)
     print(json.dumps(run.run(), indent=2, sort_keys=True))
+    print(f"next: reproos-anywhere status|logs|ssh --name {name} --state {state}", file=sys.stderr)
     return 0
 
 
@@ -148,14 +167,14 @@ def main() -> int:
     def common(default) -> argparse.ArgumentParser:
         # Accepted before or after the subcommand (`repro run anywhere-*`
         # puts the subcommand first).
-        c = argparse.ArgumentParser(add_help=False)
+        c = Parser(add_help=False)
         c.add_argument("--state", default="anywhere-state" if default is None else default)
         for opt in ("--payload", "--installer", "--kexec", "--layout-tool"):
             c.add_argument(opt, default=default)
         c.add_argument("--json", action="store_true", default=False if default is None else default,
                        help="print the result record as JSON")
         return c
-    p = argparse.ArgumentParser(prog="reproos-anywhere", description=__doc__, parents=[common(None)],
+    p = Parser(prog="reproos-anywhere", description=__doc__, parents=[common(None)],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     later = common(argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd", required=True)

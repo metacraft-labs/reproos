@@ -164,6 +164,10 @@ def replan(state_dir: Path, controller_key: Path, controller_pub: str, log=print
     old, old_id, journal, enr = _load(state_dir)
     if not revoked(journal):
         raise RecoveryError("replan is for a contained (revoked) plan")
+    if not rescue_adapter(enr["rescue"]).can_boot_media:
+        raise RecoveryError("the enrollment's rescue route cannot boot media (no boot_command and "
+                            "restore_command), and a contained machine can only be restored by rescue-media "
+                            "takeover; restore it through the provider console")
     archive = state_dir / "history" / old_id
     archive.mkdir(parents=True, exist_ok=True)
     shutil.copytree(state_dir / "plan", archive / "plan", dirs_exist_ok=True)

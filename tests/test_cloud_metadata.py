@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.request
 from pathlib import Path
 
 
@@ -287,6 +288,46 @@ class CloudMetadataSpoofing(unittest.TestCase):
             MODULE.http(url)
         self.assertEqual(caught.exception.code, "oversized-document")
         _Plain.body = b"42"
+
+    def test_metadata_requests_use_the_link_local_address_and_no_proxy(self) -> None:
+        # GCE by name would be resolved through the DHCP-supplied DNS server.
+        urls: list[str] = []
+
+        def record(url, headers=None, method="GET", marker=None, timeout=3.0, data=None):
+            urls.append(url)
+            return b"1"
+
+        original = MODULE.http
+        MODULE.http = record
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                MODULE.collect_gce(Path(raw))
+        finally:
+            MODULE.http = original
+        self.assertTrue(urls)
+        for url in urls:
+            self.assertTrue(url.startswith(MODULE.IMDS + "/"), url)
+
+        # A proxy from the environment would see every token and key.
+        def proxied(opener) -> list[dict]:
+            return [h.proxies for h in opener.handlers
+                    if isinstance(h, urllib.request.ProxyHandler) and h.proxies]
+
+        saved = os.environ.get("http_proxy")
+        os.environ["http_proxy"] = "http://192.0.2.1:3128"
+        try:
+            # The opener is built at import, so load a copy under the variable.
+            spec = importlib.util.spec_from_file_location("reproos_cloud_metadata_proxied", TOOL)
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+            self.assertEqual(proxied(fresh.OPENER), [])
+            # Positive control: a default opener built under the variable uses it.
+            self.assertNotEqual(proxied(urllib.request.build_opener()), [])
+        finally:
+            if saved is None:
+                del os.environ["http_proxy"]
+            else:
+                os.environ["http_proxy"] = saved
 
     def test_enrolled_machine_without_cloud_metadata_is_left_alone(self) -> None:
         # The unit now runs on every boot as an identity check; a workstation

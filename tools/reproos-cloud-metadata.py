@@ -366,7 +366,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-OPENER = urllib.request.build_opener(NoRedirect)
+# No proxy, whatever the environment says: the metadata service and the
+# WireServer are link-local, and a proxy would see every token and key.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
 
 
 def http(url: str, headers: dict | None = None, method: str = "GET",
@@ -408,7 +410,9 @@ def collect_ec2(raw: Path) -> None:
 
 
 def collect_gce(raw: Path) -> None:
-    base = "http://metadata.google.internal/computeMetadata/v1"
+    # The link-local address, not metadata.google.internal: that name is
+    # resolved through whatever DNS server the DHCP lease named.
+    base = f"{IMDS}/computeMetadata/v1"
     h = {"Metadata-Flavor": "Google"}
     marker = ("Metadata-Flavor", "Google")
     for name, required in (("instance/id", True), ("instance/hostname", False),

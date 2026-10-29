@@ -241,7 +241,7 @@ class Apply:
                  events: Path | None = None):
         self.state = State(state_root, name)
         self.log = log
-        self.max_rate = max_rate        # bytes/s for payload transfer; 0 = unbounded
+        self.max_rate = max_rate        # bytes/s for every transfer to the machine; 0 = unbounded
         self.rerun_from: str | None = None
         self.artifacts = artifacts
         journal_path = self.state.dir / "journal.jsonl"
@@ -634,7 +634,9 @@ class Apply:
         }
         evidence = {"dir": d, "files": {}}
         for name, (path, want) in files.items():
-            got = src.upload(path, f"{d}/{name}", privileged=True)
+            if self.max_rate:
+                self.log(f"staging {name} at most {self.max_rate} B/s")
+            got = src.upload(path, f"{d}/{name}", privileged=True, max_rate=self.max_rate)
             if got != want:
                 raise AnywhereError(f"staged {name} has sha256 {got}, expected {want}")
             evidence["files"][name] = want

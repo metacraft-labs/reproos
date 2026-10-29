@@ -1,6 +1,6 @@
 """Build takeover-environment variants with a chosen set of hardening controls.
 
-The default installer carries every control (gate, ro-store, egress). The
+The default installer carries every control (gate, ro-store, egress, caps). The
 removal-negative gates build one variant per control with THAT control
 removed, and the detection gate builds one without the gate (detection is
 the defence for when confinement has already failed, so it is tested with
@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-ALL_CONTROLS = ("gate", "ro-store", "egress")
+ALL_CONTROLS = ("gate", "ro-store", "egress", "caps")
 
 
 def build_installer(controls: list[str] | tuple[str, ...]) -> Path:

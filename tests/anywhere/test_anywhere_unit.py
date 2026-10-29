@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -455,6 +457,29 @@ class TransportHardening(unittest.TestCase):
         self.assertTrue(known[0].startswith("[127.0.0.1]:2222 ssh-ed25519 "))
         with self.assertRaises(TransportError):
             Endpoint("h", 22, "root", "ssh-rsa AAAAB3", Path("/dev/null"))
+
+
+class BoundedUpload(unittest.TestCase):
+    """The takeover image is staged under the same bandwidth bound as the
+    payload: an upload with ``max_rate`` takes at least size/rate."""
+
+    class Local(Session):
+        def argv(self, remote=None):
+            return ["sh", "-c", remote]
+
+    def test_upload_honours_max_rate(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        s = self.Local(Endpoint("127.0.0.1", 22, "root",
+                                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGpZbmnZss8EKxDnHchD2GAUi9y8GBU4mVsxqnqHKzoP",
+                                Path("/dev/null")), d)
+        src = d / "image"
+        src.write_bytes(os.urandom(512 * 1024))
+        started = time.monotonic()
+        digest = s.upload(src, str(d / "copy"), max_rate=256 * 1024)
+        self.assertGreaterEqual(time.monotonic() - started, 1.5)
+        self.assertEqual((d / "copy").read_bytes(), src.read_bytes())
+        self.assertEqual(digest, hashlib.sha256(src.read_bytes()).hexdigest())
 
 
 class SessionArchive(unittest.TestCase):

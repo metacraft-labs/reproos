@@ -192,9 +192,10 @@ The irreversible storage operations (destroy, format, install-root) run
 detached from the SSH session in the installer, keyed by the plan and
 their exact arguments. A dropped connection or a killed controller does
 not interrupt them, and `resume` re-attaches to the same operation instead
-of running it twice. `--max-rate BYTES_PER_SECOND` bounds the payload
-transfer; an interrupted transfer resumes from the bytes already on the
-target and is verified by digest before it is unpacked.
+of running it twice. `--max-rate BYTES_PER_SECOND` bounds every transfer
+to the machine: the takeover image staged on the source (kexec) and the
+payload. An interrupted payload transfer resumes from the bytes already on
+the target, and both are verified by digest before they are used.
 
 ### The takeover environment's boundary
 
@@ -208,8 +209,12 @@ and a path allowlist (the work area and the mounted target). Anything else
 is refused with exit 126 and a `REPROOS_ANYWHERE_GATE:REFUSED` line on the
 console. The installer also mounts its executable closure (`/nix/store`)
 read-only and drops every connection it did not receive except DHCP
-(`tests/anywhere/fixture/egress.nft`). It reports the controls it runs
-with, and takeover refuses an installer whose controls differ from its
+(`tests/anywhere/fixture/egress.nft`). Everything reached over SSH --
+sshd, the gate and what the gate runs -- holds a bounded capability set
+and cannot gain more (`no_new_privs`): it keeps what the storage work and
+sshd need, and cannot load kernel code, reprogram the network or the
+egress filter, change audit, trace other processes or touch raw memory.
+It reports the controls it runs with, and takeover refuses an installer whose controls differ from its
 manifest.
 
 Detection: the installer's kernel audits every `execve` and every

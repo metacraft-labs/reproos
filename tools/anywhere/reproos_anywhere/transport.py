@@ -199,13 +199,21 @@ class Session:
                                  f"{proc.stderr.read().decode('utf-8', 'replace').strip()[-500:]}")
 
     def upload(self, local: Path, remote_path: str, *, privileged: bool = False,
-               timeout: float = 900) -> str:
+               timeout: float = 900, max_rate: int = 0) -> str:
         """Stream ``local`` to ``remote_path`` and return the SHA-256 the
         REMOTE side computed; the caller compares it with the expected
-        digest before using the file."""
+        digest before using the file. A non-zero ``max_rate`` bounds the
+        transfer to that many bytes per second."""
         quoted = sh_quote(remote_path)
-        self.run(f"cat > {quoted}", stdin_file=local, privileged=privileged,
-                 timeout=timeout)
+        if max_rate:
+            command = f"cat > {quoted}"
+            if privileged and self.endpoint.privilege == "sudo":
+                command = "sudo -n -- sh -c " + sh_quote(command)
+            self.stream(local, 0, command, max_rate=max_rate,
+                        timeout=max(timeout, 60 + 2 * local.stat().st_size / max_rate))
+        else:
+            self.run(f"cat > {quoted}", stdin_file=local, privileged=privileged,
+                     timeout=timeout)
         out = self.run(f"sha256sum {quoted}", privileged=privileged).stdout.decode()
         return out.split()[0] if out.strip() else ""
 

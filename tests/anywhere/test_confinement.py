@@ -17,6 +17,10 @@ notice the control missing):
   ro-store     the verified closure cannot be modified (`touch /nix/store/x`)
   egress       the installer cannot open a connection out (to a listener the
                test runs on the host), while inbound SSH keeps working
+  caps         a session cannot reprogram the network or the egress filter
+               (`nft flush ruleset`, `ip link add`), and its bounding set
+               lacks the kernel-code, tracing, raw-memory and audit
+               capabilities, while mounting (the storage work) keeps working
   per-plan key a key other than this plan's session key is refused
 
     test_confinement.py --artifacts DIR
@@ -160,7 +164,13 @@ def gate_holds(inst: Installer, key: Path) -> tuple[bool, str]:
     ok = inst.ssh(key, "anywhere-gate identity")
     arbitrary = inst.ssh(key, "id")
     refused = arbitrary.returncode == 126 and "uid=" not in arbitrary.stdout
-    logged = "REPROOS_ANYWHERE_GATE:REFUSED" in inst.console.read_text(errors="replace")
+    # The refusal line queues behind the audit records on the synchronous
+    # console; give it time to drain before deciding it is missing. It must
+    # arrive whole, as one kernel log record.
+    deadline = time.monotonic() + 15
+    while not (logged := "REPROOS_ANYWHERE_GATE:REFUSED unknown verb id\n" in inst.console.read_text(errors="replace")) \
+            and time.monotonic() < deadline:
+        time.sleep(0.5)
     return ok.returncode == 0 and "session=" in ok.stdout and refused and logged, \
         f"identity rc={ok.returncode}; `id` rc={arbitrary.returncode} out={arbitrary.stdout.strip()!r}"
 
@@ -177,6 +187,26 @@ def egress_holds(inst: Installer, key: Path) -> tuple[bool, str]:
     channel = inst.ssh(key, "anywhere-gate identity").returncode == 0
     return (not hit.is_set()) and channel, f"outbound connection {'reached' if hit.is_set() else 'did not reach'} " \
                                            f"the host; inbound channel {'usable' if channel else 'BROKEN'}"
+
+
+# Capabilities a session must never hold (linux/capability.h bit numbers).
+FORBIDDEN_CAPS = {"net_admin": 12, "net_raw": 13, "sys_module": 16, "sys_rawio": 17, "sys_ptrace": 19,
+                  "audit_control": 30, "mac_admin": 33, "bpf": 39}
+
+
+def caps_holds(inst: Installer, key: Path) -> tuple[bool, str]:
+    p = inst.ssh(key, "nft flush ruleset && echo FLUSHED; ip link add anywhere0 type dummy && echo LINKED; "
+                      "grep CapBnd /proc/self/status; true")
+    bound = int(next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("CapBnd:")), "f" * 16), 16)
+    held = sorted(n for n, bit in FORBIDDEN_CAPS.items() if bound >> bit & 1)
+    # The storage work keeps what it needs: mounting (sys_admin).
+    storage = "MOUNTED" in inst.ssh(key, "mkdir -p /run/anywhere/work/t && "
+                                         "mount -t tmpfs t /run/anywhere/work/t && echo MOUNTED").stdout
+    ok = "FLUSHED" not in p.stdout and "LINKED" not in p.stdout and not held and storage
+    return ok, (f"nft flush {'SUCCEEDED' if 'FLUSHED' in p.stdout else 'refused'}; "
+                f"ip link add {'SUCCEEDED' if 'LINKED' in p.stdout else 'refused'}; "
+                f"forbidden caps in bounding set: {','.join(held) or 'none'}; "
+                f"storage verb {'works' if storage else 'BROKEN'}")
 
 
 def session_key_holds(inst: Installer, own: Path, other: Path) -> tuple[bool, str]:
@@ -202,6 +232,7 @@ def main() -> int:
         ("gate", gate_holds, everything, no_gate),
         ("ro-store", ro_store_holds, no_gate, [c for c in no_gate if c != "ro-store"]),
         ("egress", egress_holds, no_gate, [c for c in no_gate if c != "egress"]),
+        ("caps", caps_holds, no_gate, [c for c in no_gate if c != "caps"]),
     ]
     results, failures = [], []
     try:

@@ -22,7 +22,7 @@
 
 PATH=@toolPath@:/bin
 export PATH
-# The hardening controls this build carries (M2): gate ro-store egress.
+# The hardening controls this build carries (M2): gate ro-store egress caps.
 controls="@controls@"
 has() { case " $controls " in *" $1 "*) return 0 ;; esac; return 1; }
 
@@ -158,6 +158,8 @@ chmod 0600 /etc/anywhere/authorized_keys
 # rescue plane. The rules are then locked (-e 2): changing or disabling
 # them now needs a reboot, which the controller would see.
 echo 0 > /proc/sys/kernel/printk_ratelimit
+# The gate reports refusals through /dev/kmsg; never drop one to rate limiting.
+echo on > /proc/sys/kernel/printk_devkmsg
 auditctl -D >/dev/null 2>&1
 auditctl -b 16384 >/dev/null
 auditctl -f 1 >/dev/null
@@ -205,9 +207,22 @@ console "REPROOS_ANYWHERE_INSTALLER:READY session=$session nonce=$nonce boot_id=
 # put its audit records in the middle of it. Let it drain first.
 sleep 1
 
+# Capability bounding: everything reached over SSH -- sshd, the gate and
+# whatever the gate runs -- holds only the capabilities the installer's
+# own work needs, and can never gain more (no_new_privs). Session code
+# cannot load kernel code, reprogram the network or the egress filter,
+# change audit, trace other processes or touch raw memory, even if the
+# gate is bypassed. Kept: sshd's own (setuid/setgid, sys_chroot for
+# privilege separation, net_bind_service, kill, audit_write) and the
+# storage work (sys_admin for mount and partition re-read, file
+# ownership and modes for unpacking the root, mknod, sys_boot to reboot).
+bound=""
+if has caps; then
+  bound="setpriv --no-new-privs --inh-caps -all --bounding-set -all,+chown,+dac_override,+dac_read_search,+fowner,+fsetid,+kill,+setgid,+setuid,+net_bind_service,+sys_chroot,+sys_admin,+sys_boot,+mknod,+audit_write --"
+fi
 while :; do
   if [ "$debug" = 1 ]; then dflag=-d; else dflag=; fi
-  @sshd@ -D -e $dflag -f /etc/ssh/sshd_config >/dev/console 2>&1
+  $bound @sshd@ -D -e $dflag -f /etc/ssh/sshd_config >/dev/console 2>&1
   console "REPROOS_ANYWHERE_INSTALLER:SSHD-EXITED"
   sleep 2
 done

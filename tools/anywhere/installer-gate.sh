@@ -18,7 +18,11 @@ set -u
 IFS=' '
 
 refuse() {
-  echo "REPROOS_ANYWHERE_GATE:REFUSED $*" > /dev/console 2>/dev/null
+  # Through the kernel log, not straight to /dev/console: the kernel prints
+  # each record whole, so the refusal cannot be split by the audit records
+  # this very request produced.
+  { echo "<4>REPROOS_ANYWHERE_GATE:REFUSED $*" > /dev/kmsg; } 2>/dev/null \
+    || echo "REPROOS_ANYWHERE_GATE:REFUSED $*" > /dev/console 2>/dev/null
   echo "gate: refused: $*" >&2
   exit 126
 }

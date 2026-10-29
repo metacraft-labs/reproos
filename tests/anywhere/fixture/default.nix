@@ -19,7 +19,7 @@
 { reproosSrc ? ../../.., reprobuildSrc ? ../../../../reprobuild
   # The takeover environment's hardening controls. Tests build variants
   # with one removed to prove each control is what its gate depends on.
-, controls ? [ "gate" "ro-store" "egress" ]
+, controls ? [ "gate" "ro-store" "egress" "caps" ]
   # The configuration baked into the payload (its install.target_device
   # must name the disk being converted).
 , autoConfig ? reproosSrc + "/tests/fixtures/auto-config-minimal.toml"

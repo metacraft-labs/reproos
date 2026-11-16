@@ -485,13 +485,28 @@ proc ukiDigest*(image: string): string =
 # ---------------------------------------------------------------------
 
 const
-  UkiBaseCmdlineArgs*: array[2, string] = ["ro", "quiet"]
+  UkiLockdownCmdlineArg* = "lockdown=integrity"
+    ## Kernel lockdown for the life of the boot. The launch measurement
+    ## names this kernel; lockdown is what stops root from changing it
+    ## afterwards -- writing kernel memory through ``/dev/mem``, writing
+    ## MSRs, resuming a hibernation image off the writable swap, or
+    ## loading a kexec image -- while the measurement still names the
+    ## original. ``integrity`` rather than ``confidentiality`` because the
+    ## latter also blocks reading kernel memory for tracing and debugging,
+    ## which the attestation claim does not depend on.
+    ##
+    ## The kernel ignores this argument when its lockdown LSM is not built
+    ## in, so ``init-disk`` checks the level the kernel reports and refuses
+    ## to switch into an attested root that did not get it.
+
+  UkiBaseCmdlineArgs*: array[3, string] = ["ro", "quiet",
+                                           UkiLockdownCmdlineArg]
     ## What every attested command line carries beyond the verity keys.
     ## ``ro`` states the intent at the mount as well as at the device;
-    ## ``quiet`` is the product's existing console policy. Spelled out
-    ## because the command line is measured: an argument that appears
-    ## only on some builds moves the measurement for reasons an operator
-    ## cannot see.
+    ## ``quiet`` is the product's existing console policy; the lockdown
+    ## argument is described above. Spelled out because the command line
+    ## is measured: an argument that appears only on some builds moves the
+    ## measurement for reasons an operator cannot see.
 
 ## The volumes an attested command line names are NOT declared here. Which
 ## volume a generation's verity pair lives on is a property of the
@@ -548,6 +563,11 @@ proc validateAttestedCmdline*(cmdline, rootHash: string): string =
       verity.VerityDataDeviceCmdlineKey & "= and " &
       verity.VerityHashDeviceCmdlineKey & "=; the initrd refuses that " &
       "combination at boot, so it is refused here instead"
+  if UkiLockdownCmdlineArg notin cmdline.splitWhitespace():
+    return "the kernel command line does not carry " &
+      UkiLockdownCmdlineArg & "; without it root can rewrite or replace " &
+      "the running kernel while the launch measurement still names this " &
+      "one, so the measurement says nothing about what is running"
   if '\n' in cmdline or '\0' in cmdline:
     return "the kernel command line contains a newline or a NUL"
   ""

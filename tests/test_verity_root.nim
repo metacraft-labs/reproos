@@ -94,6 +94,7 @@ import std/[options, os, osproc, strutils, times]
 
 import "../repro/verity"
 import "../repro/disk_layouts"
+import "../repro/uki"
 import "./root_policy_fixture"
 import "./gate_layers"
 
@@ -104,6 +105,7 @@ const
 
   ToolGateEnv = "REPROOS_VERITY_TOOL_GATE"
   GuestGateEnv = "REPROOS_VERITY_GUEST_GATE"
+  HardeningGateEnv = "REPROOS_ATTESTED_HARDENING_GATE"
 
   VmNamePrefix = "reproos-att-verity-"
     ## Every VM this gate creates is named under the shared
@@ -476,8 +478,43 @@ block layerDeclarationsAgree:
         "init-disk activates verity and treats a failure as fatal")
   check("mount -t \"$ROOT_FSTYPE\" -o ro \"$ROOT_DEV\"" in initDisk,
         "init-disk mounts the root read-only")
-  check("-o rw" in initDisk and "mount_state" in initDisk,
+  check("-o \"$STATE_MOUNT_OPTS\"" in initDisk and
+        "mount_state" in initDisk,
         "init-disk mounts the state volumes read-write")
+  # The persistence surface of an integrity-checked root. The state
+  # volumes outlive the boot and nothing measures them, so on that layout
+  # they must be mounted so that nothing planted on them can run, gain
+  # privilege through a setuid bit, or reach a device through a planted
+  # node -- and module loading and kexec close before init runs. The
+  # booted-guest layer below (REPROOS_ATTESTED_HARDENING_GATE) attacks
+  # each of these; this is the cheap check that the shipped script still
+  # says so.
+  check("STATE_MOUNT_OPTS='rw,nosuid,nodev,noexec'" in initDisk,
+        "init-disk mounts an integrity-checked root's state volumes " &
+        "noexec, nosuid and nodev")
+  check("close_one_way /proc/sys/kernel/modules_disabled" in initDisk and
+        "close_one_way /proc/sys/kernel/kexec_load_disabled" in initDisk,
+        "init-disk closes module loading and kexec before switching into " &
+        "an integrity-checked root")
+  check("/sys/kernel/security/lockdown" in initDisk and
+        "rescue \"the command line asks for lockdown=" in initDisk,
+        "init-disk refuses an attested root when the kernel did not " &
+        "honour the lockdown the command line asks for")
+  # A refusal on that layout must stop the boot, not hand a root shell
+  # to whoever holds the console -- on a cloud or confidential VM, the
+  # operator or host the measurement is meant to exclude. The booted
+  # guest layer's wrong-hash case below observes it; this is the cheap
+  # check that the script still says so.
+  let rescueAt = initDisk.find("rescue() {")
+  let rescueEnd = initDisk.find("\n}\n", max(rescueAt, 0))
+  let rescueBody =
+    if rescueAt >= 0 and rescueEnd > rescueAt: initDisk[rescueAt .. rescueEnd]
+    else: ""
+  let noShellAt = rescueBody.find("if [ -n \"$VERITY_ROOTHASH\" ]; then")
+  check(noShellAt >= 0 and "exit 1" in rescueBody[noShellAt .. ^1] and
+        rescueBody.find("exec /bin/sh") > noShellAt,
+        "init-disk's rescue stops the boot on an integrity-checked root " &
+        "before it would exec a shell")
 
   let initramfsBuilder = readFile(
     RepoRoot / "recipes/reproos-iso/scripts/build-initramfs.sh")
@@ -825,6 +862,51 @@ proc discoverGuestArtifacts(): (GuestArtifacts, string) =
       "REPROOS_VERITYSETUP_BIN or put one on PATH")
   (a, "")
 
+proc buildGuestInitramfs(work: string; artifacts: GuestArtifacts;
+                         initramfs: string): bool =
+  ## An init-disk initramfs that can activate verity, built by the
+  ## PRODUCT's own builder. A fake install-mirror layout is laid out under
+  ## ``work`` so build-initramfs.sh is driven exactly as the recipe drives
+  ## it and nothing about it is special-cased for the test. Prints the
+  ## builder's output and returns false when it fails.
+  let fakeKernel = work / "kernel-root"
+  let fakeBusybox = work / "busybox-root"
+  createDir(fakeKernel / "usr/lib/reproos-kernel")
+  createDir(fakeKernel / "usr/lib/modules")
+  createDir(fakeBusybox / "usr/bin")
+  copyFile(artifacts.kernel,
+           fakeKernel / "usr/lib/reproos-kernel/vmlinuz")
+  writeFile(fakeKernel / "usr/lib/reproos-kernel/kernel.release",
+            artifacts.release & "\n")
+  # The source kernel's install mirror carries its symbol map beside the
+  # image, and the builder runs depmod against it when the module tree
+  # was installed without one (the recipe passes DEPMOD=true). Carried
+  # over when present, so the source-built kernel is driven exactly as
+  # the recipe drives it.
+  let systemMap = artifacts.kernel.parentDir / "System.map"
+  if fileExists(systemMap):
+    copyFile(systemMap, fakeKernel / "usr/lib/reproos-kernel/System.map")
+  createSymlink(artifacts.moduleTree / "modules" / artifacts.release,
+                fakeKernel / "usr/lib/modules" / artifacts.release)
+  copyFile(artifacts.busybox, fakeBusybox / "usr/bin/busybox")
+  setFilePermissions(fakeBusybox / "usr/bin/busybox",
+    {fpUserRead, fpUserWrite, fpUserExec, fpGroupRead, fpGroupExec,
+     fpOthersRead, fpOthersExec})
+  let build = execCmdEx(
+    "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC" &
+    " REPRO_KERNEL_INSTALL_ROOT=" & quoteShell(fakeKernel) &
+    " REPRO_BUSYBOX_INSTALL_ROOT=" & quoteShell(fakeBusybox) &
+    " REPRO_INITRAMFS_INIT=init-disk" &
+    " REPRO_INITRAMFS_VERITY=require" &
+    " REPRO_VERITYSETUP_BIN=" & quoteShell(artifacts.veritysetup) &
+    " bash " & quoteShell(RepoRoot /
+      "recipes/reproos-iso/scripts/build-initramfs.sh") &
+    " " & quoteShell(initramfs))
+  if build.exitCode != 0:
+    stderr.writeLine(build.output)
+    return false
+  true
+
 const GuestApplets = [
   "sh", "mount", "umount", "cat", "ls", "dd", "touch", "echo", "mkdir",
   "sleep", "poweroff", "od", "printf", "sync", "tr", "grep",
@@ -905,33 +987,42 @@ poweroff -f
   # down at the same block.
   writeRootPolicyFixture(dir)
 
-proc runGuest(qemu, kernel, initramfs, dataImage, hashTree, varImage,
-              rootHash, serialLog, caseName: string;
-              timeoutSec: int; expectPowerOff = true): bool =
+proc plainVerityCmdline(rootHash: string): string =
+  ## The command line layer 3 boots: verity keys and one state volume,
+  ## nothing the attested UKI adds. Layer 4 boots the attested one.
+  "console=ttyS0 panic=1 loglevel=6 " &
+    verityCmdlineFragment(rootHash, "/dev/vda", "/dev/vdb") & " " &
+    stateCmdlineFragment("/dev/vdc", "")
+
+type GuestDrive = tuple[path: string, readOnly: bool]
+
+proc runGuest(qemu, kernel, initramfs, cmdline: string;
+              drives: openArray[GuestDrive];
+              serialLog, caseName: string;
+              timeoutSec: int): bool =
   ## One boot. Returns false when QEMU could not be started or did not
   ## finish inside the timeout; the caller reads the transcript either
   ## way, because a hung boot's partial transcript is the diagnosis.
   ##
-  ## ``expectPowerOff = false`` is for the case where NOT finishing is the
-  ## correct outcome: ``init-disk`` drops to a rescue shell when it cannot
-  ## produce a root it trusts, and a rescue shell waits forever on
-  ## purpose. Killing it after the timeout and reading the transcript is
-  ## the assertion, not a workaround.
+  ## Every case is expected to end on its own: a guest that reaches its
+  ## init powers off, and ``init-disk`` refusing an integrity-checked root
+  ## panics the kernel, which ``panic=1`` and ``-no-reboot`` turn into an
+  ## exit. A guest still running at the timeout is a failure.
   removeFile(serialLog)
-  let cmdline =
-    "console=ttyS0 panic=1 loglevel=6 " &
-    verityCmdlineFragment(rootHash, "/dev/vda", "/dev/vdb") & " " &
-    stateCmdlineFragment("/dev/vdc", "")
-  let args = @[
+  var args = @[
     "-name", VmNamePrefix & caseName & "-" & $getCurrentProcessId(),
     "-machine", "q35,accel=kvm:tcg",
     "-m", "1024", "-smp", "2",
     "-kernel", kernel,
     "-initrd", initramfs,
     "-append", cmdline,
-    "-drive", "file=" & dataImage & ",format=raw,if=virtio,readonly=on",
-    "-drive", "file=" & hashTree & ",format=raw,if=virtio,readonly=on",
-    "-drive", "file=" & varImage & ",format=raw,if=virtio",
+  ]
+  # Attached in order, so the first is /dev/vda, the second /dev/vdb...
+  for d in drives:
+    args.add "-drive"
+    args.add "file=" & d.path & ",format=raw,if=virtio" &
+      (if d.readOnly: ",readonly=on" else: "")
+  args.add [
     "-nographic", "-no-reboot", "-display", "none", "-monitor", "none",
     "-serial", "file:" & serialLog,
   ]
@@ -951,11 +1042,9 @@ proc runGuest(qemu, kernel, initramfs, dataImage, hashTree, varImage,
     if p.running: p.kill()
     discard p.waitForExit()
     p.close()
-    if expectPowerOff:
-      fail("the " & caseName & " guest did not power off within " &
-           $timeoutSec & "s")
-      return false
-    return true
+    fail("the " & caseName & " guest did not end within " &
+         $timeoutSec & "s")
+    return false
   discard p.waitForExit()
   p.close()
   true
@@ -991,38 +1080,8 @@ block layerBootedGuest:
         createDir(work)
 
         # --- the initramfs, built by the PRODUCT's own builder --------
-        # A fake install-mirror layout, so build-initramfs.sh is driven
-        # exactly as the recipe drives it and nothing about it is
-        # special-cased for the test.
-        let fakeKernel = work / "kernel-root"
-        let fakeBusybox = work / "busybox-root"
-        createDir(fakeKernel / "usr/lib/reproos-kernel")
-        createDir(fakeKernel / "usr/lib/modules")
-        createDir(fakeBusybox / "usr/bin")
-        copyFile(artifacts.kernel,
-                 fakeKernel / "usr/lib/reproos-kernel/vmlinuz")
-        writeFile(fakeKernel / "usr/lib/reproos-kernel/kernel.release",
-                  artifacts.release & "\n")
-        createSymlink(artifacts.moduleTree / "modules" / artifacts.release,
-                      fakeKernel / "usr/lib/modules" / artifacts.release)
-        copyFile(artifacts.busybox, fakeBusybox / "usr/bin/busybox")
-        setFilePermissions(fakeBusybox / "usr/bin/busybox",
-          {fpUserRead, fpUserWrite, fpUserExec, fpGroupRead, fpGroupExec,
-           fpOthersRead, fpOthersExec})
-
         let initramfs = work / "initramfs.img"
-        let buildInitramfs = execCmdEx(
-          "SOURCE_DATE_EPOCH=1735689600 LC_ALL=C TZ=UTC" &
-          " REPRO_KERNEL_INSTALL_ROOT=" & quoteShell(fakeKernel) &
-          " REPRO_BUSYBOX_INSTALL_ROOT=" & quoteShell(fakeBusybox) &
-          " REPRO_INITRAMFS_INIT=init-disk" &
-          " REPRO_INITRAMFS_VERITY=require" &
-          " REPRO_VERITYSETUP_BIN=" & quoteShell(artifacts.veritysetup) &
-          " bash " & quoteShell(RepoRoot /
-            "recipes/reproos-iso/scripts/build-initramfs.sh") &
-          " " & quoteShell(initramfs))
-        if buildInitramfs.exitCode != 0:
-          stderr.writeLine(buildInitramfs.output)
+        if not buildGuestInitramfs(work, artifacts, initramfs):
           fail("build-initramfs.sh could not build an init-disk initramfs " &
                "that can activate verity")
           removeDir(work)
@@ -1092,9 +1151,10 @@ block layerBootedGuest:
 
                 # ---- case 1: a clean image ------------------------
                 let cleanLog = work / "serial-clean.log"
-                if runGuest(qemu, artifacts.kernel, initramfs, dataImage,
-                            hashTree, varImage, finalHash, cleanLog,
-                            "clean", 180):
+                if runGuest(qemu, artifacts.kernel, initramfs,
+                            plainVerityCmdline(finalHash),
+                            [(dataImage, true), (hashTree, true),
+                             (varImage, false)], cleanLog, "clean", 180):
                   let t = transcript(cleanLog)
                   check("VERITY-GUEST-START" in t,
                         "the guest reached /sbin/init inside the verity " &
@@ -1126,9 +1186,10 @@ block layerBootedGuest:
                 bytes[flipAt] = char(uint8(original) xor 0xFF'u8)
                 writeFile(corrupt, bytes)
                 let corruptLog = work / "serial-corrupt.log"
-                if runGuest(qemu, artifacts.kernel, initramfs, corrupt,
-                            hashTree, varImage, finalHash, corruptLog,
-                            "corrupt", 180):
+                if runGuest(qemu, artifacts.kernel, initramfs,
+                            plainVerityCmdline(finalHash),
+                            [(corrupt, true), (hashTree, true),
+                             (varImage, false)], corruptLog, "corrupt", 180):
                   let t = transcript(corruptLog)
                   check("VERITY-GUEST-START" in t,
                         "the guest still booted -- the corruption is " &
@@ -1166,15 +1227,19 @@ block layerBootedGuest:
                 # first read of the top metadata block -- which is the
                 # mount -- and the initrd stops there rather than falling
                 # back to an unchecked mount. A boot that stops is the
-                # correct outcome, so this guest is NOT expected to power
-                # off: it is expected to sit in the rescue shell until it
-                # is killed.
+                # correct outcome. On an integrity-checked root the initrd
+                # offers no rescue shell -- the console belongs to whoever
+                # runs the machine -- it exits, the kernel panics, and
+                # ``panic=1`` with QEMU's ``-no-reboot`` ends the guest. So
+                # a guest still running at the timeout is a guest sitting
+                # in a shell, and fails.
                 var wrong = finalHash
                 wrong[0] = (if wrong[0] == '0': '1' else: '0')
                 let wrongLog = work / "serial-wrong-hash.log"
-                if runGuest(qemu, artifacts.kernel, initramfs, dataImage,
-                            hashTree, varImage, wrong, wrongLog,
-                            "wrong-hash", 60, expectPowerOff = false):
+                if runGuest(qemu, artifacts.kernel, initramfs,
+                            plainVerityCmdline(wrong),
+                            [(dataImage, true), (hashTree, true),
+                             (varImage, false)], wrongLog, "wrong-hash", 60):
                   let t = transcript(wrongLog)
                   check("VERITY-GUEST-START" notin t,
                         "a root hash that does not match the image does " &
@@ -1186,6 +1251,10 @@ block layerBootedGuest:
                   check("[disk-init] FATAL" in t,
                         "and the initrd stopped, rather than falling back " &
                         "to mounting the data device unchecked")
+                  check("dropping to busybox shell" notin t and
+                        "no rescue shell" in t,
+                        "and it stopped the boot without offering a root " &
+                        "shell on the console")
                 else:
                   stderr.writeLine(transcript(wrongLog))
 
@@ -1198,6 +1267,286 @@ block layerBootedGuest:
                   echo "[info] kept (REPROOS_VERITY_GUEST_KEEP=1): ", work
                 else:
                   removeDir(work)
+
+# =====================================================================
+# Layer 4 — what root can still do on a booted attested root. Opt-in.
+#
+# The launch measurement names the UKI and, through the root hash on its
+# command line, every byte of the read-only root. It names nothing on the
+# state volumes, and those volumes outlive the boot. So the question this
+# layer asks is an attacker's: having had root once, what can I leave
+# behind on /var or /home that runs again after the reboot that
+# re-measures the machine, and what can I do to the running kernel while
+# the measurement keeps naming the one that booted?
+#
+# The guest boots the product's own init-disk initramfs with the
+# command line an attested UKI carries (``attestedKernelCmdline``, so
+# ``lockdown=integrity`` and everything else the image measures), over a
+# verity root whose /sbin/init is the attacker, running as root:
+#
+#   * plants a copy of a working binary on each state volume and runs it;
+#   * plants a device node for kernel memory on a state volume and reads
+#     through it;
+#   * opens /dev/mem itself;
+#   * loads a kernel module, and tries to switch module loading back on;
+#   * reads the lockdown level and the kexec switch the kernel reports.
+#
+# And two controls, so the probes are not vacuous: the same planted
+# binary DOES run from a tmpfs the attacker mounts itself (noexec on the
+# state volumes removes the PERSISTENCE route; it does not stop root on a
+# running machine from mounting something executable, and the spec says
+# so), and the same binary runs from the verity root.
+#
+# Needs the ReproOS kernel: one built without the lockdown LSM ignores
+# ``lockdown=integrity``, init-disk refuses to switch into the root, and
+# this layer fails saying so.
+# =====================================================================
+
+const HardeningApplets = [
+  "sh", "mount", "cat", "cp", "chmod", "mknod", "insmod", "dd", "echo",
+  "mkdir", "grep", "poweroff", "true", "ls",
+]
+
+proc writeHardeningRootTree(dir, busybox, moduleFile: string) =
+  ## The root the attacker runs from. ``moduleFile`` is a real ``.ko``
+  ## from the guest kernel's module tree when it has one; with none, a
+  ## file that is not a module at all, which a loader that is still open
+  ## rejects with a DIFFERENT error from the one a closed loader gives.
+  removeDir(dir)
+  for d in ["bin", "sbin", "etc", "proc", "sys", "dev", "run", "tmp",
+            "var", "home", "attacker-tmpfs", "usr/share"]:
+    createDir(dir / d)
+  copyFile(busybox, dir / "bin" / "busybox")
+  setFilePermissions(dir / "bin" / "busybox", {fpUserRead, fpUserWrite,
+    fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead, fpOthersExec})
+  for applet in HardeningApplets:
+    createSymlink("busybox", dir / "bin" / applet)
+  if moduleFile.len > 0:
+    copyFile(moduleFile, dir / "usr/share/probe.ko")
+  else:
+    writeFile(dir / "usr/share/probe.ko", "not a kernel module\n")
+  # Every outcome line is `HARDENING-<probe>=<ok|refused> <message>`: the
+  # message is the shell's own, so a refusal for the WRONG reason (a
+  # missing file, say) is visible rather than read as protection.
+  writeFile(dir / "sbin" / "init", """#!/bin/sh
+export PATH=/bin:/sbin
+say() { echo "$*" > /dev/console; }
+probe() {
+  # probe <name> <command...>: run it, report ok or refused + its message
+  _name="$1"; shift
+  _out="$("$@" 2>&1)" && say "HARDENING-$_name=ok $_out" \
+    || say "HARDENING-$_name=refused $_out"
+}
+say "HARDENING-GUEST-START"
+grep -E ' /(var|home) ' /proc/mounts | while read -r _l; do
+  say "HARDENING-MOUNT $_l"
+done
+# A binary left on the persistent state volumes. Each copy keeps the
+# name `busybox`: BusyBox picks the applet from argv[0], so a copy under
+# any other name would fail with "applet not found" even where the kernel
+# let it run, and the control below could not tell the two apart.
+mkdir -p /var/planted /home/planted
+cp /bin/busybox /var/planted/busybox && chmod 4755 /var/planted/busybox
+cp /bin/busybox /home/planted/busybox && chmod 755 /home/planted/busybox
+probe VAR-EXEC /var/planted/busybox echo planted-binary-ran
+probe HOME-EXEC /home/planted/busybox echo planted-binary-ran
+# A device node for kernel memory left on a state volume.
+mknod /var/planted-mem c 1 1
+probe VAR-DEVNODE dd if=/var/planted-mem of=/dev/null bs=1 count=1
+# Kernel memory through the real node.
+probe DEV-MEM dd if=/dev/mem of=/dev/null bs=1 count=1
+# Code into the running kernel.
+probe INSMOD insmod /usr/share/probe.ko
+probe MODULES-REENABLE sh -c 'echo 0 > /proc/sys/kernel/modules_disabled'
+say "HARDENING-MODULES-DISABLED=$(cat /proc/sys/kernel/modules_disabled 2>&1)"
+if [ -e /proc/sys/kernel/kexec_load_disabled ]; then
+  say "HARDENING-KEXEC=$(cat /proc/sys/kernel/kexec_load_disabled)"
+else
+  say "HARDENING-KEXEC=absent"
+fi
+[ -e /sys/kernel/security/lockdown ] || \
+  mount -t securityfs none /sys/kernel/security 2>/dev/null
+say "HARDENING-LOCKDOWN=$(cat /sys/kernel/security/lockdown 2>&1)"
+# Controls: the probe CAN observe a binary running.
+probe ROOT-EXEC /bin/busybox echo root-binary-ran
+mount -t tmpfs -o exec none /attacker-tmpfs && \
+  cp /bin/busybox /attacker-tmpfs/busybox && \
+  chmod 755 /attacker-tmpfs/busybox
+probe TMPFS-EXEC /attacker-tmpfs/busybox echo planted-binary-ran
+say "HARDENING-GUEST-DONE"
+poweroff -f
+""")
+  setFilePermissions(dir / "sbin" / "init", {fpUserRead, fpUserWrite,
+    fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead, fpOthersExec})
+  writeRootPolicyFixture(dir)
+
+proc firstModuleFile(moduleTree, release: string): string =
+  ## Any loadable module the guest kernel ships, or "".
+  ## Walked through its real path: ``walkDirRec`` does not descend
+  ## through a symlinked root.
+  let root = expandFilename(moduleTree / "modules" / release)
+  if not dirExists(root): return ""
+  for path in walkDirRec(root):
+    if path.endsWith(".ko"):
+      return path
+  ""
+
+proc hardeningLine(t, probe: string): string =
+  ## The line the guest printed for one probe, or "" when it printed none.
+  let marker = "HARDENING-" & probe & "="
+  for line in t.splitLines():
+    let at = line.find(marker)
+    if at >= 0:
+      return line[at + marker.len .. ^1].strip()
+  ""
+
+block layerAttestedHardening:
+  let layer = optInLayer(HardeningGateEnv)
+  if layer.isBlocked:
+    fail(blockedNote(HardeningGateEnv,
+      "bash tests/test-verity-root.sh, with " & HardeningGateEnv & "=1"))
+  elif layer == lrNotRequested:
+    skip("the attested-hardening layer did not run: NO guest was booted " &
+         "with the attested command line, and nothing here is evidence " &
+         "about what root can do on a running attested root. " &
+         notRequestedNote(HardeningGateEnv) & " It takes ~1 min and needs " &
+         "qemu-system-x86_64, mkfs.ext4, the ReproOS kernel with its " &
+         "module tree (REPROOS_VERITY_GUEST_KERNEL / _MODULES / _RELEASE " &
+         "or the source-built kernel), a static BusyBox and a veritysetup " &
+         "to stage.")
+  else:
+    let gate = "attested-hardening layer"
+    let (artifacts, why) = discoverGuestArtifacts()
+    if why.len > 0:
+      fail(gate & ": " & why & ". This layer was asked for, so a missing " &
+           "artifact is a failure, not a skip.")
+    else:
+      let qemu = requireTool(gate, "qemu-system-x86_64")
+      discard requireTool(gate, "mkfs.ext4")
+      if qemu.len > 0:
+        let work = getTempDir() / "reproos-attested-hardening-" &
+          $getCurrentProcessId()
+        removeDir(work)
+        createDir(work)
+        let initramfs = work / "initramfs.img"
+        let tree = work / "tree"
+        let outDir = work / "verity"
+        let moduleFile = firstModuleFile(artifacts.moduleTree,
+                                         artifacts.release)
+        echo "[info] module the guest tries to load: ",
+          (if moduleFile.len > 0: moduleFile else: "<none; a non-module>")
+        writeHardeningRootTree(tree, artifacts.busybox, moduleFile)
+        var varImage = work / "var.img"
+        var homeImage = work / "home.img"
+        var ready = buildGuestInitramfs(work, artifacts, initramfs)
+        if not ready:
+          fail(gate & ": build-initramfs.sh could not build an init-disk " &
+               "initramfs that can activate verity")
+        elif runVerityRootBuilder(tree, outDir) != 0:
+          fail(gate & ": build-verity-root.sh failed for the attacker root")
+          ready = false
+        else:
+          for img in [varImage, homeImage]:
+            let mk = execCmdEx("mkfs.ext4 -q -F -b 4096 -O ^has_journal " &
+                               quoteShell(img) & " 16M")
+            if mk.exitCode != 0:
+              stderr.writeLine(mk.output)
+              fail(gate & ": could not create state volume " & img)
+              ready = false
+        if ready:
+          let rootHash = readFile(outDir / VerityRootHashFileName).strip()
+          # The command line an attested UKI carries, composed by the
+          # function the UKI builder uses -- only the console is added,
+          # because the assertions are read off the serial port.
+          let cmdline = "console=ttyS0 panic=1 " &
+            attestedKernelCmdline(rootHash, "/dev/vda", "/dev/vdb",
+                                  "/dev/vdc", "/dev/vdd",
+                                  extra = ["loglevel=6"])
+          check(validateAttestedCmdline(cmdline, rootHash).len == 0,
+                "the guest boots a command line the UKI builder would " &
+                "accept for an attested image")
+          let log = work / "serial-hardening.log"
+          if runGuest(qemu, artifacts.kernel, initramfs, cmdline,
+                      [(outDir / VerityDataImageFileName, true),
+                       (outDir / VerityHashTreeFileName, true),
+                       (varImage, false), (homeImage, false)],
+                      log, "hardening", 180):
+            let t = transcript(log)
+            if "HARDENING-GUEST-START" notin t:
+              stderr.writeLine(t)
+              fail("t_attested_root_refuses_persistence: the attacker's " &
+                   "/sbin/init never ran" &
+                   (if "asks for lockdown=" in t:
+                      " -- init-disk refused the root because the kernel " &
+                      "did not honour lockdown=integrity. This kernel is " &
+                      "not built with the lockdown LSM; boot the ReproOS " &
+                      "kernel (REPROOS_VERITY_GUEST_KERNEL)."
+                    else: ""))
+            else:
+              for line in t.splitLines():
+                if "HARDENING-" in line: echo "[guest] ", line.strip()
+              for volume in [" /var ", " /home "]:
+                var mountOpts = ""
+                for line in t.splitLines():
+                  if "HARDENING-MOUNT " in line and volume in line:
+                    mountOpts = line
+                check("nosuid" in mountOpts and "nodev" in mountOpts and
+                      "noexec" in mountOpts,
+                      "t_attested_root_refuses_persistence:" & volume &
+                      "is mounted nosuid,nodev,noexec (" & mountOpts.strip() &
+                      ")")
+              for (probe, what) in [("VAR-EXEC", "/var"),
+                                    ("HOME-EXEC", "/home")]:
+                let r = hardeningLine(t, probe)
+                check(r.startsWith("refused") and
+                      "Permission denied" in r,
+                      "t_attested_root_refuses_persistence: a binary " &
+                      "root planted on " & what & " does not run (" & r & ")")
+              let dn = hardeningLine(t, "VAR-DEVNODE")
+              check(dn.startsWith("refused") and "Permission denied" in dn,
+                    "t_attested_root_refuses_persistence: a kernel-memory " &
+                    "device node planted on /var cannot be opened (" & dn &
+                    ")")
+              let mem = hardeningLine(t, "DEV-MEM")
+              check(mem.startsWith("refused") and
+                    "Operation not permitted" in mem,
+                    "t_attested_kernel_is_locked_down: root cannot open " &
+                    "/dev/mem (" & mem & ")")
+              check("[integrity]" in hardeningLine(t, "LOCKDOWN"),
+                    "t_attested_kernel_is_locked_down: the kernel reports " &
+                    "lockdown at integrity (" &
+                    hardeningLine(t, "LOCKDOWN") & ")")
+              let ins = hardeningLine(t, "INSMOD")
+              check(ins.startsWith("refused") and
+                    "Operation not permitted" in ins,
+                    "t_attested_kernel_is_locked_down: root cannot load a " &
+                    "kernel module after the initramfs (" & ins & ")")
+              check(hardeningLine(t, "MODULES-REENABLE").startsWith(
+                      "refused") and
+                    hardeningLine(t, "MODULES-DISABLED") == "1",
+                    "t_attested_kernel_is_locked_down: and cannot switch " &
+                    "module loading back on")
+              let kx = hardeningLine(t, "KEXEC")
+              check(kx == "absent" or kx == "1",
+                    "t_attested_kernel_is_locked_down: kexec is absent " &
+                    "from the kernel or closed (" & kx & ")")
+              check(hardeningLine(t, "ROOT-EXEC").startsWith(
+                      "ok root-binary-ran"),
+                    "control: the same binary runs from the verity root")
+              check(hardeningLine(t, "TMPFS-EXEC").startsWith(
+                      "ok planted-binary-ran"),
+                    "control: the same binary runs from a tmpfs root " &
+                    "mounts itself, so a refusal above is the state " &
+                    "volumes' mount options and not the probe (and root on " &
+                    "a RUNNING machine can still mount something " &
+                    "executable -- the specified limit)")
+          else:
+            stderr.writeLine(transcript(log))
+        echo "[info] hardening guest work dir: ", work
+        if getEnv("REPROOS_VERITY_GUEST_KEEP") == "1":
+          echo "[info] kept (REPROOS_VERITY_GUEST_KEEP=1): ", work
+        else:
+          removeDir(work)
 
 if failures > 0:
   stderr.writeLine("test_verity_root: " & $failures & " check(s) failed, " &

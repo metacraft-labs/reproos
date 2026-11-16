@@ -92,7 +92,7 @@ Use Reprobuild as the only contributor command surface:
   no tool: `repro/verity.nim` builds real dm-verity Merkle trees and is
   checked against a **known answer a real `veritysetup` produced**, then
   exercised for determinism, for corruption localisation, and against
-  mutations that must redden it. Two heavier layers are opt-in and report
+  mutations that must redden it. Three heavier layers are opt-in and report
   a visible skip naming the remedy — `REPROOS_VERITY_TOOL_GATE=1` runs
   the shipped `recipes/reproos-image/scripts/build-verity-root.sh`
   against a real `mkfs.ext4` and `veritysetup` and compares the two
@@ -101,9 +101,23 @@ Use Reprobuild as the only contributor command surface:
   verity image and reads the result off its serial console (writing to
   `/` fails, writing to `/var` succeeds, a flipped byte makes the read of
   its block fail while the raw device still serves it, and a root hash
-  that does not match refuses to boot at all). Run it after touching
-  `repro/verity.nim`, `build-verity-root.sh`, `init-disk`, or the verity
-  staging in `build-initramfs.sh`. `veritysetup` and `mkfs.ext4` are
+  that does not match refuses to boot at all), and
+  `REPROOS_ATTESTED_HARDENING_GATE=1` boots the same initramfs with the
+  **attested command line** and attacks the running root as root: a
+  binary planted on `/var` and `/home` must not run, a `/dev/mem` node
+  planted on `/var` must not open, `/dev/mem` itself, module loading and
+  re-enabling it must be refused, and the kernel must report
+  `lockdown=integrity` and no usable kexec. A tmpfs the attacker mounts
+  itself is the control, and it does run the planted binary — the limit
+  the attestation spec states (root on a running machine is not
+  contained; the state volumes merely cannot carry code across a reboot).
+  This layer needs the **ReproOS kernel** (`REPROOS_VERITY_GUEST_KERNEL`,
+  `_MODULES`, `_RELEASE`, or the source-built one): a kernel without the
+  lockdown LSM ignores `lockdown=integrity`, and `init-disk` refuses to
+  switch into an attested root under it. Run it after touching
+  `repro/verity.nim`, `build-verity-root.sh`, `init-disk`, the attested
+  command line in `repro/uki.nim`, or the verity staging in
+  `build-initramfs.sh`. `veritysetup` and `mkfs.ext4` are
   deliberately **not** declared tool identities: `cryptsetup` and
   `e2fsprogs` are from-source packages here, so naming them would make an
   always-on gate bootstrap them.

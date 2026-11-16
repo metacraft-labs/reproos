@@ -43,6 +43,20 @@ log() {
 
 rescue() {
   log "FATAL: $*"
+  # No shell on an integrity-checked root. That layout is the attested
+  # one, and its console belongs to whoever runs the machine: the cloud
+  # operator, or on a confidential VM the very host the attestation is
+  # meant to exclude. A root shell offered here would run under the
+  # launch measurement the verifier accepts -- and the failures that lead
+  # here (a withheld hash device, a kernel that ignored lockdown=) are
+  # ones such a host can cause. PID 1 exiting panics the kernel instead,
+  # which stops the boot without handing anyone the measured machine. The
+  # plain layout keeps its recovery shell.
+  if [ -n "$VERITY_ROOTHASH" ]; then
+    log "integrity-checked root: no rescue shell; stopping the boot"
+    trap - EXIT
+    exit 1
+  fi
   log "dropping to busybox shell - use 'exit' to panic"
   exec /bin/sh
 }
@@ -253,18 +267,92 @@ fi
 # on the measured surface, so these are mounted read-write and the root
 # stays read-only for the whole life of the boot. Encryption of these
 # volumes is not done here yet; they are plaintext.
+#
+# On an integrity-checked root they are also mounted noexec, nosuid and
+# nodev. The launch measurement names the root and nothing on these
+# volumes, and they outlive the boot: a binary, a setuid copy or a
+# device node planted here by whoever had root last time would otherwise
+# be there again after the reboot that re-measures the machine, and a
+# verifier would see the same measurement. With these options the kernel
+# refuses to execve or mmap-for-execution anything on them, ignores a set
+# setuid bit, and refuses to open a device node on them. The plain layout
+# keeps its writable root executable and is not changed.
+#
+# What this does NOT stop is a measured program reading a planted file as
+# DATA -- a shell sourcing ~/.profile, a service reading its state. That
+# limit is deliberate and stated wherever attestation is described: the
+# state volumes survive a reboot, so a reboot is never a cleanup.
+STATE_MOUNT_OPTS='rw'
+if [ -n "$VERITY_ROOTHASH" ]; then
+  STATE_MOUNT_OPTS='rw,nosuid,nodev,noexec'
+fi
 mount_state() {
   # mount_state <spec> <mountpoint under /newroot>
   [ -n "$1" ] || return 0
   _dev="$(await_device "$1" "state volume $2")"
   mkdir -p "/newroot$2"
-  log "mounting $_dev at $2 read-write"
-  if ! mount -t ext4 -o rw "$_dev" "/newroot$2"; then
+  log "mounting $_dev at $2 ($STATE_MOUNT_OPTS)"
+  if ! mount -t ext4 -o "$STATE_MOUNT_OPTS" "$_dev" "/newroot$2"; then
     rescue "mount $_dev at $2 failed"
   fi
 }
 mount_state "$STATE_VAR" /var
 mount_state "$STATE_HOME" /home
+
+# Kernel lockdown. The attested command line asks for
+# `lockdown=integrity` (repro/uki.nim), which stops root from writing
+# kernel memory (/dev/mem, /dev/kmem, /dev/port, MSRs), from resuming a
+# hibernation image off the writable swap, and from loading a kexec
+# image. The kernel IGNORES that argument when the lockdown LSM is not
+# built in, and boots normally -- so a command line that asks for it is
+# checked against what the kernel actually reports, and a kernel that
+# did not honour it does not get to run an attested root.
+LOCKDOWN_WANTED=''
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    lockdown=*) LOCKDOWN_WANTED="${arg#lockdown=}" ;;
+  esac
+done
+if [ -n "$LOCKDOWN_WANTED" ]; then
+  mkdir -p /sys/kernel/security
+  mount -t securityfs none /sys/kernel/security 2>/dev/null || true
+  _lockdown="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
+  case "$_lockdown" in
+    *"[$LOCKDOWN_WANTED]"*) log "kernel lockdown active: $_lockdown" ;;
+    *) rescue "the command line asks for lockdown=$LOCKDOWN_WANTED but the kernel reports '${_lockdown:-no lockdown LSM}'" ;;
+  esac
+fi
+
+# Close module loading and kexec on an integrity-checked root. Past this
+# point a module could only come from somewhere the measurement does not
+# cover, and a kexec image would replace the running kernel while the
+# launch measurement still names this one. Under lockdown the ReproOS
+# kernel already refuses every module, because it signs none and trusts
+# no signing key -- so on an attested boot every driver is built in, and
+# the `load_module` calls above find them in modules.builtin. Closing the
+# loader here as well keeps that true whatever the kernel's signing
+# configuration becomes. Both switches are one-way: nothing, root
+# included, can turn them back on before the next boot.
+close_one_way() {
+  # close_one_way <sysctl path> <what it closes>
+  if [ ! -e "$1" ]; then
+    # Each file exists exactly when the kernel carries the facility:
+    # kexec_load_disabled only with the kexec core (the ReproOS kernel
+    # carries it for crash dumps but builds neither kexec syscall, so the
+    # switch is still set), modules_disabled only with a module loader.
+    # Absent is the stronger state, not a failure.
+    log "$2: $1 absent, the kernel has no such facility"
+    return 0
+  fi
+  if ! echo 1 > "$1" 2>/dev/null || [ "$(cat "$1")" != 1 ]; then
+    rescue "could not close $2 ($1)"
+  fi
+  log "$2 closed ($1=1)"
+}
+if [ -n "$VERITY_ROOTHASH" ]; then
+  close_one_way /proc/sys/kernel/modules_disabled 'module loading'
+  close_one_way /proc/sys/kernel/kexec_load_disabled 'kexec'
+fi
 
 # Move /proc /sys /dev into the new root so the pivoted init can
 # still read them.

@@ -87,7 +87,7 @@
 ## 2 and 3 use the real pinned stub, the real shipped tool, a real
 ## kernel, real firmware and a real QEMU.
 
-import std/[options, os, osproc, strutils, tables, times]
+import std/[options, os, osproc, sequtils, strutils, tables, times]
 
 import repro_profile/types
 
@@ -483,6 +483,19 @@ block tUkiCmdlinePinsVerityRootHash:
   # is refused at assembly rather than discovered at attestation time.
   check(validateAttestedCmdline(carried, katRootHash).len == 0,
         "a well-formed attested command line is accepted")
+  # Root on a booted attested machine must not be able to rewrite or
+  # replace the measured kernel, and kernel lockdown is what stops it. A
+  # command line that has lost the argument still boots and still
+  # measures, so it is refused here, where it would be measured.
+  check(UkiLockdownCmdlineArg in carried.splitWhitespace(),
+        "the attested command line asks the kernel for " &
+        UkiLockdownCmdlineArg)
+  let unlocked = carried.splitWhitespace().filterIt(
+    it != UkiLockdownCmdlineArg).join(" ")
+  check(unlocked != carried and
+        validateAttestedCmdline(unlocked, katRootHash).len > 0,
+        "a command line WITHOUT " & UkiLockdownCmdlineArg & " is refused, " &
+        "although it still carries the root hash and both devices")
   check(validateAttestedCmdline(
           "ro quiet " & VerityDataDeviceCmdlineKey & "=/dev/vda2 " &
           VerityHashDeviceCmdlineKey & "=/dev/vda3", katRootHash).len > 0,

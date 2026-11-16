@@ -71,7 +71,8 @@ const
     ## The gate the behavioural case drives. Picked because it is the
     ## cheapest gate that has an opt-in layer at all: its always-on layer
     ## is pure computation and needs no artifact.
-  SubjectLayers = "REPROOS_VERITY_TOOL_GATE,REPROOS_VERITY_GUEST_GATE"
+  SubjectLayers = "REPROOS_VERITY_TOOL_GATE,REPROOS_VERITY_GUEST_GATE," &
+    "REPROOS_ATTESTED_HARDENING_GATE"
   SubjectLayer = "REPROOS_VERITY_TOOL_GATE"
   OtherLayer = "REPROOS_VERITY_GUEST_GATE"
   CommentControlLayer = "REPROOS_UKI_BOOT_GATE"

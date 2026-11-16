@@ -1147,7 +1147,10 @@ package reproosWorkflows:
     # naming the remedy: REPROOS_VERITY_TOOL_GATE=1 runs the shipped
     # build-verity-root.sh against real mkfs.ext4 and veritysetup, and
     # REPROOS_VERITY_GUEST_GATE=1 boots a real guest on the product's own
-    # init-disk initramfs and reads the result off its serial console.
+    # init-disk initramfs and reads the result off its serial console, and
+    # REPROOS_ATTESTED_HARDENING_GATE=1 boots one with the attested command
+    # line and attacks it as root: planted binaries and device nodes on
+    # the state volumes, /dev/mem, module loading, kexec.
     #
     # `cryptsetup`, `e2fsprogs` and qemu are deliberately NOT declared as
     # identities: the first two are from-source packages here, so naming
@@ -1166,9 +1169,11 @@ package reproosWorkflows:
         "recipes/reproos-image/scripts/build-verity-root.sh",
         "recipes/reproos-iso/scripts/build-initramfs.sh",
         "recipes/reproos-iso/initramfs/init-disk",
+        "repro/uki.nim",
       ],
       extraEnv = optInLayers(unreachable = [
-        "REPROOS_VERITY_TOOL_GATE", "REPROOS_VERITY_GUEST_GATE"]),
+        "REPROOS_VERITY_TOOL_GATE", "REPROOS_VERITY_GUEST_GATE",
+        "REPROOS_ATTESTED_HARDENING_GATE"]),
       cacheable = false).withToolIdentities([
         "bash", "nim", "mkdir", "clang",
       ])

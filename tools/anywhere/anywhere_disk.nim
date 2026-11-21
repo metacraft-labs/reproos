@@ -10,20 +10,23 @@
 ##
 ## Subcommands (each prints one JSON object on stdout):
 ##
-##   resolve  --serial S --size-sectors N
+##   resolve  --serial S --size-sectors N [--wwid W]
 ##       Find the ONE whole disk whose kernel-reported serial is S and
-##       whose size is N sectors. Refuses on zero or several matches, and
+##       whose size is N sectors and, when W is given, whose stable
+##       identifier (sysfs `wwid`: WWN, NGUID, EUI-64 or UUID) is W -- the
+##       safety contract's per-controller identity. Refuses on zero or
+##       several serial matches, and
 ##       when the disk or any partition of it has holders or is mounted
 ##       or used as swap. Reports the live device node and major:minor.
 ##
-##   destroy  --device D --serial S --size-sectors N --confirm-plan HASH
+##   destroy  --device D --serial S --size-sectors N [--wwid W] --confirm-plan HASH
 ##       The point of no return, as its own step: re-resolve, then erase
 ##       every filesystem/RAID/LVM/partition-table signature on each
 ##       partition and on the disk itself (`wipefs -af`, which also
 ##       clears the backup GPT), and make the kernel drop the old
 ##       partitions. Nothing is created.
 ##
-##   apply    <disko.json> --device D --serial S --size-sectors N
+##   apply    <disko.json> --device D --serial S --size-sectors N [--wwid W]
 ##            [--identity identity.json] --confirm-plan HASH
 ##       Re-runs `resolve` and refuses unless it still names D, then
 ##       applies the document to D (wipe, partition, format). HASH is the
@@ -35,7 +38,8 @@
 ##       Runs Reprobuild's `repro infra install-root` driver itself
 ##       (fstab, hostname, kernel/initrd copy, grub-install, grub.cfg)
 ##       with `--no-rsync`: the root was already materialised from the
-##       verified payload. Flags pass through unchanged.
+##       verified payload. Reads --target, --source, --device, --disko,
+##       --hostname, --kernel and --initrd.
 ##
 ##   mount    <disko.json> --target DIR
 ##   unmount  <disko.json> --target DIR
@@ -52,7 +56,7 @@ import repro_profile/emit
 import repro_profile/disk_apply
 import repro_profile/disk_identity
 import repro_profile/disk_tools
-import repro_cli_support/disk as cliDisk
+import repro_cli_support/disko_source as cliDisk
 import repro_cli_support/infra_install_root
 
 const SysBlock = "/sys/block"
@@ -109,7 +113,13 @@ proc diskBusy(name: string; mounted: seq[string]): string =
       return "/dev/" & n & " is mounted or used as swap"
   ""
 
-proc resolveDisk(serial: string; sizeSectors: string):
+proc diskWwid(p: string): string =
+  ## The kernel's stable identifier: ``wwid`` on the disk (NVMe) or on its
+  ## SCSI device (SCSI, SATA).
+  result = readFirst(p / "wwid")
+  if result.len == 0: result = readFirst(p / "device" / "wwid")
+
+proc resolveDisk(serial: string; sizeSectors: string; wwid = ""):
     tuple[device, devnum, error: string] =
   if serial.len == 0:
     return ("", "", "no serial given; a disk is never selected by its name")
@@ -137,6 +147,11 @@ proc resolveDisk(serial: string; sizeSectors: string):
   if size != sizeSectors:
     return ("", "", "disk " & n & " with serial " & serial & " has " & size &
       " sectors, the plan was made for " & sizeSectors)
+  # The contract's per-controller identity: a planned stable identifier
+  # (WWN, NGUID, EUI-64, UUID) must still be the one this disk reports.
+  if wwid.len > 0 and diskWwid(SysBlock / n) != wwid:
+    return ("", "", "disk " & n & " with serial " & serial & " reports wwid " &
+      diskWwid(SysBlock / n) & ", the plan was made for " & wwid)
   let busy = diskBusy(n, mountedSources())
   if busy.len > 0:
     return ("", "", busy)
@@ -162,7 +177,8 @@ proc main(): int =
   case sub
   of "resolve":
     let r = resolveDisk(flagValue(args, "--serial"),
-                        flagValue(args, "--size-sectors"))
+                        flagValue(args, "--size-sectors"),
+                        flagValue(args, "--wwid"))
     if r.error.len > 0: return refuse(r.error)
     echo $(%*{"ok": true, "device": r.device, "devnum": r.devnum})
     0
@@ -172,7 +188,8 @@ proc main(): int =
     if planHash.len != 64 or not planHash.allCharsInSet(HexDigits):
       return refuse("destroy needs --confirm-plan with the 64-hex plan identity")
     let r = resolveDisk(flagValue(args, "--serial"),
-                        flagValue(args, "--size-sectors"))
+                        flagValue(args, "--size-sectors"),
+                        flagValue(args, "--wwid"))
     if r.error.len > 0: return refuse(r.error)
     if device.len == 0 or r.device != device:
       return refuse("serial now resolves to " & r.device &
@@ -202,7 +219,8 @@ proc main(): int =
     if planHash.len != 64 or not planHash.allCharsInSet(HexDigits):
       return refuse("apply needs --confirm-plan with the 64-hex plan identity")
     let r = resolveDisk(flagValue(args, "--serial"),
-                        flagValue(args, "--size-sectors"))
+                        flagValue(args, "--size-sectors"),
+                        flagValue(args, "--wwid"))
     if r.error.len > 0: return refuse(r.error)
     if r.device != device:
       return refuse("serial now resolves to " & r.device &
@@ -241,7 +259,14 @@ proc main(): int =
       return refuse("install-root is only run with --no-rsync here")
     let loader: DiskoLoader = proc(path: string): DiskPlanOutcome =
       cliDisk.loadDiskoFromSource(path)
-    let o = runInstallRoot(args, loader)
+    # The controller's fixed install-root line; every other repro flag
+    # (rsync, excludes, dry runs) has no business in the installer.
+    let o = runInstallRoot(InstallRootOptions(
+      target: flagValue(args, "--target"), source: flagValue(args, "--source"),
+      device: flagValue(args, "--device"), diskoSource: flagValue(args, "--disko"),
+      hostName: flagValue(args, "--hostname"),
+      kernelSource: flagValue(args, "--kernel"),
+      initrdSource: flagValue(args, "--initrd"), skipRsync: true), loader)
     if o.failure:
       return fail("install-root: " & o.failureMsg,
         %*{"kind": $o.failureKind, "grubExit": o.grubInstallExit})

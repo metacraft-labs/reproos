@@ -42,9 +42,17 @@ let
     for w in $(cat /proc/cmdline); do
       case "$w" in root=*) root=''${w#root=} ;; esac
     done
+    # root= names the filesystem by UUID (what install-root writes) or by
+    # device path; there is no udev here, so findfs resolves the first, as
+    # the ReproOS disk initramfs does.
+    dev=$root
     i=0
-    while [ ! -b "$root" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-    mount -o ro "$root" /sysroot || { echo "disk-init: cannot mount $root"; sh; }
+    while [ ! -b "$dev" ] && [ "$i" -lt 300 ]; do
+      case "$root" in UUID=*) dev=$(findfs "$root" 2>/dev/null) ;; esac
+      [ -b "$dev" ] || sleep 0.1
+      i=$((i + 1))
+    done
+    mount -o ro "$dev" /sysroot || { echo "disk-init: cannot mount $root"; sh; }
     umount /proc /sys
     mount --move /dev /sysroot/dev 2>/dev/null || umount /dev
     exec switch_root /sysroot /sbin/init

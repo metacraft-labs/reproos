@@ -109,7 +109,9 @@ case "$verb" in
              echo "os_id=$( (. /mnt/etc/os-release && echo "$ID") 2>/dev/null)"; exit 0 ;;
   boot-facts) want=1; argc "$@"; name "$1"
              [ -s /mnt/boot/EFI/BOOT/BOOTX64.EFI ] && echo efi
-             grep -c "root=$(part "$1" 2)" /mnt/boot/grub/grub.cfg
+             id=$(blkid -s UUID -o value "$(part "$1" 2)")
+             echo "root_uuid=$id"
+             echo "root_refs=$( [ -n "$id" ] && grep -c "root=UUID=$id " /mnt/boot/grub/grub.cfg || echo 0)"
              sha256sum /mnt/boot/vmlinuz /mnt/boot/initrd.img; exit 0 ;;
   disk)      # the storage broker's idempotent verbs, inline
              case "${1:-}" in resolve|mount|unmount) ;; *) refuse "disk: ${1:-} does not run inline" ;; esac

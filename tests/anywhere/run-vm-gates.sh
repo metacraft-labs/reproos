@@ -8,9 +8,9 @@
 #   tests/anywhere/run-vm-gates.sh detection  test_reproos_anywhere_detection_and_append_only_capture
 #   tests/anywhere/run-vm-gates.sh confinement test_reproos_anywhere_installer_confinement_and_isolation
 #   tests/anywhere/run-vm-gates.sh recovery   e2e_reproos_anywhere_failure_recovery_matrix
-#   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS/arm64 sources
+#   tests/anywhere/run-vm-gates.sh refusals   preflight refusals on real LVM/LUKS/RAID/static/BIOS/arm64/QEMU-NVMe sources
 #   tests/anywhere/run-vm-gates.sh drill      e2e_reproos_anywhere_compromise_drill
-#   tests/anywhere/run-vm-gates.sh controllers the conversion over virtio-scsi, AHCI and NVMe targets
+#   tests/anywhere/run-vm-gates.sh controllers the conversion over virtio-scsi and AHCI targets
 #   tests/anywhere/run-vm-gates.sh convert    the conversion through `reproos-anywhere convert DEST MACHINE`
 #
 # Every VM is an unprivileged QEMU/KVM guest under build/anywhere/run that
@@ -41,7 +41,8 @@ case "$gate" in
   recovery) exec python3 "$here/test_recovery.py" --artifacts "$art" ;;
   refusals) exec python3 "$here/test_preflight_refusals.py" --artifacts "$art" ;;
   drill) exec python3 "$here/test_compromise_drill.py" --artifacts "$art" ;;
-  controllers) for ctl in virtio-scsi ahci nvme; do
+  # NVMe on QEMU is refused by the per-controller disk identity (refusals nvme).
+  controllers) for ctl in virtio-scsi ahci; do
                  python3 "$here/e2e_convert.py" --artifacts "$art" --controller "$ctl" debian || exit 1
                done ;;
   convert) [ "$#" -gt 0 ] || set -- debian alpine nixos

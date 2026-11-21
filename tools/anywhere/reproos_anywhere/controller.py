@@ -559,6 +559,10 @@ class Apply:
         writable: in a read-only or snapshot planning environment a
         conversion would report success and vanish at the next power cycle."""
         mode = self.rescue.target_mode(self.plan["target"]["serial"])
+        if mode == "absent":
+            raise Refused(f"the management plane shows no drive with the planned serial "
+                          f"{self.plan['target']['serial']}: the target was replaced or removed "
+                          "since planning; make a new plan")
         if mode != "writable":
             raise Refused(f"the management plane has the target disk attached {mode}: the machine "
                           "is still in its planning environment, and a conversion applied there would "
@@ -572,9 +576,12 @@ class Apply:
         if disk is None:
             problems.append(f"{self.target['kernel_name']} is gone")
         else:
-            for field in ("serial", "size_sectors", "syspath", "devnum", "logical_block"):
-                if disk[field] != self.target[field]:
-                    problems.append(f"target {field} {disk[field]!r} != planned {self.target[field]!r}")
+            for field in ("serial", "size_sectors", "syspath", "devnum", "logical_block", "wwid"):
+                if disk[field] != self.target.get(field, ""):
+                    problems.append(f"target {field} {disk[field]!r} != planned {self.target.get(field, '')!r}")
+            twins = sorted(n for n, d in inv["disks"].items() if d["serial"] == self.target["serial"])
+            if len(twins) != 1:
+                problems.append(f"serial {self.target['serial']} is reported by {', '.join(twins)}")
         mgmt = inventory.management_interface(inv)
         if mgmt is None or mgmt["mac"] != self.plan["network"]["mac"]:
             problems.append("management interface changed")
@@ -832,16 +839,19 @@ class Apply:
         """Before ANY look at or write to the target from the installer --
         including reconciliation -- prove it is still the planned disk."""
         self.check_target_path()
+        wwid = self.target.get("wwid", "")
         self.broker("resolve " + f"--serial {self.target['serial']} "
-                    f"--size-sectors {self.target['size_sectors']}")
+                    f"--size-sectors {self.target['size_sectors']}" + (f" --wwid {wwid}" if wwid else ""))
 
     def part(self, n: int) -> str:
         """The kernel's name for partition ``n`` of the target (sda1, nvme0n1p1)."""
         return f"{self.device}p{n}" if self.device[-1].isdigit() else f"{self.device}{n}"
 
     def target_flags(self) -> str:
+        wwid = self.target.get("wwid", "")
         return (f"--device {self.device} --serial {self.target['serial']} "
-                f"--size-sectors {self.target['size_sectors']} --confirm-plan {self.hash}")
+                f"--size-sectors {self.target['size_sectors']} "
+                + (f"--wwid {wwid} " if wwid else "") + f"--confirm-plan {self.hash}")
 
     # -- stage: destroy ---------------------------------------------------
     def stage_destroy(self) -> dict:
@@ -1034,8 +1044,15 @@ class Apply:
         out = self.gate("boot-facts", self.target["kernel_name"])
         if "efi" not in out or files["vmlinuz"]["sha256"] not in out or files["initrd.img"]["sha256"] not in out:
             raise AnywhereError(f"boot path incomplete:\n{out}")
+        # The installed system finds its root by the filesystem's UUID, not by
+        # a device name that a different disk enumeration at first boot moves.
+        facts = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        if not facts.get("root_uuid") or facts.get("root_refs", "0") == "0":
+            raise AnywhereError(f"grub.cfg does not name the root filesystem on {self.part(2)} by its "
+                                f"UUID:\n{out}")
         return {"efi_loader": "EFI/BOOT/BOOTX64.EFI", "kernel": files["vmlinuz"]["sha256"],
-                "initrd": files["initrd.img"]["sha256"], "root": self.part(2)}
+                "initrd": files["initrd.img"]["sha256"], "root": self.part(2),
+                "root_uuid": facts["root_uuid"]}
 
     def reconcile_bootloader(self) -> dict:
         return {"state": "redo", "detail": "install-root is a bounded, repeatable operation", "evidence": {}}

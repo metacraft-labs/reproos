@@ -74,8 +74,11 @@ first). An expired plan cannot be applied: run the first command again for
 a new one. A plan that was already started can still be resumed after it
 expires.
 
-`--takeover auto|kexec|rescue-media` (first command only; `auto` prefers
-kexec) chooses how the installer is started. `--max-rate`,
+`--takeover auto|kexec|rescue-media` (first command only) chooses how the
+installer is started. `auto` takes rescue media whenever the enrollment
+offers it (`boot_command`), because on the kexec path the source kernel
+performs the takeover and a fully compromised source could subvert it;
+otherwise it takes kexec. Choose `kexec` explicitly to override. `--max-rate`,
 `--evidence-sink` and `--events FILE` (second command) are described under
 Apply.
 
@@ -121,7 +124,8 @@ The enrollment (TOML, schema `reproos-anywhere-enrollment/1`) is written by
 whoever controls the machine's management plane — the provider, the
 datacenter operator, or `tests/anywhere/supervisor.py` for test VMs. It
 names the exact SSH host key (no trust on first use), the DMI product UUID,
-every disk by serial and size with exactly one `role = "target"`, the
+every disk by serial and size (and, for an NVMe, SCSI or SATA target, its
+`wwid`; see Preflight) with exactly one `role = "target"`, the
 management interface's MAC, the rescue route (serial console and
 monitor; `boot_command`/`restore_command` for rescue-media boot, which are
 optional for a conversion but required to restore a machine after
@@ -146,11 +150,22 @@ unsupported distribution, BIOS firmware, Secure Boot, LVM/RAID/LUKS on the
 target, a wireless, bridged or static management network, too little RAM
 or disk, or no takeover path all block the report.
 
+The target disk is identified per controller, as the safety contract's
+`requirements.disk-identity` states: a unique serial and the capacity,
+plus the controller's stable identifier as the kernel reports it in sysfs
+`wwid` -- a WWN (`naa.`/`eui.`) on SCSI and SATA, an NGUID, EUI-64 or
+namespace UUID (`eui.`/`uuid.`) on NVMe -- which must be enrolled. A
+virtio-blk disk has no such identifier; its serial, capacity and PCI path
+identify it, so a clone of it in the same slot cannot be told apart (an
+accepted limitation). An NVMe, SCSI or SATA target that reports no stable
+identifier is refused: its serial alone does not identify it. That includes
+every QEMU NVMe disk, whose namespace identifiers Linux ignores.
+
 ### Plan and acknowledgement
 
 `plan` binds the enrollment, inventory, compatibility report,
 configuration generation, payload and installer digests, the target disk
-by serial/size/PCI path, the exact storage-plan bytes (rendered by
+by serial/size/PCI path and stable identifier, the exact storage-plan bytes (rendered by
 `repro/disk_layouts.nim`, the same renderer the image build and the
 installer use), the takeover method, and the SSH identities, and signs
 the canonical bytes with the controller key. `apply` runs only with that
@@ -163,12 +178,12 @@ inventory and refuses on any drift.
 |---|---|---|
 | stage-payload | kexec path: takeover kernel/initrd and a static `kexec` into source RAM (`/dev/shm`); rescue-media path: nothing on the source | idempotent |
 | takeover | kexec, or rescue-media boot through the management plane; the installer generates its own SSH key and announces it with the session nonce on the serial console, where the controller reads and pins it | reconciled from the console |
-| destroy | in the installer: re-prove the disk (PCI path + serial + size), then erase every signature | reconciled, identity re-proved first |
+| destroy | in the installer: re-prove the disk (PCI path + serial + size + stable identifier), then erase every signature | reconciled, identity re-proved first |
 | format | canonical partition table and filesystems via Reprobuild's disko port | never re-formats a present layout |
 | mount | the layout under `/mnt` | idempotent |
 | materialize | payload streamed, SHA-256 checked, unpacked | resumes from the verified bytes |
 | inject-secrets | machine-id, enrollment, the controller-generated installed host key | rewrite is idempotent |
-| bootloader | install receipt, then Reprobuild's `repro infra install-root` driver (fstab, grub-install, grub.cfg) | bounded rerun |
+| bootloader | install receipt, then Reprobuild's `repro infra install-root` driver (fstab, grub-install, grub.cfg, naming the filesystems by UUID so a different disk order at first boot still finds the root); the controller checks that `grub.cfg` names the root filesystem by its UUID | bounded rerun |
 | reboot | unmount, reboot (kexec path) or leave rescue mode (rescue-media) | reconciled |
 | final-verification | the installed-only proof below | read-only |
 | retire-rescue | releases temporary rescue resources; the permanent route stays | no-op |
@@ -331,7 +346,8 @@ python3 tests/anywhere/test_confinement.py --artifacts DIR
 python3 tests/anywhere/test_recovery.py --artifacts DIR
 python3 tests/anywhere/test_preflight_refusals.py --artifacts DIR
 python3 tests/anywhere/test_compromise_drill.py --artifacts DIR
-python3 tests/anywhere/e2e_convert.py --artifacts DIR --controller nvme debian
+python3 tests/anywhere/e2e_convert.py --artifacts DIR --controller ahci debian
+python3 tests/anywhere/e2e_convert.py --artifacts DIR --takeover kexec debian
 ```
 
 `tests/anywhere/run-vm-gates.sh <gate>` (e2e, controllers, convert, diskid, negatives, resume,

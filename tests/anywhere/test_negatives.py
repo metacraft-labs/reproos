@@ -76,7 +76,10 @@ class Machine:
         sup.start(self.vm, False)
         sup.wait_ssh(self.vm, 240)
         (self.state / self.name / "journal.jsonl").unlink(missing_ok=True)
-        return c.make_plan(state_root=self.state, name=self.name, config_path=CONFIG, artifacts=self.art)
+        # These cases attack the kexec path (the image staged on the source);
+        # rescue media, the default here, never stages one.
+        return c.make_plan(state_root=self.state, name=self.name, config_path=CONFIG, artifacts=self.art,
+                           takeover="kexec")
 
     def apply(self, plan_id: str, **kw) -> c.Apply:
         return c.Apply(state_root=self.state, name=self.name, acknowledge=plan_id, artifacts=self.art,

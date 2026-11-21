@@ -62,6 +62,7 @@ let
       nim c --hints:off --warnings:off --skipParentCfg --skipProjCfg \
         --nimcache:$TMPDIR/nc -d:release \
         --path:${libSrc "repro_profile"} --path:${libSrc "repro_cli_support"} \
+        --path:${libSrc "repro_core"} \
         -o:anywhere_disk anywhere_disk.nim
     '';
     installPhase = "install -Dm0755 anywhere_disk $out/bin/anywhere_disk";
@@ -81,7 +82,7 @@ let
       export HOME=$TMPDIR
       nim c --hints:off --warnings:off --skipParentCfg --skipProjCfg \
         --nimcache:$TMPDIR/nc -d:release \
-        --path:${libSrc "repro_profile"} \
+        --path:${libSrc "repro_profile"} --path:${libSrc "repro_core"} \
         --path:${builtins.path { name = "nimcrypto"; path = reprobuildSrc + "/libs/nimcrypto"; }} \
         -o:anywhere_layout tools/anywhere/anywhere_layout.nim
     '';

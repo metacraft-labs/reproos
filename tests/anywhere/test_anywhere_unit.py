@@ -196,6 +196,40 @@ class Compatibility(unittest.TestCase):
         wrong_mac = enrolled_for(self.inv, network={"mac": "02:00:00:00:00:01"})
         self.assertBlockedBy(evaluate(self.inv, wrong_mac), "management-interface")
 
+    def test_disk_identity_per_controller(self):
+        """The contract's rule: WWN on SCSI/SATA, NGUID/EUI-64/UUID on NVMe,
+        enrolled; serial, capacity and PCI path on virtio-blk."""
+        target = self.inv["disks"]["vda"]
+
+        def with_disk(driver: str, wwid: str, enrolled: str) -> dict:
+            inv = self.mutate(lambda i: i["disks"]["vda"].update(driver=driver, wwid=wwid))
+            enr = enrolled_for(self.inv, disks=[{"serial": target["serial"], "role": "target",
+                                                 "size_sectors": target["size_sectors"], "wwid": enrolled}])
+            return evaluate(inv, enr)
+
+        for driver, wwid in (("sd", "naa.5000c500a1b2c3d4"), ("nvme", "eui.0025385b71b07e2f"),
+                             ("nvme", "uuid.3f2b6a4e-8c1d-4e0f-9a7b-2d5c6e8f1a3b"), ("virtio_blk", "")):
+            with self.subTest(driver=driver, wwid=wwid):
+                report = with_disk(driver, wwid, wwid)
+                self.assertEqual(verdicts(report)["target-identity"], "pass", report["checks"])
+                self.assertEqual(report["target"]["wwid"], wwid)
+        for driver, wwid, enrolled in (("sd", "t10.QEMU    QEMU HARDDISK", "t10.QEMU    QEMU HARDDISK"),
+                                       ("sd", "", ""), ("nvme", "nvme.1b36-4157", "nvme.1b36-4157"),
+                                       ("sd", "naa.5000c500a1b2c3d4", ""),
+                                       ("nvme", "eui.0025385b71b07e2f", "")):
+            with self.subTest(driver=driver, wwid=wwid, enrolled=enrolled):
+                self.assertBlockedBy(with_disk(driver, wwid, enrolled), "target-identity")
+        swapped = with_disk("sd", "naa.5000c500ffffffff", "naa.5000c500a1b2c3d4")
+        self.assertBlockedBy(swapped, f"disk:{target['serial']}")
+
+    def test_rescue_media_is_the_default_when_offered(self):
+        rescue = {"kind": "qemu-serial", "console_log": "c", "monitor": "m",
+                  "boot_command": ["boot"], "restore_command": ["restore"]}
+        report = evaluate(self.inv, enrolled_for(self.inv, rescue=rescue))
+        self.assertFalse(report["blocked"])
+        self.assertEqual(report["takeover"], {"default": "rescue-media", "available": ["kexec", "rescue-media"]})
+        self.assertEqual(evaluate(self.inv, self.enr)["takeover"], {"default": "kexec", "available": ["kexec"]})
+
     def test_rescue_media_takes_over_when_kexec_is_off(self):
         inv = self.mutate(lambda i: i["kernel"].update(kexec_load_disabled="1"))
         rescue = {"kind": "qemu-serial", "console_log": "c", "monitor": "m",

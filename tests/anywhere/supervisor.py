@@ -136,6 +136,7 @@ def create(distro: str, run: Path, port: int | None, *, firmware: str = "uefi",
         "arch": spec.get("arch", "x86_64"),
         "controller": controller,
         "target": target,
+        **stable_identity(controller),
     }
     extra_runcmd = "".join(f"  - [sh, -c, {json.dumps(cmd)}]\n" for cmd in runcmd)
     indent = "\n".join("      " + line for line in host_priv.splitlines())
@@ -309,15 +310,30 @@ CONTROLLERS = {
 }
 
 
+def stable_identity(controller: str) -> dict:
+    """The stable identifier the safety contract requires of a target on
+    ``controller``, pinned in the machine so it survives every restart: a
+    WWN for SCSI and SATA. ``wwid`` is how the guest kernel prints it in
+    sysfs. virtio-blk has none. Neither has QEMU's NVMe, as far as Linux is
+    concerned: the kernel applies NVME_QUIRK_BOGUS_NID to QEMU's emulated
+    controller ("Ignoring bogus Namespace Identifiers"), so whatever NGUID,
+    EUI-64 or UUID QEMU is given, the guest reports only the "nvme." fallback
+    and the contract refuses the disk as a target."""
+    if controller in ("virtio-scsi", "ahci"):
+        wwn = "5" + uuid.uuid4().hex[:15]
+        return {"wwn": "0x" + wwn, "wwid": "naa." + wwn}
+    return {"wwid": ""}
+
+
 def target_device_args(m: dict) -> list[str]:
     serial, ctl = m["serial"], m.get("controller", "virtio-blk")
     if ctl == "virtio-blk":
         return ["-device", f"virtio-blk-pci,drive=d0,id=target,serial={serial},bootindex=1,bus=rp6"]
     if ctl == "virtio-scsi":
         return ["-device", "virtio-scsi-pci,id=scsi0,bus=rp6",
-                "-device", f"scsi-hd,drive=d0,id=target,serial={serial},bootindex=1,bus=scsi0.0"]
+                "-device", f"scsi-hd,drive=d0,id=target,serial={serial},wwn={m['wwn']},bootindex=1,bus=scsi0.0"]
     if ctl == "ahci":
-        return ["-device", f"ide-hd,drive=d0,id=target,serial={serial},bootindex=1,bus=ide.0"]
+        return ["-device", f"ide-hd,drive=d0,id=target,serial={serial},wwn={m['wwn']},bootindex=1,bus=ide.0"]
     if ctl == "nvme":
         return ["-device", f"nvme,drive=d0,id=target,serial={serial},bootindex=1,bus=rp6"]
     raise SystemExit(f"unknown controller {ctl}")
@@ -368,6 +384,29 @@ def replace_target(run: Path) -> dict:
     m["disk_file"], m["serial"] = "replacement.qcow2", "AW-" + uuid.uuid4().hex[:12].upper()
     (run / "machine.json").write_text(json.dumps(m, indent=2))
     return m
+
+
+def clone_target(run: Path) -> dict:
+    """Swap the target for a byte-for-byte copy that reports the SAME serial
+    and capacity but its own stable identifier -- a cloned drive. On
+    virtio-blk, which has no stable identifier, the clone is added beside
+    the target instead (two disks, one serial), blank, because a copy would
+    carry the source's filesystem UUIDs twice and leave its root mount
+    ambiguous. Takes effect at the next start."""
+    m = json.loads((run / "machine.json").read_text())
+    clone = run / "clone.qcow2"
+    before = m.get("wwid", "")
+    if m.get("controller", "virtio-blk") == "virtio-blk":
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(clone), f"{m['disk_gib']}G"], check=True)
+        m.setdefault("extra_disks", []).append({"file": clone.name, "serial": m["serial"],
+                                                "gib": m["disk_gib"], "slot": "after"})
+    else:
+        subprocess.run(["cp", "--reflink=auto", str(run / m.get("disk_file", "disk.qcow2")), str(clone)],
+                       check=True)
+        m["disk_file"] = clone.name
+        m.update(stable_identity(m["controller"]))
+    (run / "machine.json").write_text(json.dumps(m, indent=2))
+    return {"serial": m["serial"], "wwid_before": before, "wwid_after": m["wwid"]}
 
 
 def hot_replace_target(run: Path) -> dict:
@@ -485,6 +524,7 @@ product_uuid = "{m['uuid']}"
 serial = "{m['serial']}"
 size_sectors = {sectors}
 role = "{'keep' if on_extra else 'target'}"
+{f'wwid = "{wwid}"' if (wwid := m.get("wwid")) else ""}
 
 {extra}
 [network]

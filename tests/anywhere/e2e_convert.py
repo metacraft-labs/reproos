@@ -79,9 +79,11 @@ def sha(path: Path) -> str:
 
 
 class Run:
-    def __init__(self, artifacts: Path, distro: str, controller: str = "virtio-blk", convert: bool = False):
+    def __init__(self, artifacts: Path, distro: str, controller: str = "virtio-blk", convert: bool = False,
+                 takeover: str = "auto"):
         self.a = artifacts
         self.convert = convert
+        self.takeover = takeover
         self.distro = distro
         self.controller = controller
         device = sup.CONTROLLERS[controller][0]
@@ -139,7 +141,7 @@ class Run:
         if self.convert:
             ack = pf.stdout.strip().splitlines()[-1].split()[-1]
         else:
-            pl = self.cli("plan", "--name", name, "--config", self.config)
+            pl = self.cli("plan", "--name", name, "--config", self.config, "--takeover", self.takeover)
             ack = pl.stdout.strip().splitlines()[-1].split()[-1]
 
         self.step(f"apply {ack[:16]}...")
@@ -232,13 +234,15 @@ def main() -> int:
     p.add_argument("--keep", action="store_true", help="keep the VM after the test")
     p.add_argument("--controller", default="virtio-blk", choices=sorted(sup.CONTROLLERS))
     p.add_argument("--convert", action="store_true", help="drive the conversion through `convert`")
+    p.add_argument("--takeover", default="auto", choices=("auto", "kexec", "rescue-media"),
+                   help="the plan's takeover method (auto: rescue media, which the supervisor offers)")
     p.add_argument("distros", nargs="+")
     args = p.parse_args()
     artifacts = Path(args.artifacts).resolve()
     os.environ.setdefault("ANYWHERE_IMAGE_CACHE", str(artifacts / "images"))
     results, failed = [], []
     for distro in args.distros:
-        r = Run(artifacts, distro, args.controller, args.convert)
+        r = Run(artifacts, distro, args.controller, args.convert, args.takeover)
         try:
             results.append(r.run())
         except Exception as error:  # noqa: BLE001 -- report every distro

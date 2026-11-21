@@ -21,12 +21,34 @@ from .enrollment import target_disk
 SUPPORTED_DISTRIBUTIONS = {"debian", "ubuntu", "fedora", "arch", "alpine", "nixos"}
 SUPPORTED_ARCH = {"x86_64"}
 SUPPORTED_DISK_DRIVERS = {"virtio_blk", "virtio_scsi", "sd", "nvme", "ahci"}
+# The safety contract's per-controller disk identity (requirements.disk-identity):
+# the stable identifier a target on each driver must report and be enrolled with,
+# as the kernel prints it in sysfs `wwid`. virtio-blk has none to offer; its
+# identity is the unique serial, the capacity and the PCI path (syspath).
+STABLE_WWID_PREFIXES = {"nvme": ("eui.", "uuid."),         # NGUID / EUI-64, namespace UUID
+                        "sd": ("naa.", "eui.")}            # SCSI/SATA WWN
+STABLE_WWID_PREFIXES["virtio_scsi"] = STABLE_WWID_PREFIXES["ahci"] = STABLE_WWID_PREFIXES["sd"]
 MIB = 1024 * 1024
 # The installer's working set beyond its own image: tmpfs work files,
 # sshd, the storage tools and page cache for the payload stream.
 INSTALLER_WORKING_MIB = 384
 # Disk headroom over the unpacked payload: journals, enrollment, logs.
 DISK_MARGIN_PERCENT = 25
+
+
+def disk_identity(driver: str, wwid: str, enrolled_wwid: str) -> tuple[str, str]:
+    """The contract's identity rule for a target on ``driver``."""
+    if driver == "virtio_blk":
+        return "pass", "virtio-blk: unique enrolled serial, capacity and PCI path"
+    prefixes = STABLE_WWID_PREFIXES.get(driver)
+    if prefixes is None:
+        return "fail", f"no identity rule for driver {driver or '<none>'}"
+    if not wwid.startswith(prefixes):
+        return "fail", (f"{driver}: the disk reports no stable identifier ({' or '.join(prefixes)}), "
+                        f"only {wwid or '<none>'!r}; a serial alone does not identify it")
+    if not enrolled_wwid:
+        return "fail", f"{driver}: the disk reports {wwid}; enroll it as the target's wwid"
+    return "pass", f"{driver}: {wwid}, enrolled"
 
 
 class Report:
@@ -120,6 +142,7 @@ def evaluate(inv: dict[str, Any], enrollment: dict[str, Any], config: dict[str, 
         drv = target["driver"]
         r.add("target-controller", "pass" if drv in SUPPORTED_DISK_DRIVERS else "fail",
               f"driver {drv or '<none>'}")
+        r.add("target-identity", *disk_identity(drv, target["wwid"], target_disk(enrollment)["wwid"]))
         r.add("target-not-removable", "fail" if target["removable"] else "pass",
               "removable media" if target["removable"] else "fixed disk")
         r.add("target-writable", "fail" if target["read_only"] and not strict_readonly else "pass",
@@ -177,14 +200,21 @@ def evaluate(inv: dict[str, Any], enrollment: dict[str, Any], config: dict[str, 
     lockdown = inv["kernel"]["lockdown"]
     locked = bool(lockdown) and "[none]" not in lockdown
     rescue_media = bool(enrollment["rescue"].get("boot_command"))
-    if kexec_ok and not locked:
-        takeover = "kexec"
-        r.add("takeover", "pass", "kexec: kexec_load enabled, kernel lockdown none"
-              + ("; rescue-media boot also available" if rescue_media else ""))
-    elif rescue_media:
+    # Rescue media is the default whenever the management plane offers it:
+    # on the kexec path the source kernel performs the takeover, so a fully
+    # compromised source can subvert it; rescue media keeps the source out.
+    # kexec stays available as an explicit choice (operator answer to Q7,
+    # 2026-11-19).
+    if rescue_media:
         takeover = "rescue-media"
-        r.add("takeover", "pass", f"rescue-media through the management plane (kexec unavailable: "
-              f"kexec_load_disabled={inv['kernel']['kexec_load_disabled']!r} lockdown={lockdown!r})")
+        r.add("takeover", "pass", "rescue-media through the management plane"
+              + ("; kexec also available (--takeover kexec)" if kexec_ok and not locked else
+                 f" (kexec unavailable: kexec_load_disabled={inv['kernel']['kexec_load_disabled']!r} "
+                 f"lockdown={lockdown!r})"))
+    elif kexec_ok and not locked:
+        takeover = "kexec"
+        r.add("takeover", "pass", "kexec: kexec_load enabled, kernel lockdown none; the enrollment "
+              "offers no rescue-media boot")
     else:
         takeover = None
         r.add("takeover", "fail", f"kexec_load_disabled={inv['kernel']['kexec_load_disabled']!r} "

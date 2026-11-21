@@ -15,6 +15,10 @@ must block the report on exactly the predicate that guards it:
   arm64   the machine is an arm64 Debian (emulated: this host has no arm64
           KVM); the read-only probe must run there and the report must
           block on architecture
+  nvme    the target is an NVMe namespace that reports no NGUID, EUI-64
+          or UUID (QEMU's emulated controller: Linux ignores its namespace
+          identifiers); the safety contract's per-controller identity
+          refuses it, because its serial alone does not identify it
 
 Preflight runs in --inspection mode here: the report is blocked
 regardless, and the source keeps writing these disks itself (an md RAID1
@@ -155,12 +159,21 @@ def arm64(a: Path) -> dict:
         sup.destroy(vm)
 
 
+def nvme(a: Path) -> dict:
+    vm = a / "run" / f"refusals-nvme-{int(time.time())}"
+    sup.create("debian", vm, None, controller="nvme")
+    try:
+        return {"nvme": expect(preflight(a, vm / "enrollment.toml"), "target-identity", "only 'nvme.")}
+    finally:
+        sup.destroy(vm)
+
+
 def report_name(vm: Path) -> str:
     return next(line.split('"')[1] for line in (vm / "enrollment.toml").read_text().splitlines()
                 if line.startswith("name"))
 
 
-CASES = {"stacked": stacked, "static": static, "bios": bios, "arm64": arm64}
+CASES = {"stacked": stacked, "static": static, "bios": bios, "arm64": arm64, "nvme": nvme}
 
 
 def main() -> int:

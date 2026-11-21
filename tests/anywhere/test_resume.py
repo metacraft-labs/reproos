@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -103,8 +104,23 @@ def main() -> int:
             time.sleep(0.05)
         else:
             raise AssertionError("format never started")
-        # Let the broker get going, then kill the controller hard.
-        time.sleep(2)
+        # Kill the controller hard once the broker is writing the layout: a
+        # partition on the freshly erased target. A fixed delay is not enough;
+        # several gate round trips precede the broker's launch, and on a loaded
+        # host they outlast it, so the kill landed before any format began.
+        kname = plan["target"]["kernel_name"]
+        observer = c.Apply(state_root=state, name=name, acknowledge=plan_id, artifacts=art, resume=True,
+                           log=lambda m: None, max_rate=RATE)
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            parts = observer.gate("partitions", kname, check=False)
+            if re.search(rf"\b{kname}p?\d+\b", parts):
+                break
+            if proc.poll() is not None:
+                raise AssertionError(f"apply ended before format wrote a partition:\n{proc.stdout.read()}")
+            time.sleep(0.2)
+        else:
+            raise AssertionError("format never wrote a partition")
         proc.send_signal(signal.SIGKILL)
         proc.wait()
         print("    controller killed with format open", flush=True)

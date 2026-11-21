@@ -328,8 +328,13 @@ CASES = {"reorder": reorder, "replace": replace,
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--artifacts", required=True)
-    p.add_argument("cases", nargs="*", default=list(CASES), choices=list(CASES))
+    p.add_argument("cases", nargs="*", metavar="CASE", help=f"default: all of {', '.join(CASES)}")
     args = p.parse_args()
+    # Not `choices=`: argparse checks a nargs="*" default against it as one value.
+    unknown = [c for c in args.cases if c not in CASES]
+    if unknown:
+        p.error(f"unknown case(s) {', '.join(unknown)}; choose from {', '.join(CASES)}")
+    args.cases = args.cases or list(CASES)
     artifacts = Path(args.artifacts).resolve()
     os.environ.setdefault("ANYWHERE_IMAGE_CACHE", str(artifacts / "images"))
     sup.IMAGE_CACHE = Path(os.environ["ANYWHERE_IMAGE_CACHE"])

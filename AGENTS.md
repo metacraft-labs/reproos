@@ -100,8 +100,13 @@ Use Reprobuild as the only contributor command surface:
   a real guest on the product's own `init-disk` initramfs over a real
   verity image and reads the result off its serial console (writing to
   `/` fails, writing to `/var` succeeds, a flipped byte makes the read of
-  its block fail while the raw device still serves it, and a root hash
-  that does not match refuses to boot at all), and
+  its block fail while the raw device still serves it, a root hash
+  that does not match refuses to boot at all, carriers named only by
+  `PARTUUID=` on a GPT disk -- as the attested command line names them --
+  resolve and boot, and a `PARTUUID=` found on two disks stops the boot;
+  BusyBox `findfs` cannot resolve `PARTUUID=`, so `init-disk` reads the
+  partition table itself and this case is what proves it; the layer also
+  needs `sgdisk` and `sfdisk`), and
   `REPROOS_ATTESTED_HARDENING_GATE=1` boots the same initramfs with the
   **attested command line** and attacks the running root as root: a
   binary planted on `/var` and `/home` must not run, a `/dev/mem` node

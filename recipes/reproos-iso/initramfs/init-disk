@@ -4,6 +4,10 @@
 # Simpler sibling of initramfs/init (the live-boot squashfs pivot).
 # Parses `root=UUID=<uuid>` (or LABEL/PARTUUID/device) from /proc/cmdline, mounts that ext4
 # partition at /newroot, switches root into it, execs /sbin/init.
+# `UUID=` and `LABEL=` name a filesystem and are resolved by BusyBox
+# findfs. `PARTUUID=` names a partition, which findfs cannot resolve, so
+# this script reads it off the partition table itself (GPT, and the MBR
+# `<disk signature>-<partition number>` form the kernel also accepts).
 #
 # It boots two shapes of root, and which one is chosen is decided by the
 # kernel command line alone:
@@ -190,14 +194,156 @@ if [ -n "$DISK_DEBUG" ]; then
   trap 'rescue "post-debug-shell trap"' EXIT
 fi
 
-# Resolve stable filesystem identifiers by scanning the block devices. The
-# initramfs has devtmpfs but no udev daemon, so /dev/disk/by-* symlinks are not
-# guaranteed to exist. BusyBox findfs uses blkid directly and works on QEMU,
-# Hyper-V, and physical disk naming alike.
+# Resolve stable identifiers by scanning the block devices. The initramfs
+# has devtmpfs but no udev daemon, so /dev/disk/by-* symlinks are not
+# guaranteed to exist.
+#
+# `UUID=` and `LABEL=` name a FILESYSTEM. BusyBox findfs probes the
+# superblocks itself and works on QEMU, Hyper-V and physical disk naming
+# alike.
+#
+# `PARTUUID=` names a PARTITION, and findfs cannot resolve it: BusyBox's
+# findfs hands everything that is not a /dev path to resolve_mount_spec,
+# which handles LABEL= and UUID= and nothing else, and its volume_id code
+# never reads a partition table. The kernel does not help either: the
+# PARTUUID uevent variable only exists from Linux 6.13 on, and the ReproOS
+# kernel is older. So the partition table is read here, the same way the
+# kernel's own block/partitions code reads it. This is the attested boot
+# path -- the verity data and hash carriers are named ONLY by PARTUUID
+# (they carry no filesystem to probe) -- so it must not depend on a tool
+# that silently lacks it.
+
+# read_hex <device> <byte offset> <length>: the bytes as lowercase hex, in
+# disk order, with no separators. Empty when the read comes up short.
+#
+# Every helper below returns 0 unless it says otherwise and reports
+# failure by printing nothing: this script runs under `set -e`, and a
+# failing command substitution on the right of an assignment would end
+# the whole init rather than just this lookup.
+read_hex() {
+  _rh_skip=$(($2 / 512))
+  _rh_in=$(($2 % 512))
+  _rh_blocks=$(((_rh_in + $3 + 511) / 512))
+  _rh_out="$(dd if="$1" bs=512 skip="$_rh_skip" count="$_rh_blocks" 2>/dev/null \
+    | od -An -v -tx1 -j "$_rh_in" -N "$3" | tr -d ' \n')"
+  if [ "${#_rh_out}" -eq $(($3 * 2)) ]; then
+    echo "$_rh_out"
+  fi
+}
+
+# reverse_hex <hex>: the bytes in reverse order, so a little-endian field
+# reads as the number it encodes.
+reverse_hex() {
+  _rv_in="$1"
+  _rv_out=''
+  while [ -n "$_rv_in" ]; do
+    _rv_out="$_rv_out${_rv_in#"${_rv_in%??}"}"
+    _rv_in="${_rv_in%??}"
+  done
+  echo "$_rv_out"
+}
+
+# le_int <hex>: a little-endian field as an integer.
+le_int() {
+  echo $((0x$(reverse_hex "$1")))
+}
+
+# gpt_partuuid <disk device> <partition number> <logical block size>
+#              <partition start in 512-byte sectors>
+#
+# The unique partition GUID of entry <partition number> -- the kernel
+# numbers a GPT partition by its entry index plus one, holes included --
+# formatted the way the kernel formats PARTUUID: the first three fields
+# are stored little-endian, the last two as bytes (UEFI 2.10 section 5.3,
+# "GPT Header" and "GPT Partition Entry Array"; Appendix A for the GUID
+# text form).
+#
+# Only the primary header at LBA 1 is read. Without the `gpt` kernel
+# parameter the kernel uses no other: a disk whose primary header is
+# invalid has no partitions at all (block/partitions/efi.c,
+# find_valid_gpt). The entry is accepted only if it starts where the
+# kernel says the partition starts, so a table the kernel did NOT use (a
+# backup it fell back to under `gpt`) resolves to nothing rather than to
+# a guess.
+gpt_partuuid() {
+  _gp_disk="$1"; _gp_num="$2"; _gp_lbs="$3"; _gp_start="$4"
+  _gp_hdr="$(read_hex "$_gp_disk" "$_gp_lbs" 92)"
+  [ -n "$_gp_hdr" ] || return 1
+  # "EFI PART"
+  [ "$(echo "$_gp_hdr" | cut -c1-16)" = 4546492050415254 ] || return 1
+  _gp_entries_lba="$(le_int "$(echo "$_gp_hdr" | cut -c145-160)")"
+  _gp_count="$(le_int "$(echo "$_gp_hdr" | cut -c161-168)")"
+  _gp_size="$(le_int "$(echo "$_gp_hdr" | cut -c169-176)")"
+  [ "$_gp_num" -ge 1 ] && [ "$_gp_num" -le "$_gp_count" ] || return 1
+  [ "$_gp_size" -ge 128 ] || return 1
+  _gp_entry="$(read_hex "$_gp_disk" \
+    $((_gp_entries_lba * _gp_lbs + (_gp_num - 1) * _gp_size)) 40)"
+  [ -n "$_gp_entry" ] || return 1
+  _gp_first="$(le_int "$(echo "$_gp_entry" | cut -c65-80)")"
+  [ $((_gp_first * _gp_lbs / 512)) -eq "$_gp_start" ] || return 1
+  _gp_guid="$(echo "$_gp_entry" | cut -c33-64)"
+  echo "$(reverse_hex "$(echo "$_gp_guid" | cut -c1-8)")-$(reverse_hex "$(echo "$_gp_guid" | cut -c9-12)")-$(reverse_hex "$(echo "$_gp_guid" | cut -c13-16)")-$(echo "$_gp_guid" | cut -c17-20)-$(echo "$_gp_guid" | cut -c21-32)"
+}
+
+# partition_partuuid <partition's /sys/class/block entry>: its PARTUUID as
+# the kernel would spell it, or nothing when it cannot be determined.
+partition_partuuid() {
+  _pp_sys="$1"
+  _pp_num="$(cat "$_pp_sys/partition" 2>/dev/null)" || return 1
+  _pp_start="$(cat "$_pp_sys/start" 2>/dev/null)" || return 1
+  # A partition's sysfs directory sits inside its disk's.
+  _pp_disk_sys="$(readlink -f "$_pp_sys")/.."
+  _pp_disk="/dev/$(sed -n 's/^DEVNAME=//p' "$_pp_disk_sys/uevent")"
+  [ -b "$_pp_disk" ] || return 1
+  _pp_lbs="$(cat "$_pp_disk_sys/queue/logical_block_size" 2>/dev/null || echo 512)"
+  _pp_mbr="$(read_hex "$_pp_disk" 440 72)"
+  [ -n "$_pp_mbr" ] || return 1
+  # Boot signature 0x55AA, then the four primary entries' types. A type
+  # 0xEE entry in any of them marks a protective (or hybrid) MBR in front
+  # of a GPT, which is how the kernel decides the disk is GPT
+  # (block/partitions/efi.c, is_pmbr_valid).
+  [ "$(echo "$_pp_mbr" | cut -c141-144)" = 55aa ] || return 1
+  _pp_types="$(echo "$_pp_mbr" | cut -c21-22) $(echo "$_pp_mbr" | cut -c53-54) $(echo "$_pp_mbr" | cut -c85-86) $(echo "$_pp_mbr" | cut -c117-118)"
+  if [ "${_pp_types#*ee}" != "$_pp_types" ]; then
+    gpt_partuuid "$_pp_disk" "$_pp_num" "$_pp_lbs" "$_pp_start"
+  else
+    # An MBR disk: the kernel spells it <disk signature>-<partition number>,
+    # both in lowercase hex (block/partitions/msdos.c).
+    printf '%s-%02x\n' "$(reverse_hex "$(echo "$_pp_mbr" | cut -c1-8)")" "$_pp_num"
+  fi
+}
+
+# resolve_partuuid <uuid>: the one partition carrying it. Two partitions
+# carrying the same PARTUUID resolve to NOTHING: picking one would let
+# whichever disk enumerates first decide what is mounted, and on the
+# attested path the specifier is the only thing naming the device.
+resolve_partuuid() {
+  _rp_want="$(echo "$1" | tr 'A-F' 'a-f')"
+  _rp_found=''
+  for _rp_sys in /sys/class/block/*; do
+    [ -e "$_rp_sys/partition" ] || continue
+    _rp_have="$(partition_partuuid "$_rp_sys" 2>/dev/null)" || continue
+    [ "$_rp_have" = "$_rp_want" ] || continue
+    _rp_dev="/dev/$(sed -n 's/^DEVNAME=//p' "$_rp_sys/uevent")"
+    if [ -n "$_rp_found" ]; then
+      # To stderr: this runs inside a command substitution, and log's
+      # fallback when /dev/kmsg is unwritable is stdout, which would
+      # turn the message into the "device" this lookup returns.
+      log "PARTUUID=$1 is on both $_rp_found and $_rp_dev; refusing to choose" >&2
+      return 0
+    fi
+    _rp_found="$_rp_dev"
+  done
+  if [ -n "$_rp_found" ]; then
+    echo "$_rp_found"
+  fi
+}
+
 resolve_spec() {
   case "$1" in
-    UUID=*|LABEL=*|PARTUUID=*) findfs "$1" 2>/dev/null || true ;;
-    *)          echo "$1" ;;
+    PARTUUID=*)     resolve_partuuid "${1#PARTUUID=}" || true ;;
+    UUID=*|LABEL=*) findfs "$1" 2>/dev/null || true ;;
+    *)              echo "$1" ;;
   esac
 }
 

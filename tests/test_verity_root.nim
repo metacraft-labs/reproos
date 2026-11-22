@@ -51,10 +51,10 @@
 ##      skip.
 ##
 ##   3. **The kernel agrees, in a booted guest** (opt-in,
-##      ``REPROOS_VERITY_GUEST_GATE=1``, ~1 min). A guest is booted on
+##      ``REPROOS_VERITY_GUEST_GATE=1``, ~2 min). A guest is booted on
 ##      the product's OWN ``init-disk`` initramfs, built by the product's
 ##      OWN ``build-initramfs.sh``, over a verity image built by the
-##      product's OWN ``build-verity-root.sh``. Three boots:
+##      product's OWN ``build-verity-root.sh``. Five boots:
 ##
 ##        * clean — verity activates, ``/`` refuses a write, ``/var``
 ##          accepts one, and the payload reads back.
@@ -66,19 +66,30 @@
 ##          and not from a disk that simply cannot be read.
 ##        * wrong root hash — activation must fail closed and the boot
 ##          must stop, rather than fall through to an unchecked mount.
+##        * PARTUUID — the image and the tree on a GPT disk, named only by
+##          ``PARTUUID=`` the way the attested command line names them;
+##          ``/var`` on an MBR disk by the kernel's MBR ``PARTUUID=`` form,
+##          ``/home`` by label. The initrd must resolve each to the
+##          partition carrying it and boot. BusyBox ``findfs`` cannot
+##          resolve ``PARTUUID=``, so this is ``init-disk``'s own
+##          partition-table reader under test.
+##        * the same PARTUUID on two disks — the initrd must resolve
+##          neither and stop the boot, rather than let enumeration order
+##          choose the root.
 ##
 ##      This is the only layer that proves anything about a running
 ##      system. It is opt-in because it needs QEMU, a kernel with a
-##      module tree, a static BusyBox and a ``veritysetup`` binary to
-##      stage; when it is not asked for it says so and names the remedy,
+##      module tree, a static BusyBox, a ``veritysetup`` binary to stage,
+##      and ``sgdisk`` and ``sfdisk`` to write the partition tables; when it is not asked for it says so and names the remedy,
 ##      and it never passes silently.
 ##
 ## ## What no layer here proves
 ##
 ## Nothing here builds a ReproOS image. The verity root under test in
 ## layers 2 and 3 is a small purpose-built tree, not the 118-package
-## ReproOS closure, and no partition table, boot loader or installed
-## system is involved. What is exercised is the real product code that
+## ReproOS closure; the partition tables layer 3 boots from are small
+## hand-laid ones, not the ``uefi-attested`` layout; and no boot loader or
+## installed system is involved. What is exercised is the real product code that
 ## would build and boot the real one.
 ##
 ## ## Mocking
@@ -1052,6 +1063,109 @@ proc runGuest(qemu, kernel, initramfs, cmdline: string;
 proc transcript(path: string): string =
   if fileExists(path): readFile(path) else: ""
 
+# ---------------------------------------------------------------------
+# Partitioned disks, for the cases that name volumes the way an attested
+# image does. The attested command line names the verity carriers ONLY by
+# ``PARTUUID=`` (repro/generations.nim): a carrier holds no filesystem, so
+# there is no label or filesystem UUID to find it by. The three cases
+# above hand the guest bare ``/dev/vdX`` names and never touch that path.
+#
+# The tables are written by ``sgdisk`` and ``sfdisk`` -- implementations
+# independent of the one under test in ``init-disk`` -- and the
+# partitions' contents are copied in at the offsets those tools chose.
+# ---------------------------------------------------------------------
+
+const
+  PartSector = 512
+  PartAlign = 1024 * 1024
+  # Asymmetric on purpose: every field reads differently forwards and
+  # byte-reversed, so a resolver that gets the GUID's mixed-endian text
+  # form wrong cannot match by accident.
+  GptDataPartUuid = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+  GptHashPartUuid = "d4c3b2a1-f6e5-4b7a-9c8d-0e1f2a3b4c5d"
+  # Partitions 2 and 4, with 1 and 3 left empty: the kernel numbers a GPT
+  # partition by its entry index, holes included.
+  GptDataPartNum = 2
+  GptHashPartNum = 4
+  MbrDiskSignature = "5eedc0de"
+  GuestHomeLabel = "reproos-t-home"
+
+proc alignUp(n: int64): int64 =
+  ((n + PartAlign - 1) div PartAlign) * PartAlign
+
+proc createSparse(path: string; size: int64) =
+  var f = open(path, fmWrite)
+  f.setFilePos(size - 1)
+  f.write('\0')
+  f.close()
+
+proc writeAt(path: string; offset: int64; source: string) =
+  ## Copy the whole of ``source`` into ``path`` at byte ``offset``.
+  let data = readFile(source)
+  var f = open(path, fmReadWriteExisting)
+  f.setFilePos(offset)
+  f.write(data)
+  f.close()
+
+proc buildGptCarrierDisk(path, dataImage, hashTree: string): bool =
+  ## A GPT disk carrying the verity data image in partition
+  ## ``GptDataPartNum`` and the hash tree in ``GptHashPartNum``, each
+  ## under its own unique partition GUID.
+  let dataStart = PartAlign.int64
+  let dataSize = alignUp(getFileSize(dataImage))
+  let hashStart = dataStart + dataSize
+  let hashSize = alignUp(getFileSize(hashTree))
+  # One MiB more at the end for the backup table.
+  createSparse(path, hashStart + hashSize + PartAlign)
+  proc part(num: int; start, size: int64; guid: string): string =
+    " -n " & $num & ":" & $(start div PartSector) & ":" &
+      $((start + size) div PartSector - 1) &
+      " -t " & $num & ":8300 -u " & $num & ":" & guid
+  let r = execCmdEx("sgdisk -o" &
+    part(GptDataPartNum, dataStart, dataSize, GptDataPartUuid) &
+    part(GptHashPartNum, hashStart, hashSize, GptHashPartUuid) &
+    " " & quoteShell(path))
+  if r.exitCode != 0:
+    stderr.writeLine(r.output)
+    return false
+  writeAt(path, dataStart, dataImage)
+  writeAt(path, hashStart, hashTree)
+  true
+
+proc buildMbrStateDisk(path, varImage, homeImage: string): bool =
+  ## An MBR disk with the /var volume in partition 1, which the guest
+  ## names by the kernel's MBR ``PARTUUID=<signature>-01`` form, and the
+  ## /home volume in partition 2, which it names by filesystem label.
+  let varStart = PartAlign.int64
+  let varSize = alignUp(getFileSize(varImage))
+  let homeStart = varStart + varSize
+  let homeSize = alignUp(getFileSize(homeImage))
+  createSparse(path, homeStart + homeSize)
+  let script = "label: dos\nlabel-id: 0x" & MbrDiskSignature & "\n" &
+    "start=" & $(varStart div PartSector) & ", size=" &
+      $(varSize div PartSector) & ", type=83\n" &
+    "start=" & $(homeStart div PartSector) & ", size=" &
+      $(homeSize div PartSector) & ", type=83\n"
+  let r = execCmdEx("sfdisk --no-reread --no-tell-kernel " &
+                    quoteShell(path), input = script)
+  if r.exitCode != 0:
+    stderr.writeLine(r.output)
+    return false
+  writeAt(path, varStart, varImage)
+  writeAt(path, homeStart, homeImage)
+  true
+
+proc partuuidCmdline(rootHash: string): string =
+  ## The specifier mix an attested image boots with: carriers by GPT
+  ## PARTUUID (the hash one in upper case -- the kernel compares
+  ## PARTUUIDs case-insensitively, so must the initrd), a state volume by
+  ## the MBR PARTUUID form, another by filesystem label.
+  "console=ttyS0 panic=1 loglevel=6 " &
+    verityCmdlineFragment(rootHash, "PARTUUID=" & GptDataPartUuid,
+                          "PARTUUID=" & toUpperAscii(GptHashPartUuid)) &
+    " " & stateCmdlineFragment("PARTUUID=" & MbrDiskSignature & "-01",
+                               "LABEL=" & GuestHomeLabel)
+
 block layerBootedGuest:
   let guestLayer = optInLayer(GuestGateEnv)
   if guestLayer.isBlocked:
@@ -1061,9 +1175,9 @@ block layerBootedGuest:
     skip("the booted-guest layer did not run: NO guest was booted, NO " &
          "verity table was loaded by a kernel, and nothing here is " &
          "evidence about a running system. " & notRequestedNote(GuestGateEnv) &
-         " It takes ~1 min and needs qemu-system-x86_64, mkfs.ext4, a " &
-         "kernel with a module tree, a static BusyBox and a veritysetup " &
-         "to stage.")
+         " It takes ~2 min and needs qemu-system-x86_64, mkfs.ext4, " &
+         "sgdisk, sfdisk, a kernel with a module tree, a static BusyBox " &
+         "and a veritysetup to stage.")
   else:
     let gate = "verity guest layer"
     let (artifacts, why) = discoverGuestArtifacts()
@@ -1073,6 +1187,8 @@ block layerBootedGuest:
     else:
       let qemu = requireTool(gate, "qemu-system-x86_64")
       discard requireTool(gate, "mkfs.ext4")
+      discard requireTool(gate, "sgdisk")
+      discard requireTool(gate, "sfdisk")
       if qemu.len > 0:
         let work = getTempDir() / "reproos-verity-guest-" &
           $getCurrentProcessId()
@@ -1257,6 +1373,90 @@ block layerBootedGuest:
                         "shell on the console")
                 else:
                   stderr.writeLine(transcript(wrongLog))
+
+                # ---- case 4: every volume named the attested way ----
+                #
+                # The carriers on a GPT disk, named only by PARTUUID=,
+                # as the attested command line names them; /var on an
+                # MBR disk by the kernel's MBR PARTUUID form; /home by
+                # label. Before init-disk read partition tables itself,
+                # it handed PARTUUID= to BusyBox findfs, which does not
+                # support it: the carriers "never appeared" and the boot
+                # stopped thirty seconds in.
+                let gptDisk = work / "gpt-carriers.img"
+                let mbrDisk = work / "mbr-state.img"
+                let homeImage = work / "home.img"
+                let mkhome = execCmdEx("mkfs.ext4 -q -F -b 4096 " &
+                  "-O ^has_journal -L " & GuestHomeLabel & " " &
+                  quoteShell(homeImage) & " 16M")
+                if mkhome.exitCode != 0:
+                  stderr.writeLine(mkhome.output)
+                  fail("could not create the /home state volume image")
+                elif not buildGptCarrierDisk(gptDisk, dataImage, hashTree):
+                  fail("sgdisk could not lay out the GPT carrier disk")
+                elif not buildMbrStateDisk(mbrDisk, varImage, homeImage):
+                  fail("sfdisk could not lay out the MBR state disk")
+                else:
+                  let partLog = work / "serial-partuuid.log"
+                  if runGuest(qemu, artifacts.kernel, initramfs,
+                              partuuidCmdline(finalHash),
+                              [(gptDisk, true), (mbrDisk, false)],
+                              partLog, "partuuid", 180):
+                    let t = transcript(partLog)
+                    check("veritysetup open /dev/vda" & $GptDataPartNum &
+                          " reproos-root /dev/vda" & $GptHashPartNum in t,
+                          "t_verity_carriers_resolve_by_partuuid: the " &
+                          "initrd resolved both GPT PARTUUID= specifiers " &
+                          "to the partitions carrying them, past an empty " &
+                          "entry and regardless of case")
+                    check("VERITY-GUEST-START" in t,
+                          "t_verity_carriers_resolve_by_partuuid: and " &
+                          "booted the integrity-checked root off them")
+                    check("VERITY-READ-PAYLOAD=ok" in t and
+                          "VERITY-ROOT-WRITE=refused" in t,
+                          "t_verity_carriers_resolve_by_partuuid: the " &
+                          "root reads back through dm-verity and stays " &
+                          "read-only")
+                    check("mounting /dev/vdb1 at /var" in t and
+                          "VERITY-VAR-WRITE=succeeded" in t,
+                          "t_verity_carriers_resolve_by_partuuid: the MBR " &
+                          "PARTUUID=" & MbrDiskSignature & "-01 resolved " &
+                          "to /dev/vdb1, mounted writable at /var")
+                    check("mounting /dev/vdb2 at /home" in t,
+                          "LABEL= still resolves through findfs, to " &
+                          "/dev/vdb2 at /home")
+                    if "VERITY-GUEST-START" notin t:
+                      stderr.writeLine(t)
+                  else:
+                    stderr.writeLine(transcript(partLog))
+
+                  # ---- case 5: the same PARTUUID on two disks -------
+                  #
+                  # Two copies of the carrier disk: every PARTUUID is on
+                  # two partitions. Choosing one would let enumeration
+                  # order decide what the root is built from, so the
+                  # initrd must resolve neither and stop the boot.
+                  let gptTwin = work / "gpt-carriers-twin.img"
+                  copyFile(gptDisk, gptTwin)
+                  let twinLog = work / "serial-partuuid-twin.log"
+                  if runGuest(qemu, artifacts.kernel, initramfs,
+                              partuuidCmdline(finalHash),
+                              [(gptDisk, true), (gptTwin, true),
+                               (mbrDisk, false)],
+                              twinLog, "partuuid-twin", 180):
+                    let t = transcript(twinLog)
+                    check("PARTUUID=" & GptDataPartUuid & " is on both " &
+                          "/dev/vda" & $GptDataPartNum & " and /dev/vdb" &
+                          $GptDataPartNum & "; refusing to choose" in t,
+                          "t_partuuid_ambiguity_is_refused: the initrd " &
+                          "names both partitions carrying the PARTUUID")
+                    check("VERITY-GUEST-START" notin t and
+                          "[disk-init] FATAL" in t and
+                          "verity data device not found" in t,
+                          "t_partuuid_ambiguity_is_refused: and stops the " &
+                          "boot rather than choosing one")
+                  else:
+                    stderr.writeLine(transcript(twinLog))
 
                 echo "[info] guest transcripts under ", work
                 echo "[info] root hash under test: ", finalHash

@@ -325,7 +325,8 @@ block layerSlotsAndDeviceNaming:
         devicesA.hash.startsWith("PARTUUID=") and
         devicesA.data.len == "PARTUUID=".len + 36,
         "the verity pair is named by PARTUUID, in the 8-4-4-4-12 form " &
-        "the initramfs' findfs takes (" & devicesA.data & ")")
+        "the initramfs reads off the partition table (" & devicesA.data &
+        ")")
   check(attestedBootDevices(GateSeed, gsA) == devicesA,
         "the derivation is a pure function of the seed and the slot")
   check(attestedBootDevices(GateSeed & "x", gsA).data != devicesA.data,

@@ -27,8 +27,10 @@ set -euo pipefail
 #                                comparison (~20s)
 #   REPROOS_VERITY_GUEST_GATE=1  boot a real guest on the product's own
 #                                initramfs over a real verity image and
-#                                read the result off its serial console
-#                                (~1 min)
+#                                read the result off its serial console,
+#                                including from carriers named by
+#                                PARTUUID= on GPT and MBR disks; also
+#                                needs sgdisk and sfdisk (~2 min)
 #
 # This script deliberately does not re-exec through `nix develop`, because
 # entering a sibling's dev shell also runs its git-hooks shellHook against

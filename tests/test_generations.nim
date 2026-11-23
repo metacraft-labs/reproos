@@ -940,7 +940,7 @@ block layerDeclarationsAgree:
           "both hash-tree volumes" in reason,
           "the refusal no longer says the layout has no volume for the " &
           "hash tree, because it now has two")
-    # The refusal has now been narrowed twice, and each narrowing has to
+    # The refusal has been narrowed several times, and each narrowing has to
     # take the superseded sentence WITH it. A refusal that keeps a claim
     # that has stopped being true is worse than a stale one: an operator
     # reads it as the reason and goes and fixes something that is
@@ -963,12 +963,25 @@ block layerDeclarationsAgree:
           "because the image now carries it -- root-owned inodes and a " &
           "setuid /usr/bin/sudo, applied as the image is made and " &
           "re-read out of it before any hash is taken")
-    check("no usable session" in reason and
-          "mounts them over the measured root" in reason,
-          "and it names what is left: /var and /home are separate " &
-          "volumes the apply creates EMPTY and the initramfs mounts over " &
-          "the measured root, so the configured account's home is " &
-          "shadowed at first boot and nothing seeds it")
+    # The next narrowing (926ff2e) seeded the state volumes at first boot,
+    # which took the "no usable session" clause with it.
+    check("no usable session" notin reason and
+          "mounts them over the measured root" notin reason and
+          "nothing seeds" notin reason and
+          "SEEDED at first boot" in reason,
+          "the refusal no longer says the state volumes are shadowed and " &
+          "unseeded, because the measured root now carries a factory copy " &
+          "that seeds /var and /home at first boot")
+    check("still missing is the machine's IDENTITY" in reason and
+          "/etc is inside the integrity-checked root" in reason and
+          "/etc/machine-id" in reason and "/etc/hostname" in reason and
+          "the account records" in reason and "/etc/ssh" in reason and
+          "cannot take an SSH identity" in reason,
+          "and it names what is left: the machine's identity (machine-id, " &
+          "hostname, account records, SSH host keys) is written into /etc, " &
+          "and /etc is inside the read-only integrity-checked root, so " &
+          "enrolment cannot complete and the machine cannot take an SSH " &
+          "identity")
 
   # The driver stages the installed image as a generation rather than
   # copying a binary into place, and passes the four things a stage needs.
